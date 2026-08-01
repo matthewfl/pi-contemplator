@@ -11,7 +11,8 @@ import {
 } from "../session-ledger/index.js";
 
 function firstArg(args: unknown): string | undefined {
-	if (Array.isArray(args)) return typeof args[0] === "string" ? args[0] : undefined;
+	if (Array.isArray(args))
+		return typeof args[0] === "string" ? args[0] : undefined;
 	if (typeof args === "string") return args.trim().split(/\s+/)[0];
 	if (args && typeof args === "object" && "mode" in args) {
 		const mode = (args as { mode?: unknown }).mode;
@@ -20,29 +21,55 @@ function firstArg(args: unknown): string | undefined {
 	return undefined;
 }
 
-function renderList<T>(items: T[], render: (item: T) => string, empty: string): string {
+function renderList<T>(
+	items: T[],
+	render: (item: T) => string,
+	empty: string,
+): string {
 	return items.length > 0 ? items.map(render).join("\n") : empty;
 }
 
-function renderContentOnlyProjection(projection: Projection, emptyScope: "visible" | "recorded"): string {
+function renderContentOnlyProjection(
+	projection: Projection,
+	emptyScope: "visible" | "recorded",
+): string {
 	return [
 		"── Reflections ──",
-		renderList(projection.reflections, reflectionToSummaryLine, `No ${emptyScope} reflections.`),
+		renderList(
+			projection.reflections,
+			reflectionToSummaryLine,
+			`No ${emptyScope} reflections.`,
+		),
 		"",
 		"── Observations ──",
-		renderList(projection.observations, observationToSummaryLine, `No ${emptyScope} observations.`),
+		renderList(
+			projection.observations,
+			observationToSummaryLine,
+			`No ${emptyScope} observations.`,
+		),
 	].join("\n");
+}
+
+function hasMemory(projection: Projection): boolean {
+	return (
+		projection.reflections.length > 0 || projection.observations.length > 0
+	);
 }
 
 interface ViewCommandOptions {
 	copyToClipboard?: (text: string) => Promise<boolean>;
 }
 
-export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options: ViewCommandOptions = {}): void {
+export function registerViewCommand(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	options: ViewCommandOptions = {},
+): void {
 	const copyToClipboard = options.copyToClipboard ?? copyTextToClipboard;
 
 	pi.registerCommand("om:view", {
-		description: "Print and copy observational memory content (visible by default, full for recorded memory)",
+		description:
+			"Print and copy observational memory content (visible by default, or choose visible/full)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -59,16 +86,37 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 			};
 
 			if (mode === "full") {
-				await notifyWithCopy(renderContentOnlyProjection(fullProjection(entries), "recorded"));
+				await notifyWithCopy(
+					renderContentOnlyProjection(fullProjection(entries), "recorded"),
+				);
 				return;
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [full]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full]", "info");
 				return;
 			}
 
-			await notifyWithCopy(renderContentOnlyProjection(visibleProjection(entries), "visible"));
+			const visible = visibleProjection(entries);
+			if (hasMemory(visible)) {
+				await notifyWithCopy(renderContentOnlyProjection(visible, "visible"));
+				return;
+			}
+
+			if (mode === "visible") {
+				await notifyWithCopy(renderContentOnlyProjection(visible, "visible"));
+				return;
+			}
+
+			const recorded = fullProjection(entries);
+			if (hasMemory(recorded)) {
+				await notifyWithCopy(
+					`No visible memory has been folded into a compaction yet; showing recorded memory.\n\n${renderContentOnlyProjection(recorded, "recorded")}`,
+				);
+				return;
+			}
+
+			await notifyWithCopy(renderContentOnlyProjection(visible, "visible"));
 		},
 	});
 }

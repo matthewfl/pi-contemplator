@@ -34,6 +34,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 			throw new Error("resolveModel must not be called");
 		}),
 		ensureConfig: vi.fn(),
+		launchConsolidationTask: vi.fn(() => Promise.resolve()),
 	};
 	registerCompactionHook(pi as any, runtime as any);
 	if (!handler) throw new Error("compaction handler was not registered");
@@ -174,6 +175,7 @@ describe("V3 compaction hook", () => {
 
 		expect(result).toMatchObject({ compaction: { details: { type: "om.folded" } } });
 		expect(runtime.resolveModel).not.toHaveBeenCalled();
+		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
 	});
 
 	it("cancels duplicate in-flight compaction and notifies the UI", async () => {

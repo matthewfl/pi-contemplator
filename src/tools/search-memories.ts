@@ -1,0 +1,109 @@
+import { Type } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	searchMemories,
+	type MemorySearchResult,
+} from "../session-ledger/search.js";
+import type { Entry } from "../session-ledger/index.js";
+import { Text } from "@earendil-works/pi-tui";
+
+export const SEARCH_MEMORIES_TOOL_NAME = "search_memories";
+
+type SearchDetails = {
+	query: string;
+	limit: number;
+	observationsSearched: number;
+	reflectionsSearched: number;
+	results: MemorySearchResult[];
+};
+
+function formatResult(result: MemorySearchResult): string {
+	const status = result.status === "dropped" ? " [dropped]" : "";
+	const relevance = result.relevance ? ` [${result.relevance}]` : "";
+	const timestamp = result.timestamp ? ` ${result.timestamp}` : "";
+	return `- ${result.kind} [${result.id}]${status}${timestamp}${relevance}: ${result.content}`;
+}
+
+export const searchMemoriesTool = defineTool({
+	name: SEARCH_MEMORIES_TOOL_NAME,
+	label: "Search observational memories",
+	description:
+		"Search recorded observational-memory observations and reflections by topic or keywords on the current branch. " +
+		"Use the returned memory id with recall to recover exact source context.",
+	promptSnippet:
+		"Use search_memories(query) to find relevant older observations or reflections, then use recall(id) when exact source context matters.",
+	promptGuidelines: [
+		"Use search_memories when the current context may be missing earlier decisions, constraints, user preferences, completed work, or rationale.",
+		"Search with a few distinctive keywords or a short topic phrase; the search covers both active and dropped observations plus reflections on the current branch.",
+		"After finding a relevant memory, use recall with its exact 12-character id when you need supporting evidence or original source entries.",
+		"Do not assume the absence of results means the fact never occurred; search with alternate wording or narrower keywords.",
+	],
+	parameters: Type.Object({
+		query: Type.String({
+			description: "Topic, phrase, or distinctive keywords to search for.",
+		}),
+		limit: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 20,
+				description: "Maximum results to return (default 8).",
+			}),
+		),
+	}),
+	renderCall(args) {
+		return new Text(`search_memories ${JSON.stringify(args.query)}`, 0, 0);
+	},
+	renderResult(result) {
+		const details = result.details as SearchDetails | undefined;
+		const text = result.content
+			.filter(
+				(part): part is { type: "text"; text: string } =>
+					part.type === "text" && typeof part.text === "string",
+			)
+			.map((part) => part.text)
+			.join("\n");
+		return new Text(
+			text ||
+				(details
+					? `${details.results.length} memory results`
+					: "search_memories"),
+			0,
+			0,
+		);
+	},
+	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		const query = params.query.trim();
+		const limit = params.limit ?? 8;
+		if (!query) {
+			const details: SearchDetails = {
+				query,
+				limit,
+				observationsSearched: 0,
+				reflectionsSearched: 0,
+				results: [],
+			};
+			return {
+				content: [
+					{ type: "text" as const, text: "Search query must not be empty." },
+				],
+				details,
+			};
+		}
+
+		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
+		const search = searchMemories(branchEntries, query, limit);
+		const details: SearchDetails = { ...search, limit };
+		const text = search.results.length
+			? [
+					`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections):`,
+					...search.results.map(formatResult),
+					"Use recall(<id>) for exact source context.",
+				].join("\n")
+			: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections). Try alternate or more distinctive keywords.`;
+		return { content: [{ type: "text" as const, text }], details };
+	},
+});
+
+export function registerSearchMemoriesTool(pi: ExtensionAPI): void {
+	pi.registerTool(searchMemoriesTool);
+}

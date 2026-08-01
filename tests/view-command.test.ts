@@ -36,7 +36,7 @@ function setup(entries: TestEntry[], clipboardResult = true) {
 		await handler!(args, ctx);
 		return {
 			output: notify.mock.calls.at(-1)?.[0] as string,
-			clipboardText: copyToClipboard.mock.calls.at(-1)?.[0] as string | undefined,
+			clipboardText: (copyToClipboard.mock.calls.at(-1) as [string] | undefined)?.[0],
 			copyToClipboard,
 		};
 	};
@@ -95,6 +95,34 @@ describe("V3 /om:view", () => {
 		expect(clipboardText).not.toContain(COPY_SUCCESS);
 		expect(output).toBe(`${clipboardText}\n\n${COPY_SUCCESS}`);
 		expectNoDiagnostics(output);
+	});
+
+	it("explicit visible mode does not fall back to recorded memory", async () => {
+		const obs = observation("aaaaaaaaaaaa");
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+		];
+
+		const { output, clipboardText } = await setup(entries).run(["visible"]);
+
+		expect(clipboardText).toContain("No visible observations.");
+		expect(clipboardText).not.toContain("[aaaaaaaaaaaa]");
+		expect(output).toBe(`${clipboardText}\n\n${COPY_SUCCESS}`);
+	});
+
+	it("defaults to recorded memory before the first compaction", async () => {
+		const obs = observation("aaaaaaaaaaaa");
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+		];
+
+		const { output, clipboardText } = await setup(entries).run();
+
+		expect(clipboardText).toContain("No visible memory has been folded into a compaction yet; showing recorded memory.");
+		expect(clipboardText).toContain("[aaaaaaaaaaaa]");
+		expect(output).toBe(`${clipboardText}\n\n${COPY_SUCCESS}`);
 	});
 
 	it("full view folds recorded V3 memory, excludes dropped observations, and copies clean output", async () => {
@@ -162,6 +190,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [full]");
+		expect(output).toBe("Usage: /om:view [visible|full]");
 	});
 });

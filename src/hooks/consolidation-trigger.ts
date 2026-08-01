@@ -30,7 +30,7 @@ import {
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 
-type ConsolidationCtx = {
+export type ConsolidationCtx = {
 	cwd: string;
 	hasUI: boolean;
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
@@ -149,21 +149,60 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	}));
 }
 
+export function launchCompactionObserver(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	branchEntries: Entry[],
+): void {
+	runtime.ensureConfig(ctx.cwd);
+	if (runtime.config.passive === true || runtime.consolidationInFlight) return;
+
+	const lastCoverageIdx = latestCoverageIndex(branchEntries, OM_OBSERVATIONS_RECORDED);
+	if (sourceEntriesAfter(branchEntries, lastCoverageIdx).length === 0) return;
+
+	const runId = `compaction-observer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+	const sessionMetadata = debugSessionMetadata(ctx);
+	void runtime.launchConsolidationTask(ctx, async () => withDebugLogContext({
+		enabled: runtime.config.debugLog === true,
+		cwd: ctx.cwd,
+		...sessionMetadata,
+		runId,
+	}, async () => {
+		await runConsolidationPipeline(pi, runtime, ctx, {
+			forceObserver: true,
+			observerEntries: branchEntries,
+			observerOnly: true,
+		});
+	}));
+}
+
+export type ConsolidationPipelineOptions = {
+	forceObserver?: boolean;
+	observerEntries?: Entry[];
+	observerOnly?: boolean;
+};
+
 export async function runConsolidationPipeline(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
+	options: ConsolidationPipelineOptions = {},
 ): Promise<void> {
 	const resolveModel = makeModelResolver(runtime, ctx);
 
 	runtime.consolidationPhase = "observer";
 	try {
-		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel);
+		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
+			force: options.forceObserver === true,
+			entries: options.observerEntries,
+		});
 		if (observerOutcome === "abort") return;
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
 	}
+	if (options.observerOnly === true) return;
 
 	runtime.consolidationPhase = "reflector";
 	let reflectorResult: ReflectorStageResult;
@@ -188,10 +227,11 @@ async function runObserverStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+	options: { force?: boolean; entries?: Entry[] } = {},
 ): Promise<StageOutcome> {
-	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const entries = options.entries ?? (ctx.sessionManager.getBranch() as Entry[]);
 	const tokens = rawTokensSinceObservationCoverage(entries);
-	if (tokens < runtime.config.observeAfterTokens) return "continue";
+	if (!options.force && tokens < runtime.config.observeAfterTokens) return "continue";
 
 	// Resolve the model before building the chunk: the default chunk cap
 	// derives from the resolved model's context window.

@@ -16,6 +16,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
 | `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
+| `search_memories` tool | Search recorded observations and reflections by topic or keywords. |
 | `recall` tool | Recover source evidence for a memory id. |
 
 ## Lifecycle overview
@@ -215,24 +216,19 @@ This trigger does not wait for observer, reflector, or dropper promises. That is
 
 The compaction hook runs on `session_before_compact` and is the critical V3 latency path.
 
-It does only deterministic work:
+It starts a fire-and-forget observer pass for uncovered source entries, then immediately performs deterministic compaction work. The observer uses the branch snapshot supplied by the event and appends any resulting observations to the ledger for later recall and compactions. Its result is not included in the compaction currently being prepared; recent entries retained by `firstKeptEntryId` remain available for short-term continuity.
 
-1. Guard against duplicate concurrent compaction hooks.
-2. Load config if needed.
-3. Read `event.preparation.firstKeptEntryId` and `event.preparation.tokensBefore`.
-4. Build a compaction projection from branch entries and `firstKeptEntryId`.
-5. Render a summary from projected reflections and observations.
-6. Return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
+The hook then:
 
-It does not:
+1. Guards against duplicate concurrent compaction hooks.
+2. Loads config if needed.
+3. Reads `event.preparation.firstKeptEntryId` and `event.preparation.tokensBefore`.
+4. Builds a compaction projection from branch entries and `firstKeptEntryId`.
+5. Renders a summary from projected reflections and observations.
+6. Returns `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
 
-- call a model;
-- run a sync observer;
-- run reflector/dropper;
-- wait for worker promises;
-- append ledger entries.
+The compaction hook itself does not wait for the observer, call the reflector/dropper, or append ledger entries synchronously. If another compaction hook is already in flight, it returns `{ cancel: true }`.
 
-If another compaction hook is already in flight, it returns `{ cancel: true }`.
 
 ## Projections
 
@@ -266,7 +262,7 @@ These are condensed memories from earlier in this session.
 
 Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
 
-When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.
+When historical context may be missing, use `search_memories` with a few distinctive keywords. It searches current-branch observations and reflections, including dropped observations. Use the returned id with `recall` when exact source context or provenance is needed; do not inject raw source unless it materially improves precision.
 
 ## Reflections
 [id] durable reflection
@@ -296,7 +292,7 @@ Shows:
 
 ### `/om:view`
 
-Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no V3 compaction has happened yet, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory before the first compaction.
+Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no visible memory has been folded into a compaction yet but recorded memory exists, it falls back to showing recorded memory with a notice. `/om:view full` always shows recorded branch memory.
 
 Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
 
@@ -318,6 +314,12 @@ The agent-facing `recall` tool accepts a 12-character lowercase hex id.
 8. Return exact evidence plus diagnostics for missing/non-source entries.
 
 Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.
+
+## Memory search
+
+The agent-facing `search_memories` tool performs a bounded lexical search over recorded V3 observations and reflections on the current branch. Results include the memory id, kind, relevance, timestamp when available, and active/dropped status. Reflection and higher-relevance matches receive a small ranking boost. Search is intentionally separate from `recall`: search discovers candidate ids, while recall retrieves exact source evidence.
+
+Search does not change the compaction summary or inject results automatically; the agent chooses when historical context is relevant and calls the tool.
 
 ## Error and race handling
 
