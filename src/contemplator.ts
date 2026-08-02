@@ -102,6 +102,7 @@ export class Contemplator {
 	private seenObservationIds = new Set<string>();
 	private seenReflectionIds = new Set<string>();
 	private deliveredProbeIds = new Set<string>();
+	private requeuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
 	private turnsSinceRun = 0;
 	private restoredTipId: string | undefined;
@@ -116,9 +117,12 @@ export class Contemplator {
 		});
 		this.pi.on("session_compact", (_event: any, ctx: ExtensionContext) => {
 			if (this.history.length === 0) return;
-			this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history: this.history });
+			// The in-flight prompt is persisted by flush after its agent loop. Do not
+			// snapshot it here or compaction would make restore replay it twice.
+			const history = this.running ? this.history.slice(0, -1) : this.history;
+			this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history });
 			this.markTipPersisted(ctx);
-			debugLog("contemplator.state_persisted", { historyMessageCount: this.history.length });
+			debugLog("contemplator.state_persisted", { historyMessageCount: history.length, running: this.running });
 		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const delivered = event.messages?.find((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string");
@@ -153,33 +157,47 @@ export class Contemplator {
 	private restore(ctx: MemoryUpdateCtx, resetTracking = false): void {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tipId = entries.at(-1)?.id;
+		if (this.running && !resetTracking) return;
 		if (tipId === this.restoredTipId && !resetTracking) return;
 		this.history = [];
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
+			this.requeuedProbeIds.clear();
 			const projection = fullProjection(entries);
 			this.seenObservationIds = new Set(projection.observations.map((item) => item.id));
 			this.seenReflectionIds = new Set(projection.reflections.map((item) => item.id));
 			this.pending = undefined;
 		}
-		let undeliveredSuggestion: string | undefined;
+		let undeliveredSuggestion: { question: string; probeId?: string } | undefined;
 		for (const entry of entries) {
 			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
 				const state = entry.data as { history?: unknown };
 				if (Array.isArray(state.history)) this.history = state.history.filter((message): message is AgentMessage => !!message && typeof message === "object");
 			}
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
-				const message = (entry.data as { message?: unknown }).message;
-				if (message && typeof message === "object") this.history.push(message as AgentMessage);
+				const data = entry.data as { message?: unknown; compacted?: unknown };
+				const message = data.message;
+				if (message && typeof message === "object") {
+					if (data.compacted === true) this.history = [message as AgentMessage];
+					else this.history.push(message as AgentMessage);
+				}
 			}
 			if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
 				const data = entry.data as { suggestion?: unknown; delivered?: unknown; probeId?: unknown };
-				if (data.delivered === true && typeof data.probeId === "string") this.deliveredProbeIds.add(data.probeId);
-				if (typeof data.suggestion === "string") undeliveredSuggestion = data.delivered === true ? undefined : data.suggestion;
+				if (data.delivered === true) {
+					if (typeof data.probeId === "string") this.deliveredProbeIds.add(data.probeId);
+					undeliveredSuggestion = undefined;
+				}
+				if (typeof data.suggestion === "string" && data.delivered !== true) {
+					undeliveredSuggestion = { question: data.suggestion, probeId: typeof data.probeId === "string" ? data.probeId : undefined };
+				}
 			}
 		}
 		this.restoredTipId = tipId;
-		if (undeliveredSuggestion) this.queueProbe(ctx, undeliveredSuggestion, "restore");
+		if (undeliveredSuggestion?.probeId && !this.requeuedProbeIds.has(undeliveredSuggestion.probeId)) {
+			this.requeuedProbeIds.add(undeliveredSuggestion.probeId);
+			this.queueProbe(ctx, undeliveredSuggestion.question, "restore", undeliveredSuggestion.probeId);
+		}
 	}
 
 	private observeTurn(ctx: MemoryUpdateCtx): void {
@@ -215,11 +233,13 @@ export class Contemplator {
 			pending: this.pending !== undefined,
 			running: this.running,
 		});
-		if (newObservations.length === 0 && newReflections.length === 0) return;
-		this.pending = {
-			observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
-			reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
-		};
+		if (newObservations.length > 0 || newReflections.length > 0) {
+			this.pending = {
+				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
+				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
+			};
+		}
+		if (!this.pending) return;
 		const enoughMemories = this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
 			debugLog("contemplator.waiting", {
@@ -246,10 +266,12 @@ export class Contemplator {
 		}
 		const update = this.pending;
 		this.pending = undefined;
+		const turnsBeforeRun = this.turnsSinceRun;
 		const sessionGeneration = this.sessionGeneration;
 		this.running = true;
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
+		let failed = false;
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
 			newReflectionCount: update.reflections.length,
@@ -264,7 +286,16 @@ export class Contemplator {
 				configuredModel: this.runtime.config.contemplatorModel,
 			});
 			if (!resolved.ok) {
+				failed = true;
 				debugLog("contemplator.model_unavailable", { reason: resolved.reason });
+				if (sessionGeneration === this.sessionGeneration) {
+					const pending = this.pending as PendingUpdate | undefined;
+					this.pending = {
+						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
+						reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+					};
+					this.turnsSinceRun = turnsBeforeRun;
+				}
 				return;
 			}
 			if (sessionGeneration !== this.sessionGeneration) {
@@ -317,7 +348,16 @@ export class Contemplator {
 			if (probe && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, probe, "send_probe");
 			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers);
 		} catch (error) {
+			failed = true;
 			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
+			if (sessionGeneration === this.sessionGeneration) {
+				const pending = this.pending as PendingUpdate | undefined;
+				this.pending = {
+					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
+					reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+				};
+				this.turnsSinceRun = turnsBeforeRun;
+			}
 		} finally {
 			this.running = false;
 			debugLog("contemplator.complete", {
@@ -325,12 +365,12 @@ export class Contemplator {
 				historyMessageCount: this.history.length,
 				pendingUpdate: this.pending !== undefined,
 			});
-			if (sessionGeneration === this.sessionGeneration && this.pending) void this.flush(ctx);
+			if (!failed && sessionGeneration === this.sessionGeneration && this.pending) void this.flush(ctx);
 		}
 	}
 
-	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore"): void {
-		const probeId = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore", existingProbeId?: string): void {
+		const probeId = existingProbeId ?? `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}`,
