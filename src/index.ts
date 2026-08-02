@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerSettingsCommand } from "./commands/settings.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
@@ -11,6 +12,7 @@ import { Contemplator } from "./contemplator.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
+	registerSettingsCommand(pi, runtime);
 	new Contemplator(pi, runtime).register();
 
 	registerConsolidationTrigger(pi, runtime);

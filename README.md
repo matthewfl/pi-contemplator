@@ -311,7 +311,7 @@ Set `showWorkerNotifications` to `false` to hide routine worker start and comple
 
 Dropper pruning balances age, relevance, and reflection coverage. Relevance is importance/resistance, not a permanent active-memory pin: `critical` observations require the strongest evidence but can be dropped when they are older and safely represented by reflections, superseded by newer memory, redundant, or obsolete. Dropper input annotates each active observation with deterministic coverage evidence: `none`, `partial`, or `strong`; coverage guides model judgment and is not an automatic drop rule. Dropping removes observations from active memory, not ledger history.
 
-When `debugLog` is enabled, debug events are written as local NDJSON files under Pi's agent directory. Normal sessions write to `observational-memory/debug/<session-id>.ndjson`; contexts without a session id fall back to `observational-memory/debug.ndjson`. Debug rows include `sessionId` and per-consolidation `runId`, so a session file can still be filtered to one observer/reflector/dropper run.
+When `debugLog` is enabled, debug events are written as local NDJSON files under Pi's agent directory. Normal sessions write to `observational-memory/debug/<session-id>.ndjson`; contexts without a session id fall back to `observational-memory/debug.ndjson`. Debug rows include `sessionId` and per-consolidation `runId`, so a session file can still be filtered to one observer/reflector/dropper run. Contemplator events also record trigger decisions, update counts, model resolution, lifecycle timing, `send_steer` calls, suggestion delivery, failures, and private-history compaction; prompts, responses, and suggestion text are not logged.
 
 For details and tuning guidance, see [`docs/configuration.md`](docs/configuration.md).
 
@@ -321,12 +321,13 @@ For details and tuning guidance, see [`docs/configuration.md`](docs/configuratio
 
 | Surface             | What it does                                                                                                                                    |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/om:settings`      | Opens per-session settings for the contemplator, compaction observer, and thinking model. Also accepts `on`, `off`, `compaction on`, and `compaction off`. |
 | `/om:status`        | Shows memory counts, plain `+N` / `-N` visible/full drift suffixes, progress clocks, visible and active observation pool pressure, passive/in-flight state, and last worker errors. |
 | `/om:view`          | Shows current visible memory and attempts to copy the rendered memory text to the clipboard.                                                   |
 | `/om:view full`     | Shows the full current memory state for the branch and attempts to copy the rendered memory text to the clipboard.                             |
 | `recall` agent tool | Recovers source evidence for a 12-character observation/reflection id on the current branch. It is not semantic search or a transcript browser. |
 
-`/om:view` copies only the rendered memory content. The success/failure line shown in Pi is not included in the clipboard text. If clipboard support is unavailable, the command still prints the memory view and shows a warning. Before the first V3 compaction, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory.
+`/om:settings` changes are stored as `om.settings` entries in the current session branch, so they survive reloads and follow forks without changing the settings file. `/om:view` copies only the rendered memory content. The success/failure line shown in Pi is not included in the clipboard text. If clipboard support is unavailable, the command still prints the memory view and shows a warning. Before the first V3 compaction, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory.
 
 ---
 

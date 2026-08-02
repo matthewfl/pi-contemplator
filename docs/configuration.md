@@ -22,7 +22,7 @@ All extension-owned settings live under:
 }
 ```
 
-The extension loads config once for its runtime. After changing settings, restart Pi or reload the extension so the new values are picked up.
+The extension loads config once for its runtime. After changing settings, restart Pi or reload the extension so the new values are picked up. Use `/om:settings` to override contemplator and compaction-observer settings for the current session; those overrides are stored in the session branch and take precedence over this file.
 
 ## Full V3 example
 
@@ -80,6 +80,8 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `contemplatorMinNewReflections` | positive integer | `1` | Minimum newly recorded reflections that can wake the contemplator. |
 | `contemplatorMinTurns` | positive integer | `10` | Minimum main-agent turns between contemplator runs. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
+
+`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, toggles the asynchronous compaction observer, and selects an available thinking model (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 
@@ -221,7 +223,7 @@ Contexts without a usable session id fall back to the legacy global file:
 observational-memory/debug.ndjson
 ```
 
-Each row includes event metadata such as `sessionId`, `sessionFile`, `runId`, `cwd`, and event-specific `data`. `runId` identifies one consolidation pipeline inside a session file, so you can filter a session log to a single observer/reflector/dropper pass.
+Each row includes event metadata such as `sessionId`, `sessionFile`, `runId`, `cwd`, and event-specific `data`. `runId` identifies one consolidation pipeline inside a session file, so you can filter a session log to a single observer/reflector/dropper pass. Contemplator diagnostics include trigger and threshold decisions (`contemplator.update`, `contemplator.waiting`, `contemplator.triggered`), model resolution, start/result/completion timing, `send_steer` calls, suggestion queue/injection, failures, and private-history compaction. These events record counts and lengths rather than prompts, responses, or suggestion text.
 
 Dropper diagnostics are especially useful when the active observation pool is over target but no drops are appended. For example:
 

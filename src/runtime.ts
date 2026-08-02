@@ -8,6 +8,26 @@ type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
 export type ConsolidationPhase = "observer" | "reflector" | "dropper";
 
+export const OM_SETTINGS = "om.settings";
+
+function isConfiguredModel(value: unknown): value is ConfiguredModel {
+	if (!value || typeof value !== "object") return false;
+	const model = value as { provider?: unknown; id?: unknown; thinking?: unknown };
+	return typeof model.provider === "string" && model.provider.length > 0 && typeof model.id === "string" && model.id.length > 0;
+}
+
+export type SessionSettings = Partial<Pick<Config,
+	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
+	| "compactAfterTokensMode" | "compactAfterTokensRatio"
+	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
+	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled"
+	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "debugLog"
+>> & {
+	/** null explicitly means use the configured/session model. */
+	model?: ConfiguredModel | null;
+	contemplatorModel?: ConfiguredModel | null;
+};
+
 export interface ResolveCtx {
 	model: unknown;
 	modelRegistry: any;
@@ -29,6 +49,8 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 
 export class Runtime {
 	config: Config = { ...DEFAULTS };
+	private baseConfig: Config = { ...DEFAULTS };
+	private sessionSettings: SessionSettings = {};
 	configLoaded = false;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
@@ -43,8 +65,60 @@ export class Runtime {
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
-		this.config = loadConfig(cwd);
+		this.baseConfig = loadConfig(cwd);
+		this.config = { ...this.baseConfig };
 		this.configLoaded = true;
+	}
+
+	restoreSessionSettings(entries: readonly unknown[]): void {
+		const restored: SessionSettings = {};
+		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue;
+			const candidate = entry as { customType?: unknown; data?: unknown };
+			if (candidate.customType !== OM_SETTINGS || !candidate.data || typeof candidate.data !== "object") continue;
+			const data = candidate.data as Record<string, unknown>;
+			const booleanKeys = [
+				"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "debugLog",
+			] as const;
+			const numberKeys = [
+				"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
+				"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
+				"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
+			] as const;
+			for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
+			for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
+			if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
+			if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
+			if (data.model === null) restored.model = null;
+			else if (isConfiguredModel(data.model)) restored.model = data.model;
+			if (data.contemplatorModel === null) restored.contemplatorModel = null;
+			else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
+		}
+		this.sessionSettings = restored;
+		this.applySessionSettings();
+	}
+
+	private applySessionSettings(): void {
+		const { model, contemplatorModel, ...scalarSettings } = this.sessionSettings;
+		this.config = {
+			...this.baseConfig,
+			...scalarSettings,
+			...(model === undefined ? {} : { model: model ?? undefined }),
+			...(contemplatorModel === undefined ? {} : { contemplatorModel: contemplatorModel ?? undefined }),
+		};
+	}
+
+	setSessionSettings(settings: SessionSettings): void {
+		this.sessionSettings = { ...this.sessionSettings, ...settings };
+		this.applySessionSettings();
+	}
+
+	getSessionSettings(): SessionSettings {
+		return { ...this.sessionSettings };
+	}
+
+	getDefaultConfig(): Config {
+		return { ...this.baseConfig };
 	}
 
 	async resolveModel(ctx: ResolveCtx & { configuredModel?: ConfiguredModel }): Promise<ResolveResult> {

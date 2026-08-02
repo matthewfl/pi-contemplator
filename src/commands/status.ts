@@ -88,6 +88,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
+				`Thinking model:           ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
 			];
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
