@@ -1,4 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
+import type { Static } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	searchMemories,
@@ -9,7 +10,9 @@ import { Text } from "@earendil-works/pi-tui";
 
 export const SEARCH_MEMORIES_TOOL_NAME = "search_memories";
 
-type SearchDetails = {
+export type SearchMemoriesArgs = Static<typeof SEARCH_MEMORIES_PARAMETERS>;
+
+export type SearchDetails = {
 	query: string;
 	limit: number;
 	observationsSearched: number;
@@ -22,6 +25,45 @@ function formatResult(result: MemorySearchResult): string {
 	const relevance = result.relevance ? ` [${result.relevance}]` : "";
 	const timestamp = result.timestamp ? ` ${result.timestamp}` : "";
 	return `- ${result.kind} [${result.id}]${status}${timestamp}${relevance}: ${result.content}`;
+}
+
+export const SEARCH_MEMORIES_PARAMETERS = Type.Object({
+	query: Type.String({
+		description: "Topic, phrase, or distinctive keywords to search for.",
+	}),
+	limit: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: 20,
+			description: "Maximum results to return (default 8).",
+		}),
+	),
+});
+
+export function executeSearchMemories(branchEntries: Entry[], params: SearchMemoriesArgs): { content: [{ type: "text"; text: string }]; details: SearchDetails } {
+	const query = params.query.trim();
+	const limit = params.limit ?? 8;
+	if (!query) {
+		const details: SearchDetails = {
+			query,
+			limit,
+			observationsSearched: 0,
+			reflectionsSearched: 0,
+			results: [],
+		};
+		return { content: [{ type: "text", text: "Search query must not be empty." }], details };
+	}
+
+	const search = searchMemories(branchEntries, query, limit);
+	const details: SearchDetails = { ...search, limit };
+	const text = search.results.length
+		? [
+				`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections):`,
+				...search.results.map(formatResult),
+				"Use recall(<id>) for exact source context.",
+			].join("\\n")
+		: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections). Try alternate or more distinctive keywords.`;
+	return { content: [{ type: "text", text }], details };
 }
 
 export const searchMemoriesTool = defineTool({
@@ -38,18 +80,7 @@ export const searchMemoriesTool = defineTool({
 		"After finding a relevant memory, use recall with its exact 12-character id when you need supporting evidence or original source entries.",
 		"Do not assume the absence of results means the fact never occurred; search with alternate wording or narrower keywords.",
 	],
-	parameters: Type.Object({
-		query: Type.String({
-			description: "Topic, phrase, or distinctive keywords to search for.",
-		}),
-		limit: Type.Optional(
-			Type.Integer({
-				minimum: 1,
-				maximum: 20,
-				description: "Maximum results to return (default 8).",
-			}),
-		),
-	}),
+	parameters: SEARCH_MEMORIES_PARAMETERS,
 	renderCall(args) {
 		return new Text(`search_memories ${JSON.stringify(args.query)}`, 0, 0);
 	},
@@ -72,35 +103,7 @@ export const searchMemoriesTool = defineTool({
 		);
 	},
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-		const query = params.query.trim();
-		const limit = params.limit ?? 8;
-		if (!query) {
-			const details: SearchDetails = {
-				query,
-				limit,
-				observationsSearched: 0,
-				reflectionsSearched: 0,
-				results: [],
-			};
-			return {
-				content: [
-					{ type: "text" as const, text: "Search query must not be empty." },
-				],
-				details,
-			};
-		}
-
-		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
-		const search = searchMemories(branchEntries, query, limit);
-		const details: SearchDetails = { ...search, limit };
-		const text = search.results.length
-			? [
-					`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections):`,
-					...search.results.map(formatResult),
-					"Use recall(<id>) for exact source context.",
-				].join("\n")
-			: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections). Try alternate or more distinctive keywords.`;
-		return { content: [{ type: "text" as const, text }], details };
+		return executeSearchMemories(ctx.sessionManager.getBranch() as Entry[], params);
 	},
 });
 

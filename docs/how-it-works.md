@@ -9,7 +9,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 `src/index.ts` registers one shared runtime and these Pi surfaces:
 
 | Surface | Purpose |
-|---|---|
+| --- | --- |
 | `turn_end` observer trigger | Maybe run the observer in the background. |
 | `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
 | `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
@@ -73,7 +73,7 @@ Memory ledger entries and compaction entries do not add raw-token progress.
 Every V3 ledger entry has `data.coversUpToId`. That field is a progress and projection watermark. Worker clocks count raw/source tokens after the latest valid watermark for that worker's ledger type:
 
 | Worker/trigger | Progress source |
-|---|---|
+| --- | --- |
 | Observer | latest `om.observations.recorded.data.coversUpToId` |
 | Reflector | latest `om.reflections.recorded.data.coversUpToId` |
 | Dropper | latest `om.observations.dropped.data.coversUpToId` |
@@ -229,7 +229,6 @@ The hook then:
 
 The compaction hook itself does not wait for the observer, call the reflector/dropper, or append ledger entries synchronously. If another compaction hook is already in flight, it returns `{ cancel: true }`.
 
-
 ## Projections
 
 V3 uses projection helpers so commands, compaction, and recall do not each invent their own truth.
@@ -299,6 +298,10 @@ Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `x
 ### `/om:view full`
 
 Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`.
+
+### `/om:view-contemplator`
+
+Shows the contemplator's persisted private messages on the current branch, including memory-update messages, assistant text, tool calls, probes, compacted summaries, and estimated token counts. Contemplator output is displayed dimmed where the terminal supports it, and the plain-text view is copied to the clipboard.
 
 ## Recall flow
 

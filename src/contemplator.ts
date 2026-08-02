@@ -5,7 +5,16 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummary } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fullProjection, type Entry } from "./session-ledger/index.js";
-import { searchMemories } from "./session-ledger/search.js";
+import {
+	executeSearchMemories,
+	SEARCH_MEMORIES_PARAMETERS,
+	type SearchMemoriesArgs,
+} from "./tools/search-memories.js";
+import {
+	executeRecall,
+	RECALL_PARAMETERS,
+	type RecallArgs,
+} from "./tools/recall-observation.js";
 import type { MemoryUpdateCtx, Runtime } from "./runtime.js";
 import { logAgentStreamError } from "./agents/stream-errors.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
@@ -44,7 +53,7 @@ For example:
 * “R7 assumes the user wants the existing behavior replaced, but O22 emphasizes preserving it. Could the problem be reframed as adding a layer rather than replacing the current one?”
 * “O31 and O34 both depend on the same unstated assumption. What result would show that assumption is false?”
 
-You have access to a search_memories tool for finding older observations and reflections on the current branch. Use it when the updates provided do not contain enough context, searching with distinctive terms rather than broad questions. The results include memory identifiers that you can cite in a probe.
+You have access to a search_memories tool for finding older observations and reflections on the current branch. Use it when the updates provided do not contain enough context, searching with distinctive terms rather than broad questions. The results include memory identifiers that you can cite in a probe. You also have a recall tool for recovering exact source context behind a specific memory identifier; use it when a search result is important but compressed.
 
 Do not ask about routine execution details or basic tasks the primary agent can manage itself. Low-level details such as tests, commands, files, syntax, or programming language matter only when they reveal a broader strategic issue, repeated bottleneck, or useful way to reduce the problem.
 
@@ -59,11 +68,6 @@ const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, high-level probing question, optionally preceded by one short sentence of context." }) });
 type SendProbeArgs = Static<typeof SendProbeSchema>;
-const SearchMemoriesSchema = Type.Object({
-	query: Type.String({ minLength: 1, description: "Topic or distinctive keywords to search for." }),
-	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Maximum results to return (default 8)." })),
-});
-type SearchMemoriesArgs = Static<typeof SearchMemoriesSchema>;
 
 export class Contemplator {
 	private history: AgentMessage[] = [];
@@ -211,26 +215,21 @@ export class Contemplator {
 			this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
 			this.markTipPersisted(ctx);
 			let probe: string | undefined;
-			const searchMemoriesTool: AgentTool<typeof SearchMemoriesSchema> = {
+			const searchMemoriesTool: AgentTool<typeof SEARCH_MEMORIES_PARAMETERS> = {
 				name: "search_memories",
 				label: "Search memories",
-				description: "Search older observational-memory observations and reflections on the current branch by topic or distinctive keywords.",
-				parameters: SearchMemoriesSchema,
-				execute: async (_toolCallId, params: SearchMemoriesArgs) => {
-					const query = params.query.trim();
-					const limit = params.limit ?? 8;
-					const search = searchMemories(ctx.sessionManager.getBranch() as Entry[], query, limit);
-					const text = search.results.length
-						? [
-								`Found ${search.results.length} matching memories:`,
-								...search.results.map((result) => {
-									const status = result.status === "dropped" ? " [dropped]" : "";
-									return `- ${result.kind} [${result.id}]${status}: ${result.content}`;
-								}),
-							].join("\\n")
-						: `No memories matched ${JSON.stringify(query)}. Try alternate or more distinctive keywords.`;
-					return { content: [{ type: "text" as const, text }], details: search };
-				},
+				description: "Search recorded observational-memory observations and reflections by topic or keywords on the current branch. Use the returned memory id with recall to recover exact source context.",
+				parameters: SEARCH_MEMORIES_PARAMETERS,
+				execute: async (_toolCallId, params: SearchMemoriesArgs) =>
+					executeSearchMemories(ctx.sessionManager.getBranch() as Entry[], params),
+			};
+			const recallTool: AgentTool<typeof RECALL_PARAMETERS> = {
+				name: "recall",
+				label: "Recall memory evidence",
+				description: "Recover exact evidence and source context behind a specific observational-memory id on the current branch.",
+				parameters: RECALL_PARAMETERS,
+				execute: async (_toolCallId, params: RecallArgs) =>
+					executeRecall(params, () => ctx.sessionManager.getBranch() as Entry[]),
 			};
 			const sendProbe: AgentTool<typeof SendProbeSchema> = {
 				name: "send_probe",
@@ -250,7 +249,7 @@ export class Contemplator {
 					};
 				},
 			};
-			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, sendProbe as AgentTool<any>] };
+			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>] };
 			const config: AgentLoopConfig = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,

@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { Static } from "typebox";
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -435,6 +436,28 @@ export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallO
 	return body ? `\n${body}` : "";
 }
 
+export const RECALL_PARAMETERS = Type.Object({
+	id: Type.String({
+		pattern: "^[a-f0-9]{12}$",
+		description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, or a previous recall result. Must be a specific id; this tool does not search by topic.",
+	}),
+});
+export type RecallArgs = Static<typeof RECALL_PARAMETERS>;
+
+export function executeRecall(params: RecallArgs, getBranch: () => Entry[]) {
+	const memoryId = params.id;
+	if (!MEMORY_ID_PATTERN.test(memoryId)) {
+		const message = `Memory id must be 12 lowercase hex characters. Received: ${memoryId}`;
+		return textResult(message, emptyDetails("invalid_id", memoryId, message));
+	}
+	const result = recallMemorySources(getBranch(), memoryId);
+	if (result.status === "not_found") {
+		const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
+		return textResult(message, emptyDetails("not_found", memoryId, message));
+	}
+	return renderFoundResult(result);
+}
+
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
 	label: "Recall memory evidence",
@@ -450,12 +473,7 @@ export const recallObservationTool = defineTool({
 		"Do not use recall as semantic search or transcript browsing; you must already have a specific 12-character memory id.",
 		"Do not recall every id preemptively. Recall only when exact source context will materially improve the next action.",
 	],
-	parameters: Type.Object({
-		id: Type.String({
-			pattern: "^[a-f0-9]{12}$",
-			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, or a previous recall result. Must be a specific id; this tool does not search by topic.",
-		}),
-	}),
+	parameters: RECALL_PARAMETERS,
 	renderCall(args) {
 		return new Text(formatRecallCallForTui(args.id), 0, 0);
 	},
@@ -463,18 +481,7 @@ export const recallObservationTool = defineTool({
 		return new Text(formatRecallRenderedResultForTui(result as AgentToolResult<RecallObservationToolDetails>, options.expanded), 0, 0);
 	},
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-		const memoryId = params.id;
-		if (!MEMORY_ID_PATTERN.test(memoryId)) {
-			const message = `Memory id must be 12 lowercase hex characters. Received: ${memoryId}`;
-			return textResult(message, emptyDetails("invalid_id", memoryId, message));
-		}
-		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
-		const result = recallMemorySources(branchEntries, memoryId);
-		if (result.status === "not_found") {
-			const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
-			return textResult(message, emptyDetails("not_found", memoryId, message));
-		}
-		return renderFoundResult(result);
+		return executeRecall(params, () => ctx.sessionManager.getBranch() as Entry[]);
 	},
 });
 
