@@ -198,7 +198,7 @@ Settings live under the `observational-memory` namespace in either:
 
 Project settings override global settings.
 
-`PI_OBSERVATIONAL_MEMORY_PASSIVE` can override only `passive`.
+`PI_OBSERVATIONAL_MEMORY_PASSIVE` and `PI_OBSERVATIONAL_MEMORY_COMPACTION_OBSERVER` can override their corresponding boolean settings.
 
 A typical config:
 
@@ -220,6 +220,12 @@ A typical config:
     },
     "showWorkerNotifications": true,
     "passive": false,
+    "compactionObserverEnabled": true,
+    "contemplatorEnabled": false,
+    "contemplatorModel": {
+      "provider": "openrouter",
+      "id": "anthropic/claude-sonnet-4"
+    },
     "debugLog": false
   }
 }
@@ -280,6 +286,12 @@ on the `Next compaction` line regardless of mode.
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
+| `compactionObserverEnabled` | `true`        | Launches the asynchronous observer when compaction begins; disable to compare behavior without it. |
+| `contemplatorEnabled`       | `false`       | Enables the slower background contemplator and advisory suggestions.                         |
+| `contemplatorModel`         | session model | Optional model override used only by the contemplator.                                      |
+| `contemplatorMinNewObservations` | `8`       | New observations needed to wake the contemplator.                                          |
+| `contemplatorMinNewReflections` | `1`        | New reflections needed to wake the contemplator.                                           |
+| `contemplatorMinTurns`      | `10`          | Minimum main-agent turns between contemplator runs.                                         |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |
 
 Valid `model.thinking` values are:

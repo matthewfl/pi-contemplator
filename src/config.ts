@@ -48,6 +48,13 @@ export interface Config {
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
+	/** Run the asynchronous observer when a compaction begins. */
+	compactionObserverEnabled: boolean;
+	contemplatorEnabled: boolean;
+	contemplatorModel?: ConfiguredModel;
+	contemplatorMinNewObservations: number;
+	contemplatorMinNewReflections: number;
+	contemplatorMinTurns: number;
 	debugLog: boolean;
 }
 
@@ -62,6 +69,11 @@ export const DEFAULTS: Config = {
 	agentMaxTurns: 16,
 	showWorkerNotifications: true,
 	passive: false,
+	compactionObserverEnabled: true,
+	contemplatorEnabled: false,
+	contemplatorMinNewObservations: 8,
+	contemplatorMinNewReflections: 1,
+	contemplatorMinTurns: 10,
 	debugLog: false,
 };
 
@@ -189,6 +201,9 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
+		"contemplatorMinNewObservations",
+		"contemplatorMinNewReflections",
+		"contemplatorMinTurns",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -201,19 +216,28 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
 	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
+	if (typeof value.compactionObserverEnabled === "boolean") normalized.compactionObserverEnabled = value.compactionObserverEnabled;
+	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
+	const contemplatorModel = normalizeModel(value.contemplatorModel);
+	if (contemplatorModel) normalized.contemplatorModel = contemplatorModel;
 	return normalized;
 }
 
 export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): Partial<Config> {
+	const result: Partial<Config> = {};
 	const rawPassive = env[PASSIVE_ENV];
-	if (rawPassive === undefined) return {};
-	const passive = rawPassive.trim().toLowerCase();
-	if (["1", "true", "yes", "on"].includes(passive)) return { passive: true };
-	if (["0", "false", "no", "off"].includes(passive)) return { passive: false };
-	return {};
+	if (rawPassive !== undefined) {
+		const passive = rawPassive.trim().toLowerCase();
+		if (["1", "true", "yes", "on"].includes(passive)) result.passive = true;
+		if (["0", "false", "no", "off"].includes(passive)) result.passive = false;
+	}
+	const compactionObserver = env.PI_OBSERVATIONAL_MEMORY_COMPACTION_OBSERVER?.trim().toLowerCase();
+	if (["1", "true", "yes", "on"].includes(compactionObserver ?? "")) result.compactionObserverEnabled = true;
+	if (["0", "false", "no", "off"].includes(compactionObserver ?? "")) result.compactionObserverEnabled = false;
+	return result;
 }
 
 function readNamespacedConfig(path: string): Partial<Config> {

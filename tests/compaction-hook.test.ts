@@ -15,7 +15,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean; compactionObserverEnabled?: boolean }) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -27,6 +27,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 	const runtime = {
 		config: {
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
+			compactionObserverEnabled: args.compactionObserverEnabled,
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
@@ -176,6 +177,16 @@ describe("V3 compaction hook", () => {
 		expect(result).toMatchObject({ compaction: { details: { type: "om.folded" } } });
 		expect(runtime.resolveModel).not.toHaveBeenCalled();
 		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("can disable the asynchronous compaction observer without changing the projection", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, runtime } = setup({ entries, compactionObserverEnabled: false });
+
+		const result = await run("raw-1");
+
+		expect(result).toMatchObject({ compaction: { details: { type: "om.folded" } } });
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
 
 	it("cancels duplicate in-flight compaction and notifies the UI", async () => {

@@ -7,9 +7,11 @@ import { registerConsolidationTrigger } from "./hooks/consolidation-trigger.js";
 import { Runtime } from "./runtime.js";
 import { registerRecallTool } from "./tools/recall-observation.js";
 import { registerSearchMemoriesTool } from "./tools/search-memories.js";
+import { Contemplator } from "./contemplator.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
+	new Contemplator(pi, runtime).register();
 
 	registerConsolidationTrigger(pi, runtime);
 	registerCompactionTrigger(pi, runtime);

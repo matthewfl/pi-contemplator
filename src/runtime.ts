@@ -1,4 +1,4 @@
-import { type Config, DEFAULTS, loadConfig } from "./config.js";
+import { type Config, type ConfiguredModel, DEFAULTS, loadConfig } from "./config.js";
 
 export type ResolveResult =
 	| { ok: true; model: unknown; apiKey: string; headers?: Record<string, string> }
@@ -20,11 +20,19 @@ export interface LaunchCtx {
 	ui?: { notify: Notify };
 }
 
+export interface MemoryUpdateCtx extends LaunchCtx {
+	cwd: string;
+	model: unknown;
+	modelRegistry: ResolveCtx["modelRegistry"];
+	sessionManager: { getBranch(): readonly unknown[] };
+}
+
 export class Runtime {
 	config: Config = { ...DEFAULTS };
 	configLoaded = false;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
+	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
@@ -39,15 +47,16 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
-	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
+	async resolveModel(ctx: ResolveCtx & { configuredModel?: ConfiguredModel }): Promise<ResolveResult> {
 		let model = ctx.model;
-		if (this.config.model) {
-			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
+		const configuredModel = ctx.configuredModel ?? this.config.model;
+		if (configuredModel) {
+			const configured = ctx.modelRegistry.find(configuredModel.provider, configuredModel.id);
 			if (configured) {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
-					`Observational memory: configured model ${this.config.model.provider}/${this.config.model.id} not found, using session model`,
+					`Observational memory: configured model ${configuredModel.provider}/${configuredModel.id} not found, using session model`,
 					"warning",
 				);
 			}
@@ -59,6 +68,14 @@ export class Runtime {
 			return { ok: false, reason: `no API key for provider "${provider}"` };
 		}
 		return { ok: true, model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
+	}
+
+	setMemoryUpdateListener(listener: (ctx: MemoryUpdateCtx) => void): void {
+		this.memoryUpdateListener = listener;
+	}
+
+	notifyMemoryUpdate(ctx: MemoryUpdateCtx): void {
+		this.memoryUpdateListener?.(ctx);
 	}
 
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {

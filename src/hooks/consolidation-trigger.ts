@@ -37,7 +37,7 @@ export type ConsolidationCtx = {
 	model: unknown;
 	modelRegistry: any;
 	sessionManager: {
-		getBranch: () => unknown;
+		getBranch: () => readonly unknown[];
 		getSessionId?: () => string;
 		getSessionFile?: () => string | undefined;
 	};
@@ -202,7 +202,10 @@ export async function runConsolidationPipeline(
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
 	}
-	if (options.observerOnly === true) return;
+	if (options.observerOnly === true) {
+		runtime.notifyMemoryUpdate?.(ctx);
+		return;
+	}
 
 	runtime.consolidationPhase = "reflector";
 	let reflectorResult: ReflectorStageResult;
@@ -220,6 +223,7 @@ export async function runConsolidationPipeline(
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
 	}
+	runtime.notifyMemoryUpdate?.(ctx);
 }
 
 async function runObserverStage(

@@ -46,6 +46,11 @@ describe("V3 config", () => {
 			agentMaxTurns: 16,
 			showWorkerNotifications: true,
 			passive: false,
+			compactionObserverEnabled: true,
+			contemplatorEnabled: false,
+			contemplatorMinNewObservations: 8,
+			contemplatorMinNewReflections: 1,
+			contemplatorMinTurns: 10,
 			debugLog: false,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
@@ -157,10 +162,12 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
 
-	it("parses passive env override", () => {
+	it("parses passive and compaction observer env overrides", () => {
 		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "on" })).toEqual({ passive: true });
 		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "0" })).toEqual({ passive: false });
 		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "maybe" })).toEqual({});
+		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_COMPACTION_OBSERVER: "off" })).toEqual({ compactionObserverEnabled: false });
+		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "on", PI_OBSERVATIONAL_MEMORY_COMPACTION_OBSERVER: "off" })).toEqual({ passive: true, compactionObserverEnabled: false });
 	});
 
 	describe("compactAfterTokens ratio mode", () => {

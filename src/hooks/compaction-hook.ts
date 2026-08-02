@@ -30,10 +30,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			runtime.ensureConfig(ctx.cwd);
 			const { preparation, branchEntries } = event;
 			const branch = branchEntries as Entry[];
-			// Start memory capture without delaying compaction. The current compaction
-			// intentionally uses the existing ledger; the observer's result is for later
-			// recall/compactions once it appends to the ledger.
-			launchCompactionObserver(pi, runtime, ctx as ConsolidationCtx, branch);
+			// Start memory capture without delaying compaction. This is configurable so
+			// users can compare native compaction with and without the observer sidecar.
+			if (runtime.config.compactionObserverEnabled !== false) {
+				launchCompactionObserver(pi, runtime, ctx as ConsolidationCtx, branch);
+			}
 			const { firstKeptEntryId, tokensBefore } = preparation;
 			const projection = buildCompactionProjection(
 				branch,

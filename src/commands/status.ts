@@ -86,6 +86,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
+				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
+				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
 			];
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {

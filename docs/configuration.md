@@ -43,6 +43,12 @@ The extension loads config once for its runtime. After changing settings, restar
     },
     "showWorkerNotifications": true,
     "passive": false,
+    "compactionObserverEnabled": true,
+    "contemplatorEnabled": false,
+    "contemplatorModel": {
+      "provider": "openrouter",
+      "id": "anthropic/claude-sonnet-4"
+    },
     "debugLog": false
   }
 }
@@ -67,6 +73,12 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
+| `compactionObserverEnabled` | boolean | `true` | Launches the fire-and-forget observer when compaction begins. Set `false` to compare compaction behavior without this sidecar. |
+| `contemplatorEnabled` | boolean | `false` | Enables the slower background contemplator and advisory suggestions. |
+| `contemplatorModel` | object | session model | Optional model override used only by the contemplator. |
+| `contemplatorMinNewObservations` | positive integer | `8` | Minimum newly recorded observations that can wake the contemplator. |
+| `contemplatorMinNewReflections` | positive integer | `1` | Minimum newly recorded reflections that can wake the contemplator. |
+| `contemplatorMinTurns` | positive integer | `10` | Minimum main-agent turns between contemplator runs. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
@@ -164,6 +176,16 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 Default: `true`.
 
 When `false`, the extension hides routine observer, reflector, and dropper progress notifications. Model fallback/unavailability, no-output warnings, worker failures, compaction notifications, and explicit `/om:*` command output remain visible.
+
+## `compactionObserverEnabled`
+
+When enabled, the extension launches an observer asynchronously from `session_before_compact` with the conversation that is about to leave context. It never waits for that observer before compaction. Set this to `false` to disable only that compaction-time observer; ordinary turn-end observation remains enabled.
+
+## `contemplatorEnabled`
+
+The contemplator is an optional persistent background reasoning loop. It receives coalesced observations/reflections, uses its own context, and can place a short advisory suggestion into a later main-agent model request. Its messages, summaries, and pending suggestions are stored as `om.contemplator.*` custom entries in the main session log, so they survive Pi reloads and follow the active branch/fork without being injected into the main model automatically. It has no coding tools and does not replace the main agent's compaction. Its own context is summarized with Pi's standard `generateSummary` compaction routine when it grows large. Suggestions are advisory and may be empty.
+
+`contemplatorModel` can select a stronger/slower model independently of the observer, reflector, and dropper. If unset, it uses the current session model.
 
 ## `passive`
 
