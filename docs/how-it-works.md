@@ -291,7 +291,7 @@ Shows:
 
 ### `/om:view`
 
-Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no visible memory has been folded into a compaction yet but recorded memory exists, it falls back to showing recorded memory with a notice. `/om:view full` always shows recorded branch memory.
+Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no visible memory has been folded into a compaction yet but recorded memory exists, it falls back to showing recorded memory with a notice. Subcommands: `/om:view full` always shows recorded branch memory, and `/om:view contemplator` shows the contemplator's private history and probes (see below).
 
 Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
 
@@ -299,7 +299,7 @@ Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `x
 
 Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`.
 
-### `/om:view-contemplator`
+### `/om:view contemplator`
 
 Shows the contemplator's persisted private messages on the current branch, including memory-update messages, assistant text, tool calls, probes, compacted summaries, and estimated token counts. Contemplator output is displayed dimmed where the terminal supports it, and the plain-text view is copied to the clipboard.
 
