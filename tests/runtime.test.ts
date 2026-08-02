@@ -90,6 +90,17 @@ describe("Runtime V3 behavior", () => {
 		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
 	});
 
+	it("restores session overrides retained in compaction details", () => {
+		const runtime = new Runtime();
+		runtime.restoreSessionSettings([
+			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false } },
+			{ type: "compaction", details: { sessionSettings: { contemplatorEnabled: true, contemplatorMinTurns: 3 } } },
+			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false } },
+		]);
+
+		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 3 });
+	});
+
 	it("keeps compaction flags independent", () => {
 		const runtime = new Runtime();
 		runtime.compactInFlight = true;

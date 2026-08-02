@@ -42,13 +42,21 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 			);
 			const summary = renderSummary(projection.reflections, projection.observations);
+			// Compaction removes older custom entries from the active branch. Keep
+			// session-scoped overrides in the compaction details so they can be
+			// restored after a reload from the surviving branch.
+			const getSessionSettings = (runtime as Runtime & { getSessionSettings?: () => unknown }).getSessionSettings;
+			const details = {
+				...projection.details,
+				sessionSettings: typeof getSessionSettings === "function" ? getSessionSettings() : {},
+			};
 
 			return {
 				compaction: {
 					summary,
 					firstKeptEntryId,
 					tokensBefore,
-					details: projection.details,
+					details,
 				},
 			};
 		} finally {

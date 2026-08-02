@@ -310,15 +310,29 @@ async function runObserverStage(
 		return "continue";
 	}
 
-	const data = buildObservationsRecordedData(observations, coversUpToId);
+	const currentEntries = ctx.sessionManager.getBranch() as Entry[];
+	let effectiveCoversUpToId = coversUpToId;
+	if (!currentEntries.some((entry) => entry.id === coversUpToId)) {
+		// A fire-and-forget compaction observer may finish after compaction has
+		// folded its source target away. Never append an unresolvable marker: it
+		// would make these observations invisible to projection and recall.
+		const compaction = [...currentEntries].reverse().find((entry) => entry.type === "compaction");
+		effectiveCoversUpToId = compaction?.id ?? currentEntries.at(-1)?.id ?? coversUpToId;
+		debugLog("observer.coverage_target_folded", {
+			requestedCoversUpToId: coversUpToId,
+			effectiveCoversUpToId,
+			compactionId: compaction?.id,
+		});
+	}
+	const data = buildObservationsRecordedData(observations, effectiveCoversUpToId);
 	if (!data) return "continue";
 	debugLog("observer.records", {
 		count: observations.length,
 		observationTokens: observations.reduce((sum, observation) => sum + observation.tokenCount, 0),
-		coversUpToId,
+		coversUpToId: effectiveCoversUpToId,
 	});
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
-	debugLog("observer.appended", { count: observations.length, coversUpToId });
+	debugLog("observer.appended", { count: observations.length, coversUpToId: effectiveCoversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
 		"info",

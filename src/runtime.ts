@@ -74,9 +74,15 @@ export class Runtime {
 		const restored: SessionSettings = {};
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object") continue;
-			const candidate = entry as { customType?: unknown; data?: unknown };
-			if (candidate.customType !== OM_SETTINGS || !candidate.data || typeof candidate.data !== "object") continue;
-			const data = candidate.data as Record<string, unknown>;
+			const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown; details?: unknown };
+			const settingsSources: unknown[] = [];
+			if (candidate.customType === OM_SETTINGS) settingsSources.push(candidate.data);
+			if (candidate.type === "compaction" && candidate.details && typeof candidate.details === "object") {
+				settingsSources.push((candidate.details as { sessionSettings?: unknown }).sessionSettings);
+			}
+			for (const source of settingsSources) {
+				if (!source || typeof source !== "object") continue;
+				const data = source as Record<string, unknown>;
 			const booleanKeys = [
 				"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "debugLog",
 			] as const;
@@ -91,8 +97,9 @@ export class Runtime {
 			if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
 			if (data.model === null) restored.model = null;
 			else if (isConfiguredModel(data.model)) restored.model = data.model;
-			if (data.contemplatorModel === null) restored.contemplatorModel = null;
-			else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
+				if (data.contemplatorModel === null) restored.contemplatorModel = null;
+				else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
+			}
 		}
 		this.sessionSettings = restored;
 		this.applySessionSettings();

@@ -56,7 +56,20 @@ When one high-signal probe could materially improve the primary agent’s unders
 Send only one probe per update. If no useful probe exists, do not call the tool.`;
 
 interface PendingUpdate { observations: string[]; reflections: string[]; }
+
+function mergeMemoryLines(existing: string[], incoming: string[]): string[] {
+	const merged = [...existing];
+	const seen = new Set(existing.map((line) => line.match(/^\[([^\]]+)\]/)?.[1] ?? line));
+	for (const line of incoming) {
+		const key = line.match(/^\[([^\]]+)\]/)?.[1] ?? line;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(line);
+	}
+	return merged;
+}
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
+const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, high-level probing question, optionally preceded by one short sentence of context." }) });
 type SendProbeArgs = Static<typeof SendProbeSchema>;
@@ -86,8 +99,10 @@ export class Contemplator {
 	private history: AgentMessage[] = [];
 	private pending: PendingUpdate | undefined;
 	private running = false;
-	private lastObservationCount = 0;
-	private lastReflectionCount = 0;
+	private seenObservationIds = new Set<string>();
+	private seenReflectionIds = new Set<string>();
+	private deliveredProbeIds = new Set<string>();
+	private sessionGeneration = 0;
 	private turnsSinceRun = 0;
 	private restoredTipId: string | undefined;
 
@@ -95,7 +110,29 @@ export class Contemplator {
 
 	register(): void {
 		this.runtime.setMemoryUpdateListener((ctx) => this.withDebugContext(ctx, () => this.observeTurn(ctx)));
-		this.pi.on("session_start", (_event: any, ctx: ExtensionContext) => this.restore(ctx));
+		this.pi.on("session_start", (_event: any, ctx: ExtensionContext) => {
+			this.sessionGeneration++;
+			this.restore(ctx, true);
+		});
+		this.pi.on("session_compact", (_event: any, ctx: ExtensionContext) => {
+			if (this.history.length === 0) return;
+			this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history: this.history });
+			this.markTipPersisted(ctx);
+			debugLog("contemplator.state_persisted", { historyMessageCount: this.history.length });
+		});
+		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
+			const delivered = event.messages?.find((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string");
+			if (!delivered || this.deliveredProbeIds.has(delivered.details.probeId)) return;
+			this.deliveredProbeIds.add(delivered.details.probeId);
+			this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, {
+				version: 1,
+				suggestion: typeof delivered.details.question === "string" ? delivered.details.question : String(delivered.content ?? ""),
+				probeId: delivered.details.probeId,
+				delivered: true,
+			});
+			this.markTipPersisted(ctx);
+			debugLog("contemplator.suggestion_delivered", { probeId: delivered.details.probeId });
+		});
 		this.pi.on("turn_end", (_event: any, ctx: ExtensionContext) => {
 			this.turnsSinceRun++;
 			this.withDebugContext(ctx, () => this.observeTurn(ctx));
@@ -113,20 +150,32 @@ export class Contemplator {
 		}, fn);
 	}
 
-	private restore(ctx: MemoryUpdateCtx): void {
+	private restore(ctx: MemoryUpdateCtx, resetTracking = false): void {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tipId = entries.at(-1)?.id;
-		if (tipId === this.restoredTipId) return;
+		if (tipId === this.restoredTipId && !resetTracking) return;
 		this.history = [];
+		if (resetTracking) {
+			this.deliveredProbeIds.clear();
+			const projection = fullProjection(entries);
+			this.seenObservationIds = new Set(projection.observations.map((item) => item.id));
+			this.seenReflectionIds = new Set(projection.reflections.map((item) => item.id));
+			this.pending = undefined;
+		}
 		let undeliveredSuggestion: string | undefined;
 		for (const entry of entries) {
+			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
+				const state = entry.data as { history?: unknown };
+				if (Array.isArray(state.history)) this.history = state.history.filter((message): message is AgentMessage => !!message && typeof message === "object");
+			}
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
 				const message = (entry.data as { message?: unknown }).message;
 				if (message && typeof message === "object") this.history.push(message as AgentMessage);
 			}
 			if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
-				const data = entry.data as { suggestion?: unknown; delivered?: unknown };
-				if (typeof data.suggestion === "string" && data.delivered !== true) undeliveredSuggestion = data.suggestion;
+				const data = entry.data as { suggestion?: unknown; delivered?: unknown; probeId?: unknown };
+				if (data.delivered === true && typeof data.probeId === "string") this.deliveredProbeIds.add(data.probeId);
+				if (typeof data.suggestion === "string") undeliveredSuggestion = data.delivered === true ? undefined : data.suggestion;
 			}
 		}
 		this.restoredTipId = tipId;
@@ -147,10 +196,16 @@ export class Contemplator {
 		const projection = fullProjection(ctx.sessionManager.getBranch() as Entry[]);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
 		const reflections = projection.reflections.map((item) => `[${item.id}] ${item.content}`);
-		const newObservations = observations.slice(this.lastObservationCount);
-		const newReflections = reflections.slice(this.lastReflectionCount);
-		this.lastObservationCount = observations.length;
-		this.lastReflectionCount = reflections.length;
+		const newObservations = observations.filter((line) => {
+			const id = line.match(/^\[([^\]]+)\]/)?.[1] ?? line;
+			return !this.seenObservationIds.has(id);
+		});
+		const newReflections = reflections.filter((line) => {
+			const id = line.match(/^\[([^\]]+)\]/)?.[1] ?? line;
+			return !this.seenReflectionIds.has(id);
+		});
+		for (const line of newObservations) this.seenObservationIds.add(line.match(/^\[([^\]]+)\]/)?.[1] ?? line);
+		for (const line of newReflections) this.seenReflectionIds.add(line.match(/^\[([^\]]+)\]/)?.[1] ?? line);
 		debugLog("contemplator.update", {
 			observationCount: observations.length,
 			reflectionCount: reflections.length,
@@ -161,8 +216,11 @@ export class Contemplator {
 			running: this.running,
 		});
 		if (newObservations.length === 0 && newReflections.length === 0) return;
-		this.pending = { observations: newObservations, reflections: newReflections };
-		const enoughMemories = newObservations.length >= this.runtime.config.contemplatorMinNewObservations || newReflections.length >= this.runtime.config.contemplatorMinNewReflections;
+		this.pending = {
+			observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
+			reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
+		};
+		const enoughMemories = this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
 			debugLog("contemplator.waiting", {
 				enoughMemories,
@@ -174,8 +232,8 @@ export class Contemplator {
 			return;
 		}
 		debugLog("contemplator.triggered", {
-			newObservationCount: newObservations.length,
-			newReflectionCount: newReflections.length,
+			pendingObservationCount: this.pending.observations.length,
+			pendingReflectionCount: this.pending.reflections.length,
 			turnsSinceRun: this.turnsSinceRun,
 		});
 		void this.flush(ctx);
@@ -188,6 +246,7 @@ export class Contemplator {
 		}
 		const update = this.pending;
 		this.pending = undefined;
+		const sessionGeneration = this.sessionGeneration;
 		this.running = true;
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
@@ -208,6 +267,10 @@ export class Contemplator {
 				debugLog("contemplator.model_unavailable", { reason: resolved.reason });
 				return;
 			}
+			if (sessionGeneration !== this.sessionGeneration) {
+				debugLog("contemplator.flush_stale", { reason: "session_changed" });
+				return;
+			}
 			const selectedModel = resolved.model as { provider?: unknown; id?: unknown; contextWindow?: unknown };
 			debugLog("contemplator.model_resolved", {
 				provider: selectedModel.provider,
@@ -216,8 +279,6 @@ export class Contemplator {
 			});
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n${update.observations.join("\n") || "(none)"}\n\nREFLECTIONS:\n${update.reflections.join("\n") || "(none)"}\n\nConsider these updates in the context of the accumulated memories. Call send_probe only when one focused question could materially improve how the primary agent understands, frames, decomposes, or proceeds with the problem.` }], timestamp: Date.now() };
 			this.history.push(prompt);
-			this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
-			this.markTipPersisted(ctx);
 			let probe: string | undefined;
 			const getBranch = () => ctx.sessionManager.getBranch() as Entry[];
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
@@ -244,13 +305,17 @@ export class Contemplator {
 				assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
 				suggestionQueued: probe !== undefined,
 			});
-			if (assistant) {
+			if (sessionGeneration === this.sessionGeneration) {
+				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
+				this.markTipPersisted(ctx);
+			}
+			if (assistant && sessionGeneration === this.sessionGeneration) {
 				this.history.push(assistant);
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
 				this.markTipPersisted(ctx);
 			}
-			if (probe) this.queueProbe(ctx, probe, "send_probe");
-			await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers);
+			if (probe && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, probe, "send_probe");
+			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers);
 		} catch (error) {
 			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
 		} finally {
@@ -260,20 +325,22 @@ export class Contemplator {
 				historyMessageCount: this.history.length,
 				pendingUpdate: this.pending !== undefined,
 			});
-			if (this.pending) void this.flush(ctx);
+			if (sessionGeneration === this.sessionGeneration && this.pending) void this.flush(ctx);
 		}
 	}
 
 	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore"): void {
+		const probeId = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}`,
 			display: false,
-			details: { version: 1, question, source },
+			details: { version: 1, question, source, probeId },
 		}, { deliverAs: "steer", triggerTurn: false });
-		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: true, source });
+		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: false, source, probeId });
 		this.markTipPersisted(ctx);
 		debugLog("contemplator.suggestion_queued", {
+			probeId,
 			suggestionLength: question.length,
 			delivery: "pi.sendMessage",
 			deliverAs: "steer",
@@ -295,7 +362,20 @@ export class Contemplator {
 			serializedLength,
 		});
 		const summary = await generateSummary(this.history as AgentMessage[], model, 4_000, apiKey, headers);
-		this.history = [{ role: "user", content: [{ type: "text", text: `Previous contemplator context summary:\n${summary}` }], timestamp: Date.now() }];
+		const summaryModel = model as Model<any> & { api?: unknown; provider?: string; id?: string };
+		this.history = [{
+			role: "assistant",
+			content: [{ type: "text", text: `Previous contemplator context summary:\n${summary}` }],
+			api: summaryModel.api,
+			provider: summaryModel.provider ?? "unknown",
+			model: summaryModel.id ?? "contemplator",
+			usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		} as AgentMessage];
 		this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, compacted: true, message: this.history[0] });
 		debugLog("contemplator.compaction_complete", {
 			previousMessageCount,
