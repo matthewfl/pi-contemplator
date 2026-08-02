@@ -89,7 +89,6 @@ export class Contemplator {
 	private lastObservationCount = 0;
 	private lastReflectionCount = 0;
 	private turnsSinceRun = 0;
-	private pendingSuggestion: string | undefined;
 	private restoredTipId: string | undefined;
 
 	constructor(private readonly pi: ExtensionAPI, private readonly runtime: Runtime) {}
@@ -101,15 +100,6 @@ export class Contemplator {
 			this.turnsSinceRun++;
 			this.withDebugContext(ctx, () => this.observeTurn(ctx));
 		});
-		this.pi.on("context", (_event: any, ctx: ExtensionContext) => this.withDebugContext(ctx as MemoryUpdateCtx, () => {
-			if (!this.pendingSuggestion) return;
-			const suggestion = this.pendingSuggestion;
-			this.pendingSuggestion = undefined;
-			debugLog("contemplator.suggestion_injected", { suggestionLength: suggestion.length });
-			this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion, delivered: true });
-			this.markTipPersisted(ctx);
-			return { messages: [{ role: "user", content: [{ type: "text", text: `Background contemplator suggestion (advisory):\n${suggestion}` }], timestamp: Date.now() }] as AgentMessage[] };
-		}));
 	}
 
 	private withDebugContext<T>(ctx: MemoryUpdateCtx, fn: () => T): T {
@@ -128,7 +118,7 @@ export class Contemplator {
 		const tipId = entries.at(-1)?.id;
 		if (tipId === this.restoredTipId) return;
 		this.history = [];
-		this.pendingSuggestion = undefined;
+		let undeliveredSuggestion: string | undefined;
 		for (const entry of entries) {
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
 				const message = (entry.data as { message?: unknown }).message;
@@ -136,10 +126,11 @@ export class Contemplator {
 			}
 			if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
 				const data = entry.data as { suggestion?: unknown; delivered?: unknown };
-				if (typeof data.suggestion === "string") this.pendingSuggestion = data.delivered === true ? undefined : data.suggestion;
+				if (typeof data.suggestion === "string" && data.delivered !== true) undeliveredSuggestion = data.suggestion;
 			}
 		}
 		this.restoredTipId = tipId;
+		if (undeliveredSuggestion) this.queueProbe(ctx, undeliveredSuggestion, "restore");
 	}
 
 	private observeTurn(ctx: MemoryUpdateCtx): void {
@@ -258,12 +249,7 @@ export class Contemplator {
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
 				this.markTipPersisted(ctx);
 			}
-			if (probe) {
-				this.pendingSuggestion = probe;
-				debugLog("contemplator.suggestion_queued", { suggestionLength: probe.length });
-				this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: probe, delivered: false });
-				this.markTipPersisted(ctx);
-			}
+			if (probe) this.queueProbe(ctx, probe, "send_probe");
 			await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers);
 		} catch (error) {
 			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
@@ -276,6 +262,24 @@ export class Contemplator {
 			});
 			if (this.pending) void this.flush(ctx);
 		}
+	}
+
+	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore"): void {
+		this.pi.sendMessage({
+			customType: CONTEMPLATOR_SUGGESTION,
+			content: `Background contemplator probe (advisory):\n${question}`,
+			display: false,
+			details: { version: 1, question, source },
+		}, { deliverAs: "steer", triggerTurn: false });
+		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: true, source });
+		this.markTipPersisted(ctx);
+		debugLog("contemplator.suggestion_queued", {
+			suggestionLength: question.length,
+			delivery: "pi.sendMessage",
+			deliverAs: "steer",
+			triggerTurn: false,
+			source,
+		});
 	}
 
 	private markTipPersisted(ctx: MemoryUpdateCtx): void {
