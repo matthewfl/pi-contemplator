@@ -97,6 +97,20 @@ describe("V3 /om:view", () => {
 		expectNoDiagnostics(output);
 	});
 
+	it("renders the contemplator view as a view subcommand", async () => {
+		const entries = [{
+			id: "cont-1",
+			type: "custom",
+			customType: "om.contemplator.message",
+			data: { message: { role: "assistant", content: [{ type: "text", text: "Probe-worthy context" }] } },
+		}] as TestEntry[];
+		const { clipboardText, output } = await setup(entries).run(["contemplator"]);
+
+		expect(clipboardText).toContain("CONTEMPLATOR · 1 messages");
+		expect(clipboardText).toContain("Probe-worthy context");
+		expect(output).toContain("Copied /om:view contemplator output to clipboard.");
+	});
+
 	it("explicit visible mode does not fall back to recorded memory", async () => {
 		const obs = observation("aaaaaaaaaaaa");
 		const entries = [
@@ -190,6 +204,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [visible|full]");
+		expect(output).toBe("Usage: /om:view [visible|full|contemplator]");
 	});
 });

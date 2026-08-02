@@ -325,7 +325,7 @@ For details and tuning guidance, see [`docs/configuration.md`](docs/configuratio
 | `/om:status`        | Shows memory counts, plain `+N` / `-N` visible/full drift suffixes, progress clocks, visible and active observation pool pressure, passive/in-flight state, and last worker errors. |
 | `/om:view`          | Shows current visible memory and attempts to copy the rendered memory text to the clipboard.                                                   |
 | `/om:view full`     | Shows the full current memory state for the branch and attempts to copy the rendered memory text to the clipboard.                             |
-| `/om:view-contemplator` | Shows the contemplator's recorded messages, tool calls, probes, and estimated token counts.                                      |
+| `/om:view contemplator` | Shows the contemplator's recorded messages, tool calls, probes, and estimated token counts.                                      |
 | `recall` agent tool | Recovers source evidence for a 12-character observation/reflection id on the current branch. It is not semantic search or a transcript browser. |
 
 `/om:settings` changes are stored as `om.settings` entries in the current session branch, so they survive reloads and follow forks without changing the settings file. `/om:view` copies only the rendered memory content. The success/failure line shown in Pi is not included in the clipboard text. If clipboard support is unavailable, the command still prints the memory view and shows a warning. Before the first V3 compaction, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory.
@@ -370,7 +370,7 @@ Current behavior:
 * **Fast compaction.** `session_before_compact` does not call a model or wait for background workers. It renders the current prepared memory state.
 * **Background memory work.** Observation and reflection work run from `turn_end` when their token clocks are due; dropper work runs only after successful reflection and prunes the folded active observation ledger toward `observationsPoolTargetTokens`.
 * **Source-backed recall.** Observations and reflections can be traced back through the `recall` tool.
-* **Visible/full views.** `/om:view` shows visible memory and `/om:view full` shows the full current memory state. Use `/om:status` for visible-vs-full drift and for the separate visible observation pool vs active observation pool.
+* **Memory views.** `/om:view` shows visible memory, `/om:view full` shows the full current memory state, and `/om:view contemplator` shows the contemplator's private history and probes. Use `/om:status` for visible-vs-full drift and for the separate visible observation pool vs active observation pool.
 * **No V2 compatibility layer.** Old V2 settings and memory entries are ignored rather than migrated.
 
 ---

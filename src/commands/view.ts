@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
+import { renderContemplator, stripAnsi } from "./contemplator-view.js";
 import {
 	fullProjection,
 	observationToSummaryLine,
@@ -69,7 +70,7 @@ export function registerViewCommand(
 
 	pi.registerCommand("om:view", {
 		description:
-			"Print and copy observational memory content (visible by default, or choose visible/full)",
+			"Print and copy observational memory content (visible, full, or contemplator)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -85,6 +86,16 @@ export function registerViewCommand(
 				);
 			};
 
+			if (mode === "contemplator") {
+				const output = renderContemplator(entries);
+				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
+				ctx.ui.notify(
+					`${output}\n\n${copied ? "Copied /om:view contemplator output to clipboard." : "Warning: failed to copy /om:view contemplator output to clipboard."}`,
+					"info",
+				);
+				return;
+			}
+
 			if (mode === "full") {
 				await notifyWithCopy(
 					renderContentOnlyProjection(fullProjection(entries), "recorded"),
@@ -93,7 +104,7 @@ export function registerViewCommand(
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [visible|full]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full|contemplator]", "info");
 				return;
 			}
 

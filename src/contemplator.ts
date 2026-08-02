@@ -120,6 +120,7 @@ export class Contemplator {
 			// The in-flight prompt is persisted by flush after its agent loop. Do not
 			// snapshot it here or compaction would make restore replay it twice.
 			const history = this.running ? this.history.slice(0, -1) : this.history;
+			if (history.length === 0) return;
 			this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history });
 			this.markTipPersisted(ctx);
 			debugLog("contemplator.state_persisted", { historyMessageCount: history.length, running: this.running });
@@ -272,6 +273,8 @@ export class Contemplator {
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
 		let failed = false;
+		let promptPersisted = false;
+		let promptMessage: Message | undefined;
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
 			newReflectionCount: update.reflections.length,
@@ -309,6 +312,7 @@ export class Contemplator {
 				contextWindow: selectedModel.contextWindow,
 			});
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n${update.observations.join("\n") || "(none)"}\n\nREFLECTIONS:\n${update.reflections.join("\n") || "(none)"}\n\nConsider these updates in the context of the accumulated memories. Call send_probe only when one focused question could materially improve how the primary agent understands, frames, decomposes, or proceeds with the problem.` }], timestamp: Date.now() };
+			promptMessage = prompt;
 			this.history.push(prompt);
 			let probe: string | undefined;
 			const getBranch = () => ctx.sessionManager.getBranch() as Entry[];
@@ -338,6 +342,7 @@ export class Contemplator {
 			});
 			if (sessionGeneration === this.sessionGeneration) {
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
+				promptPersisted = true;
 				this.markTipPersisted(ctx);
 			}
 			if (assistant && sessionGeneration === this.sessionGeneration) {
@@ -350,7 +355,8 @@ export class Contemplator {
 		} catch (error) {
 			failed = true;
 			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
-			if (sessionGeneration === this.sessionGeneration) {
+			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
+				if (promptMessage && this.history.at(-1) === promptMessage) this.history.pop();
 				const pending = this.pending as PendingUpdate | undefined;
 				this.pending = {
 					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),

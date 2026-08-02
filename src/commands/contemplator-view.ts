@@ -1,5 +1,3 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { copyTextToClipboard } from "../clipboard.js";
 import type { Entry } from "../session-ledger/index.js";
 
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
@@ -57,7 +55,7 @@ function renderMessage(message: StoredMessage, compacted: boolean): string {
 	return `${DIM}── ${role}${marker} · ~${tokens} tokens ──${RESET}\n${renderContent(message.content) || `${DIM}(empty message)${RESET}`}`;
 }
 
-function renderContemplator(entries: Entry[]): string {
+export function renderContemplator(entries: Entry[]): string {
 	const messages: Array<{ message: StoredMessage; compacted: boolean }> = [];
 	const suggestions: Array<{ suggestion: string; delivered: boolean }> = [];
 	for (const entry of entries) {
@@ -93,20 +91,6 @@ function renderContemplator(entries: Entry[]): string {
 	return lines.join("\n");
 }
 
-function stripAnsi(value: string): string {
+export function stripAnsi(value: string): string {
 	return value.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-export function registerContemplatorViewCommand(pi: ExtensionAPI): void {
-	pi.registerCommand("om:view-contemplator", {
-		description: "View the contemplator's messages, tool calls, probes, and estimated tokens",
-		handler: async (_args: unknown, ctx: ExtensionContext) => {
-			const output = renderContemplator(ctx.sessionManager.getBranch() as Entry[]);
-			const copied = await copyTextToClipboard(stripAnsi(output)).catch(() => false);
-			ctx.ui.notify(
-				`${output}\n\n${copied ? "Copied /om:view-contemplator output to clipboard." : "Warning: failed to copy /om:view-contemplator output to clipboard."}`,
-				"info",
-			);
-		},
-	});
 }

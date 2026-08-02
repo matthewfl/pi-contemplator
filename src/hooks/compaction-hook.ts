@@ -48,7 +48,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			const getSessionSettings = (runtime as Runtime & { getSessionSettings?: () => unknown }).getSessionSettings;
 			const details = {
 				...projection.details,
-				sessionSettings: typeof getSessionSettings === "function" ? getSessionSettings() : {},
+				// Call through runtime so Runtime retains its `this` binding.
+				sessionSettings: typeof getSessionSettings === "function" ? runtime.getSessionSettings() : {},
 			};
 
 			return {
