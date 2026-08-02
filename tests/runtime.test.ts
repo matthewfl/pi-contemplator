@@ -22,6 +22,23 @@ describe("Runtime V3 behavior", () => {
 		expect(result).toEqual({ ok: true, model: configured, apiKey: "key", headers: { test: "yes" } });
 	});
 
+	it("uses the session model when an explicit caller opts out of the worker model", async () => {
+		const runtime = new Runtime();
+		const sessionModel = { provider: "openai", id: "session" };
+		const registry = modelRegistry({ found: { provider: "anthropic", id: "worker" } });
+		runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "worker" } };
+
+		const result = await runtime.resolveModel({
+			model: sessionModel,
+			modelRegistry: registry,
+			hasUI: false,
+			configuredModel: null,
+		});
+
+		expect(registry.find).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ ok: true, model: sessionModel });
+	});
+
 	it("falls back to session model and notifies when configured model is missing", async () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();
@@ -99,6 +116,26 @@ describe("Runtime V3 behavior", () => {
 		]);
 
 		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 3 });
+	});
+
+	it("preserves a valid default pool target when only the maximum is overridden", () => {
+		const runtime = new Runtime();
+		runtime.setSessionSettings({ observationsPoolMaxTokens: 15_000 });
+
+		expect(runtime.config.observationsPoolMaxTokens).toBe(15_000);
+		expect(runtime.config.observationsPoolTargetTokens).toBe(10_000);
+	});
+
+	it("normalizes invalid observation pool overrides restored from a branch", () => {
+		const runtime = new Runtime();
+		runtime.restoreSessionSettings([
+			{ type: "custom", customType: "om.settings", data: { observationsPoolMaxTokens: 5_000 } },
+			{ type: "custom", customType: "om.settings", data: { observationsPoolTargetTokens: 10_000 } },
+		]);
+
+		expect(runtime.config.observationsPoolMaxTokens).toBe(5_000);
+		expect(runtime.config.observationsPoolTargetTokens).toBe(2_500);
+		expect(runtime.config.observationsPoolTargetTokens).toBeLessThan(runtime.config.observationsPoolMaxTokens);
 	});
 
 	it("keeps compaction flags independent", () => {

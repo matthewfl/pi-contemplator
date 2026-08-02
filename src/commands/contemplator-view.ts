@@ -58,6 +58,7 @@ function renderMessage(message: StoredMessage, compacted: boolean): string {
 export function renderContemplator(entries: Entry[]): string {
 	const messages: Array<{ message: StoredMessage; compacted: boolean }> = [];
 	const suggestions: Array<{ suggestion: string; delivered: boolean }> = [];
+	const suggestionIndexByProbeId = new Map<string, number>();
 	for (const entry of entries) {
 		if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
 			const data = entry.data as { message?: unknown; compacted?: unknown };
@@ -66,8 +67,20 @@ export function renderContemplator(entries: Entry[]): string {
 			}
 		}
 		if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
-			const data = entry.data as { suggestion?: unknown; delivered?: unknown };
-			if (typeof data.suggestion === "string") suggestions.push({ suggestion: data.suggestion, delivered: data.delivered === true });
+			const data = entry.data as { suggestion?: unknown; delivered?: unknown; probeId?: unknown };
+			if (typeof data.suggestion !== "string") continue;
+			const suggestion = { suggestion: data.suggestion, delivered: data.delivered === true };
+			if (typeof data.probeId !== "string") {
+				suggestions.push(suggestion);
+				continue;
+			}
+			const existingIndex = suggestionIndexByProbeId.get(data.probeId);
+			if (existingIndex === undefined) {
+				suggestionIndexByProbeId.set(data.probeId, suggestions.length);
+				suggestions.push(suggestion);
+			} else {
+				suggestions[existingIndex] = suggestion;
+			}
 		}
 	}
 

@@ -111,6 +111,28 @@ describe("V3 /om:view", () => {
 		expect(output).toContain("Copied /om:view contemplator output to clipboard.");
 	});
 
+	it("shows the latest delivery state once per contemplator probe", async () => {
+		const entries = [
+			{
+				id: "probe-pending",
+				type: "custom",
+				customType: "om.contemplator.suggestion",
+				data: { suggestion: "Should we split the migration?", probeId: "probe-1", delivered: false },
+			},
+			{
+				id: "probe-delivered",
+				type: "custom",
+				customType: "om.contemplator.suggestion",
+				data: { suggestion: "Should we split the migration?", probeId: "probe-1", delivered: true },
+			},
+		] as TestEntry[];
+		const { clipboardText } = await setup(entries).run(["contemplator"]);
+
+		expect(clipboardText?.match(/Should we split the migration\?/g) ?? []).toHaveLength(1);
+		expect(clipboardText).toContain("[delivered] Should we split the migration?");
+		expect(clipboardText).not.toContain("[pending] Should we split the migration?");
+	});
+
 	it("explicit visible mode does not fall back to recorded memory", async () => {
 		const obs = observation("aaaaaaaaaaaa");
 		const entries = [

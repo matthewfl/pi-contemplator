@@ -60,6 +60,7 @@ function setup(args: {
 		}),
 	};
 	let launchedWork: (() => Promise<void>) | undefined;
+	let contextGeneration = 0;
 	const runtime = {
 		config: {
 			showWorkerNotifications: args.showWorkerNotifications ?? true,
@@ -80,7 +81,11 @@ function setup(args: {
 		lastReflectorError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
-		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
+		getContextGeneration: vi.fn(() => contextGeneration),
+		advanceContextGeneration: vi.fn(() => {
+			contextGeneration++;
+		}),
+		resolveModel: vi.fn(async (): Promise<any> => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
 			launchedWork = work;
@@ -115,6 +120,9 @@ function setup(args: {
 		fireTurnEnd: () => handlers.turn_end!(undefined, ctx),
 		runLaunchedWork: async () => launchedWork?.(),
 		getEntries: () => entries,
+		setEntries: (next: TestEntry[]) => {
+			entries = [...next];
+		},
 	};
 }
 
@@ -303,6 +311,27 @@ describe("V3 consolidation trigger", () => {
 
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Observational memory: observer skipped — no model", "warning");
+	});
+
+	it("discards observer output when the session branch changes while it is running", async () => {
+		let finishObserver: ((value: ReturnType<typeof observation>[]) => void) | undefined;
+		mockAgents.runObserver.mockImplementationOnce(() => new Promise((resolve) => {
+			finishObserver = resolve;
+		}));
+		const branchA = [textCustomMessage("raw-a", "branch a context")];
+		const branchB = [textCustomMessage("raw-b", "branch b context")];
+		const harness = setup({ entries: branchA });
+
+		harness.fire();
+		const work = harness.runLaunchedWork();
+		await vi.waitFor(() => expect(mockAgents.runObserver).toHaveBeenCalled());
+		harness.setEntries(branchB);
+		harness.runtime.advanceContextGeneration();
+		finishObserver?.([observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })]);
+		await work;
+
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+		expect(harness.getEntries()).toEqual(branchB);
 	});
 
 	it("re-reads branch so observer append can unblock reflector in the same consolidation run", async () => {

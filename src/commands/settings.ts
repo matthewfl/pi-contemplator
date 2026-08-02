@@ -134,11 +134,25 @@ async function editNumber(ctx: ExtensionContext, runtime: Runtime, key: NumberSe
 	return parsed;
 }
 
+function validObservationPoolOverride(ctx: ExtensionContext, runtime: Runtime, key: NumberSetting, value: number): boolean {
+	if (key === "observationsPoolMaxTokens" && value <= runtime.config.observationsPoolTargetTokens) {
+		ctx.ui.notify("Observation pool max must be greater than the current target. Lower the target first.", "warning");
+		return false;
+	}
+	if (key === "observationsPoolTargetTokens" && value >= runtime.config.observationsPoolMaxTokens) {
+		ctx.ui.notify("Observation pool target must be less than the current maximum.", "warning");
+		return false;
+	}
+	return true;
+}
+
 export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+	const restoreSettings = (_event: unknown, ctx: ExtensionContext) => {
 		runtime.ensureConfig(ctx.cwd);
 		runtime.restoreSessionSettings(branch(ctx));
-	});
+	};
+	pi.on("session_start", restoreSettings);
+	pi.on("session_tree", restoreSettings);
 
 	pi.registerCommand("om:settings", {
 		description: "Configure observational memory for this session",
@@ -221,7 +235,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {
 					const value = await editNumber(ctx, runtime, selected[1], selected[2]);
-					if (value !== undefined) appendSettings(pi, runtime, { [selected[1]]: value } as SessionSettings);
+					if (value !== undefined && validObservationPoolOverride(ctx, runtime, selected[1], value)) {
+						appendSettings(pi, runtime, { [selected[1]]: value } as SessionSettings);
+					}
 				}
 			}
 		}

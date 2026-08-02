@@ -190,12 +190,14 @@ export async function runConsolidationPipeline(
 	options: ConsolidationPipelineOptions = {},
 ): Promise<void> {
 	const resolveModel = makeModelResolver(runtime, ctx);
+	const contextGeneration = runtime.getContextGeneration();
 
 	runtime.consolidationPhase = "observer";
 	try {
 		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
 			force: options.forceObserver === true,
 			entries: options.observerEntries,
+			contextGeneration,
 		});
 		if (observerOutcome === "abort") return;
 	} catch (error) {
@@ -210,7 +212,7 @@ export async function runConsolidationPipeline(
 	runtime.consolidationPhase = "reflector";
 	let reflectorResult: ReflectorStageResult;
 	try {
-		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel);
+		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel, contextGeneration);
 		if (reflectorResult.outcome === "abort") return;
 	} catch (error) {
 		debugLog("reflector.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error) });
@@ -219,11 +221,12 @@ export async function runConsolidationPipeline(
 
 	runtime.consolidationPhase = "dropper";
 	try {
-		await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId);
+		const dropperOutcome = await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, contextGeneration);
+		if (dropperOutcome === "abort") return;
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
 	}
-	runtime.notifyMemoryUpdate?.(ctx);
+	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
 }
 
 async function runObserverStage(
@@ -231,7 +234,7 @@ async function runObserverStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
-	options: { force?: boolean; entries?: Entry[] } = {},
+	options: { force?: boolean; entries?: Entry[]; contextGeneration?: number } = {},
 ): Promise<StageOutcome> {
 	const entries = options.entries ?? (ctx.sessionManager.getBranch() as Entry[]);
 	const tokens = rawTokensSinceObservationCoverage(entries);
@@ -241,6 +244,10 @@ async function runObserverStage(
 	// derives from the resolved model's context window.
 	const resolved = await resolveModel("observer");
 	if (!resolved) return "abort";
+	if (options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("observer.stale", { reason: "session_or_branch_changed" });
+		return "abort";
+	}
 
 	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
 	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx);
@@ -301,6 +308,10 @@ async function runObserverStage(
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
 	});
+	if (options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("observer.stale", { reason: "session_or_branch_changed" });
+		return "abort";
+	}
 	if (!observations || observations.length === 0) {
 		debugLog("observer.empty", { coversUpToId });
 		if (ctx.hasUI) ctx.ui?.notify(
@@ -345,6 +356,7 @@ async function runReflectorStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+	contextGeneration: number,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const reflectionTokens = rawTokensSinceReflectionCoverage(entries);
@@ -359,6 +371,10 @@ async function runReflectorStage(
 	);
 	const resolved = await resolveModel("reflector");
 	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
+	if (contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
+		return { outcome: "abort", sameRunReflections: [] };
+	}
 
 	const folded = foldLedger(entries);
 	const reflections = await runReflector({
@@ -370,6 +386,10 @@ async function runReflectorStage(
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
 	});
+	if (contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
+		return { outcome: "abort", sameRunReflections: [] };
+	}
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
 	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
@@ -389,6 +409,7 @@ async function runDropperStage(
 	resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
+	contextGeneration: number,
 ): Promise<StageOutcome> {
 	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
@@ -431,6 +452,10 @@ async function runDropperStage(
 	);
 	const resolved = await resolveModel("dropper");
 	if (!resolved) return "abort";
+	if (contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
+		return "abort";
+	}
 
 	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
 	const droppedIds = await runDropper({
@@ -443,6 +468,10 @@ async function runDropperStage(
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
 	});
+	if (contextGeneration !== runtime.getContextGeneration()) {
+		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
+		return "abort";
+	}
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
 	debugLog("dropper.append", {

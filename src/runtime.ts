@@ -16,6 +16,21 @@ function isConfiguredModel(value: unknown): value is ConfiguredModel {
 	return typeof model.provider === "string" && model.provider.length > 0 && typeof model.id === "string" && model.id.length > 0;
 }
 
+function normalizeSessionSettings(settings: SessionSettings, baseConfig: Config): SessionSettings {
+	const normalized = { ...settings };
+	if (normalized.observationsPoolMaxTokens !== undefined && normalized.observationsPoolMaxTokens < 2) {
+		delete normalized.observationsPoolMaxTokens;
+	}
+	const maxTokens = normalized.observationsPoolMaxTokens ?? baseConfig.observationsPoolMaxTokens;
+	const targetTokens = normalized.observationsPoolTargetTokens ?? baseConfig.observationsPoolTargetTokens;
+	if (normalized.observationsPoolMaxTokens !== undefined && targetTokens >= maxTokens) {
+		normalized.observationsPoolTargetTokens = Math.floor(maxTokens / 2);
+	} else if (normalized.observationsPoolTargetTokens !== undefined && normalized.observationsPoolTargetTokens >= maxTokens) {
+		delete normalized.observationsPoolTargetTokens;
+	}
+	return normalized;
+}
+
 export type SessionSettings = Partial<Pick<Config,
 	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
@@ -55,6 +70,7 @@ export class Runtime {
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
+	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
@@ -101,7 +117,7 @@ export class Runtime {
 				else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
 			}
 		}
-		this.sessionSettings = restored;
+		this.sessionSettings = normalizeSessionSettings(restored, this.baseConfig);
 		this.applySessionSettings();
 	}
 
@@ -116,7 +132,7 @@ export class Runtime {
 	}
 
 	setSessionSettings(settings: SessionSettings): void {
-		this.sessionSettings = { ...this.sessionSettings, ...settings };
+		this.sessionSettings = normalizeSessionSettings({ ...this.sessionSettings, ...settings }, this.baseConfig);
 		this.applySessionSettings();
 	}
 
@@ -128,9 +144,19 @@ export class Runtime {
 		return { ...this.baseConfig };
 	}
 
-	async resolveModel(ctx: ResolveCtx & { configuredModel?: ConfiguredModel }): Promise<ResolveResult> {
+	advanceContextGeneration(): void {
+		this.contextGeneration++;
+	}
+
+	getContextGeneration(): number {
+		return this.contextGeneration;
+	}
+
+	async resolveModel(ctx: ResolveCtx & { configuredModel?: ConfiguredModel | null }): Promise<ResolveResult> {
 		let model = ctx.model;
-		const configuredModel = ctx.configuredModel ?? this.config.model;
+		const configuredModel = ctx.configuredModel === null
+			? undefined
+			: ctx.configuredModel ?? this.config.model;
 		if (configuredModel) {
 			const configured = ctx.modelRegistry.find(configuredModel.provider, configuredModel.id);
 			if (configured) {

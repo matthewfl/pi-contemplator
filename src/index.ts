@@ -12,6 +12,10 @@ import { Contemplator } from "./contemplator.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
+	pi.on("session_start", () => runtime.advanceContextGeneration());
+	pi.on("session_tree", () => runtime.advanceContextGeneration());
+	pi.on("session_shutdown", () => runtime.advanceContextGeneration());
+
 	registerSettingsCommand(pi, runtime);
 	new Contemplator(pi, runtime).register();
 

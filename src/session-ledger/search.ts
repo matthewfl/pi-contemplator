@@ -3,8 +3,6 @@ import {
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
 	type Entry,
-	type Observation,
-	type Reflection,
 	type Relevance,
 } from "./types.js";
 
@@ -36,9 +34,13 @@ const RELEVANCE_BOOST: Record<Relevance, number> = {
 	critical: 4,
 };
 
+function normalizeSearchText(value: string): string {
+	return value.normalize("NFKC").toLocaleLowerCase();
+}
+
 function terms(value: string): string[] {
 	return Array.from(
-		new Set(value.toLocaleLowerCase().match(/[a-z0-9][a-z0-9_./:-]*/g) ?? []),
+		new Set(normalizeSearchText(value).match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}_./:-]*/gu) ?? []),
 	);
 }
 
@@ -47,15 +49,15 @@ function relevanceScore(
 	query: string,
 	queryTerms: string[],
 ): number {
-	const normalizedContent = content.toLocaleLowerCase();
-	const phrase = query.trim().toLocaleLowerCase();
+	const normalizedContent = normalizeSearchText(content);
+	const phrase = normalizeSearchText(query.trim());
 	const termMatches = queryTerms.reduce(
 		(total, term) => total + (normalizedContent.includes(term) ? 1 : 0),
 		0,
 	);
-	if (termMatches === 0) return 0;
 	const phraseBoost =
 		phrase.length > 0 && normalizedContent.includes(phrase) ? 5 : 0;
+	if (termMatches === 0 && phraseBoost === 0) return 0;
 	return termMatches * 10 + phraseBoost;
 }
 

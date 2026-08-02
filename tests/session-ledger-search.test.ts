@@ -67,6 +67,42 @@ describe("memory search", () => {
 		});
 	});
 
+	it("matches Unicode-only queries and exact non-Latin phrases", () => {
+		const obs = observation("cccccccccccc", {
+			content: "ユーザーは日本語を選択した。",
+		});
+		const result = searchMemories(
+			[
+				textCustomMessage("raw-1", "language preference"),
+				observationsRecordedEntry("obs-entry", {
+					observations: [obs],
+					coversUpToId: "raw-1",
+				}),
+			],
+			"日本語",
+		);
+
+		expect(result.results.map((item) => item.id)).toEqual(["cccccccccccc"]);
+	});
+
+	it("normalizes canonically equivalent Unicode queries", () => {
+		const obs = observation("dddddddddddd", {
+			content: "The café preference is recorded.",
+		});
+		const result = searchMemories(
+			[
+				textCustomMessage("raw-1", "preference"),
+				observationsRecordedEntry("obs-entry", {
+					observations: [obs],
+					coversUpToId: "raw-1",
+				}),
+			],
+			"cafe\u0301",
+		);
+
+		expect(result.results.map((item) => item.id)).toEqual(["dddddddddddd"]);
+	});
+
 	it("returns no matches for unrelated terms", () => {
 		const result = searchMemories(
 			[textCustomMessage("raw-1", "nothing")],
