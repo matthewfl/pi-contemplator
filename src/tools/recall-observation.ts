@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -15,6 +15,8 @@ import { renderRecallSourceEntries, renderRecallSourceEntry } from "../serialize
 import { estimateEntryTokens } from "../tokens.js";
 
 export const RECALL_OBSERVATION_TOOL_NAME = "recall";
+export const RECALL_DESCRIPTION =
+	"Recover exact evidence and source context behind a compacted observational-memory observation or reflection id on the current branch. Use when compressed memory is important and original source context is needed before acting.";
 
 const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
@@ -458,12 +460,20 @@ export function executeRecall(params: RecallArgs, getBranch: () => Entry[]) {
 	return renderFoundResult(result);
 }
 
+export function createRecallAgentTool(getBranch: () => Entry[]): AgentTool<typeof RECALL_PARAMETERS> {
+	return {
+		name: RECALL_OBSERVATION_TOOL_NAME,
+		label: "Recall memory evidence",
+		description: RECALL_DESCRIPTION,
+		parameters: RECALL_PARAMETERS,
+		execute: async (_toolCallId, params) => executeRecall(params, getBranch),
+	};
+}
+
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
 	label: "Recall memory evidence",
-	description:
-		"Recover exact evidence and source context behind a compacted observational-memory observation or reflection id on the current branch. " +
-		"Use when compressed memory is important and original source context is needed before acting.",
+	description: RECALL_DESCRIPTION,
 	promptSnippet: "Use recall(<id>) to recover exact source context behind compacted memory observations/reflections when precision matters.",
 	promptGuidelines: [
 		"Use recall before making an important decision that depends on a compacted observation or reflection whose details are unclear.",

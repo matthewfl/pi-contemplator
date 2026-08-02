@@ -5,16 +5,8 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummary } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fullProjection, type Entry } from "./session-ledger/index.js";
-import {
-	executeSearchMemories,
-	SEARCH_MEMORIES_PARAMETERS,
-	type SearchMemoriesArgs,
-} from "./tools/search-memories.js";
-import {
-	executeRecall,
-	RECALL_PARAMETERS,
-	type RecallArgs,
-} from "./tools/recall-observation.js";
+import { createSearchMemoriesAgentTool } from "./tools/search-memories.js";
+import { createRecallAgentTool } from "./tools/recall-observation.js";
 import type { MemoryUpdateCtx, Runtime } from "./runtime.js";
 import { logAgentStreamError } from "./agents/stream-errors.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
@@ -68,6 +60,27 @@ const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, high-level probing question, optionally preceded by one short sentence of context." }) });
 type SendProbeArgs = Static<typeof SendProbeSchema>;
+
+function createSendProbeTool(onProbe: (question: string) => void): AgentTool<typeof SendProbeSchema> {
+	return {
+		name: "send_probe",
+		label: "Send probe",
+		description: "Send one concise, high-level probing question to the primary agent asynchronously. Use it only when the question could materially improve the agent’s framing, expose a weak assumption, break an unproductive loop, or reveal a better decomposition. The message must contain a focused question, optionally preceded by one short sentence of context. Include relevant memory identifiers when useful. Do not use it for routine reminders, status updates, or direct task management.",
+		parameters: SendProbeSchema,
+		execute: async (_toolCallId, params: SendProbeArgs) => {
+			const question = params.question.trim();
+			onProbe(question);
+			debugLog("contemplator.tool_call", {
+				tool: "send_probe",
+				suggestionLength: question.length,
+			});
+			return {
+				content: [{ type: "text", text: "Probe queued for the primary agent's next context." }],
+				details: { queued: true },
+			};
+		},
+	};
+}
 
 export class Contemplator {
 	private history: AgentMessage[] = [];
@@ -215,40 +228,12 @@ export class Contemplator {
 			this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
 			this.markTipPersisted(ctx);
 			let probe: string | undefined;
-			const searchMemoriesTool: AgentTool<typeof SEARCH_MEMORIES_PARAMETERS> = {
-				name: "search_memories",
-				label: "Search memories",
-				description: "Search recorded observational-memory observations and reflections by topic or keywords on the current branch. Use the returned memory id with recall to recover exact source context.",
-				parameters: SEARCH_MEMORIES_PARAMETERS,
-				execute: async (_toolCallId, params: SearchMemoriesArgs) =>
-					executeSearchMemories(ctx.sessionManager.getBranch() as Entry[], params),
-			};
-			const recallTool: AgentTool<typeof RECALL_PARAMETERS> = {
-				name: "recall",
-				label: "Recall memory evidence",
-				description: "Recover exact evidence and source context behind a specific observational-memory id on the current branch.",
-				parameters: RECALL_PARAMETERS,
-				execute: async (_toolCallId, params: RecallArgs) =>
-					executeRecall(params, () => ctx.sessionManager.getBranch() as Entry[]),
-			};
-			const sendProbe: AgentTool<typeof SendProbeSchema> = {
-				name: "send_probe",
-				label: "Send probe",
-				description: "Send one concise, high-level probing question to the primary agent asynchronously. Use it only when the question could materially improve the agent’s framing, expose a weak assumption, break an unproductive loop, or reveal a better decomposition. The message must contain a focused question, optionally preceded by one short sentence of context. Include relevant memory identifiers when useful. Do not use it for routine reminders, status updates, or direct task management.",
-				parameters: SendProbeSchema,
-				execute: async (_toolCallId, params: SendProbeArgs) => {
-					const suggestion = params.question.trim();
-					probe = suggestion;
-					debugLog("contemplator.tool_call", {
-						tool: "send_probe",
-						suggestionLength: suggestion.length,
-					});
-					return {
-						content: [{ type: "text", text: "Probe queued for the primary agent's next context." }],
-						details: { queued: true },
-					};
-				},
-			};
+			const getBranch = () => ctx.sessionManager.getBranch() as Entry[];
+			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
+			const recallTool = createRecallAgentTool(getBranch);
+			const sendProbe = createSendProbeTool((question) => {
+				probe = question;
+			});
 			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>] };
 			const config: AgentLoopConfig = {
 				model: resolved.model as Model<any>,

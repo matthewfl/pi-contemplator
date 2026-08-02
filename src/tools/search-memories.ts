@@ -1,4 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Static } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -9,6 +10,8 @@ import type { Entry } from "../session-ledger/index.js";
 import { Text } from "@earendil-works/pi-tui";
 
 export const SEARCH_MEMORIES_TOOL_NAME = "search_memories";
+export const SEARCH_MEMORIES_DESCRIPTION =
+	"Search recorded observational-memory observations and reflections by topic or keywords on the current branch. Use the returned memory id with recall to recover exact source context.";
 
 export type SearchMemoriesArgs = Static<typeof SEARCH_MEMORIES_PARAMETERS>;
 
@@ -61,17 +64,25 @@ export function executeSearchMemories(branchEntries: Entry[], params: SearchMemo
 				`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections):`,
 				...search.results.map(formatResult),
 				"Use recall(<id>) for exact source context.",
-			].join("\\n")
+			].join("\n")
 		: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections). Try alternate or more distinctive keywords.`;
 	return { content: [{ type: "text", text }], details };
+}
+
+export function createSearchMemoriesAgentTool(getBranch: () => Entry[]): AgentTool<typeof SEARCH_MEMORIES_PARAMETERS> {
+	return {
+		name: SEARCH_MEMORIES_TOOL_NAME,
+		label: "Search memories",
+		description: SEARCH_MEMORIES_DESCRIPTION,
+		parameters: SEARCH_MEMORIES_PARAMETERS,
+		execute: async (_toolCallId, params) => executeSearchMemories(getBranch(), params),
+	};
 }
 
 export const searchMemoriesTool = defineTool({
 	name: SEARCH_MEMORIES_TOOL_NAME,
 	label: "Search observational memories",
-	description:
-		"Search recorded observational-memory observations and reflections by topic or keywords on the current branch. " +
-		"Use the returned memory id with recall to recover exact source context.",
+	description: SEARCH_MEMORIES_DESCRIPTION,
 	promptSnippet:
 		"Use search_memories(query) to find relevant older observations or reflections, then use recall(id) when exact source context matters.",
 	promptGuidelines: [
