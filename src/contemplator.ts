@@ -119,7 +119,18 @@ A good probe should:
 * help clarify what is known, what is assumed, or what should be explored;
 * remain useful even if the primary agent has progressed since the memories were recorded.
 
-Your probes are delivered asynchronously. Send no more than one probe per update. If no specific, grounded, materially useful question exists, do not call the tool.`;
+Your probes are delivered asynchronously. Send no more than one probe per update. If no specific, grounded, materially useful question exists, do not call the tool.
+
+Prioritize:
+
+1. Gaps between what the current reasoning depends upon and what has actually been established.
+2. Contradictions between recent claims and earlier evidence.
+3. Misalignment with recorded user intent.
+4. Plausible alternatives or parts of the search space receiving insufficient consideration.
+5. Clear unproductive loops supported by multiple memories.
+6. Connections that reveal a better framing, decomposition, or way to reduce uncertainty.
+
+Call \`send_probe\` only when you can ask one focused, memory-grounded question that could materially improve the joint exploration of the problem.`;
 
 interface PendingUpdate { observations: string[]; reflections: string[]; }
 
@@ -399,7 +410,11 @@ export class Contemplator {
 				modelId: selectedModel.id,
 				contextWindow: selectedModel.contextWindow,
 			});
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n${update.observations.join("\n") || "(none)"}\n\nREFLECTIONS:\n${update.reflections.join("\n") || "(none)"}\n\nConsider these updates in the context of the accumulated memories.\n\nPrioritize:\n\n1. Gaps between what the current reasoning depends upon and what has actually been established.\n2. Contradictions between recent claims and earlier evidence.\n3. Misalignment with recorded user intent.\n4. Plausible alternatives or parts of the search space receiving insufficient consideration.\n5. Clear unproductive loops supported by multiple memories.\n6. Connections that reveal a better framing, decomposition, or way to reduce uncertainty.\n\nCall \`send_probe\` only when you can ask one focused, memory-grounded question that could materially improve the joint exploration of the problem.` }], timestamp: Date.now() };
+			const updateSections: string[] = [];
+			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
+			if (update.reflections.length > 0) updateSections.push(`REFLECTIONS:\n${update.reflections.join("\n")}`);
+			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
+			  const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, unexplored alternatives, and well-supported unproductive loops.\n\nCall \`send_probe\` only when one focused, memory-grounded question could materially improve the primary agent’s thinking.` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
 			let probe: string | undefined;
