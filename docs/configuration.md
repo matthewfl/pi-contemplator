@@ -223,7 +223,7 @@ Contexts without a usable session id fall back to the legacy global file:
 observational-memory/debug.ndjson
 ```
 
-Each row includes event metadata such as `sessionId`, `sessionFile`, `runId`, `cwd`, and event-specific `data`. `runId` identifies one consolidation pipeline inside a session file, so you can filter a session log to a single observer/reflector/dropper pass. Contemplator diagnostics include trigger and threshold decisions (`contemplator.update`, `contemplator.waiting`, `contemplator.triggered`), model resolution, start/result/completion timing, `send_steer` calls, suggestion queue/injection, failures, and private-history compaction. These events record counts and lengths rather than prompts, responses, or suggestion text.
+Each row includes event metadata such as `sessionId`, `sessionFile`, `runId`, `cwd`, and event-specific `data`. `runId` identifies one consolidation pipeline inside a session file, so you can filter a session log to a single observer/reflector/dropper pass. Contemplator diagnostics include trigger and threshold decisions (`contemplator.update`, `contemplator.waiting`, `contemplator.triggered`), model resolution, start/result/completion timing, `send_probe` calls, probe queue/injection, failures, and private-history compaction. These events record counts and lengths rather than prompts, responses, or suggestion text.
 
 Dropper diagnostics are especially useful when the active observation pool is over target but no drops are appended. For example:
 

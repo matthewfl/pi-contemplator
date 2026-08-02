@@ -5,22 +5,65 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummary } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fullProjection, type Entry } from "./session-ledger/index.js";
+import { searchMemories } from "./session-ledger/search.js";
 import type { MemoryUpdateCtx, Runtime } from "./runtime.js";
 import { logAgentStreamError } from "./agents/stream-errors.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "./model-budget.js";
 
-const CONTEMPLATOR_SYSTEM = `You are a background contemplator supporting a coding assistant.
+const CONTEMPLATOR_SYSTEM = `You are the background contemplator supporting a primary agent. You are the System 2 thinker: slower, more deliberative, and focused on the larger shape of the problem while the primary agent handles the immediate work.
 
-Review incremental observations and reflections from the assistant's work. Maintain continuity across updates and emit a suggestion only when it would materially help the primary coding agent make a better decision, avoid repeated work, or notice an important risk.
+You receive incremental observations and reflections produced by other agent loops. Some memories summarize user messages. Pay extra attention to memories about the user’s intent, priorities, constraints, and desired outcome.
 
-You have no coding tools and must not perform work. Do not invent facts, repeat routine status, or produce general encouragement. If a suggestion would materially help the primary agent, call the send_steer tool with one concise, actionable suggestion. Do not send ordinary text as a suggestion; if there is no useful suggestion, do not call the tool.`;
+Each memory has an identifier. Mention relevant identifiers in a probe when they would help the primary agent recover the supporting context.
+
+Maintain an evolving understanding of:
+
+* what the user is ultimately trying to accomplish;
+* the primary agent’s apparent direction;
+* important assumptions and unresolved questions;
+* connections and recurring patterns across memories;
+* alternative ways to frame or decompose the problem.
+
+Look for high-level insights that could help the primary agent:
+
+* focus more clearly on the actual goal;
+* question an assumption underlying its current direction;
+* discover a useful connection between memories;
+* break the problem into smaller or more revealing units;
+* find a simpler or more productive framing;
+* recognize that it is stuck in a loop;
+* notice repeated work or an approach that is clearly wasting time;
+* reconsider a direction weakened by new evidence.
+
+Prefer asking one probing question over prescribing a solution. A good probe helps the primary agent examine its reasoning, distinguish between competing explanations, identify a useful intermediate step, or notice an inefficient pattern.
+
+For example:
+
+* “Memories O14 and O19 suggest the same failure is recurring after each broad change. Is there a smaller signal that could distinguish the likely causes before repeating the full workflow?”
+* “R7 assumes the user wants the existing behavior replaced, but O22 emphasizes preserving it. Could the problem be reframed as adding a layer rather than replacing the current one?”
+* “O31 and O34 both depend on the same unstated assumption. What result would show that assumption is false?”
+
+You have access to a search_memories tool for finding older observations and reflections on the current branch. Use it when the updates provided do not contain enough context, searching with distinctive terms rather than broad questions. The results include memory identifiers that you can cite in a probe.
+
+Do not ask about routine execution details or basic tasks the primary agent can manage itself. Low-level details such as tests, commands, files, syntax, or programming language matter only when they reveal a broader strategic issue, repeated bottleneck, or useful way to reduce the problem.
+
+Do not try to manage the primary agent, provide status updates, repeat memories, offer encouragement, or produce a probe merely to remain active. Do not invent details absent from the memories.
+
+When one high-signal probe could materially improve the primary agent’s understanding or approach, call send_probe with a concise, natural-language message. Include a short statement of the relevant pattern when the question would otherwise lack context.
+
+Send only one probe per update. If no useful probe exists, do not call the tool.`;
 
 interface PendingUpdate { observations: string[]; reflections: string[]; }
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
-const SendSteerSchema = Type.Object({ suggestion: Type.String({ minLength: 1 }) });
-type SendSteerArgs = Static<typeof SendSteerSchema>;
+const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, high-level probing question, optionally preceded by one short sentence of context." }) });
+type SendProbeArgs = Static<typeof SendProbeSchema>;
+const SearchMemoriesSchema = Type.Object({
+	query: Type.String({ minLength: 1, description: "Topic or distinctive keywords to search for." }),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Maximum results to return (default 8)." })),
+});
+type SearchMemoriesArgs = Static<typeof SearchMemoriesSchema>;
 
 export class Contemplator {
 	private history: AgentMessage[] = [];
@@ -163,30 +206,51 @@ export class Contemplator {
 				modelId: selectedModel.id,
 				contextWindow: selectedModel.contextWindow,
 			});
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n${update.observations.join("\n") || "(none)"}\n\nREFLECTIONS:\n${update.reflections.join("\n") || "(none)"}\n\nReview this update in light of your prior context. Call send_steer only if you have one materially useful suggestion.` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n${update.observations.join("\n") || "(none)"}\n\nREFLECTIONS:\n${update.reflections.join("\n") || "(none)"}\n\nConsider these updates in the context of the accumulated memories. Call send_probe only when one focused question could materially improve how the primary agent understands, frames, decomposes, or proceeds with the problem.` }], timestamp: Date.now() };
 			this.history.push(prompt);
 			this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
 			this.markTipPersisted(ctx);
-			let steerSuggestion: string | undefined;
-			const sendSteer: AgentTool<typeof SendSteerSchema> = {
-				name: "send_steer",
-				label: "Send steer",
-				description: "Queue one concise, actionable advisory suggestion for the primary coding agent's next context.",
-				parameters: SendSteerSchema,
-				execute: async (_toolCallId, params: SendSteerArgs) => {
-					const suggestion = params.suggestion.trim();
-					steerSuggestion = suggestion;
+			let probe: string | undefined;
+			const searchMemoriesTool: AgentTool<typeof SearchMemoriesSchema> = {
+				name: "search_memories",
+				label: "Search memories",
+				description: "Search older observational-memory observations and reflections on the current branch by topic or distinctive keywords.",
+				parameters: SearchMemoriesSchema,
+				execute: async (_toolCallId, params: SearchMemoriesArgs) => {
+					const query = params.query.trim();
+					const limit = params.limit ?? 8;
+					const search = searchMemories(ctx.sessionManager.getBranch() as Entry[], query, limit);
+					const text = search.results.length
+						? [
+								`Found ${search.results.length} matching memories:`,
+								...search.results.map((result) => {
+									const status = result.status === "dropped" ? " [dropped]" : "";
+									return `- ${result.kind} [${result.id}]${status}: ${result.content}`;
+								}),
+							].join("\\n")
+						: `No memories matched ${JSON.stringify(query)}. Try alternate or more distinctive keywords.`;
+					return { content: [{ type: "text" as const, text }], details: search };
+				},
+			};
+			const sendProbe: AgentTool<typeof SendProbeSchema> = {
+				name: "send_probe",
+				label: "Send probe",
+				description: "Send one concise, high-level probing question to the primary agent asynchronously. Use it only when the question could materially improve the agent’s framing, expose a weak assumption, break an unproductive loop, or reveal a better decomposition. The message must contain a focused question, optionally preceded by one short sentence of context. Include relevant memory identifiers when useful. Do not use it for routine reminders, status updates, or direct task management.",
+				parameters: SendProbeSchema,
+				execute: async (_toolCallId, params: SendProbeArgs) => {
+					const suggestion = params.question.trim();
+					probe = suggestion;
 					debugLog("contemplator.tool_call", {
-						tool: "send_steer",
+						tool: "send_probe",
 						suggestionLength: suggestion.length,
 					});
 					return {
-						content: [{ type: "text", text: "Steer queued for the primary agent's next context." }],
+						content: [{ type: "text", text: "Probe queued for the primary agent's next context." }],
 						details: { queued: true },
 					};
 				},
 			};
-			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [sendSteer as AgentTool<any>] };
+			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, sendProbe as AgentTool<any>] };
 			const config: AgentLoopConfig = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
@@ -203,17 +267,17 @@ export class Contemplator {
 				messageCount: result.length,
 				assistantFound: assistant !== undefined,
 				assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
-				suggestionQueued: steerSuggestion !== undefined,
+				suggestionQueued: probe !== undefined,
 			});
 			if (assistant) {
 				this.history.push(assistant);
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
 				this.markTipPersisted(ctx);
 			}
-			if (steerSuggestion) {
-				this.pendingSuggestion = steerSuggestion;
-				debugLog("contemplator.suggestion_queued", { suggestionLength: steerSuggestion.length });
-				this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: steerSuggestion, delivered: false });
+			if (probe) {
+				this.pendingSuggestion = probe;
+				debugLog("contemplator.suggestion_queued", { suggestionLength: probe.length });
+				this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: probe, delivered: false });
 				this.markTipPersisted(ctx);
 			}
 			await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers);
