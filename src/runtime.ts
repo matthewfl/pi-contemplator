@@ -62,6 +62,16 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 	sessionManager: { getBranch(): readonly unknown[] };
 }
 
+export interface LlmUsageTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	/** Number of LLM calls contributing to these totals. */
+	runs: number;
+}
+
 export class Runtime {
 	config: Config = { ...DEFAULTS };
 	private baseConfig: Config = { ...DEFAULTS };
@@ -78,6 +88,18 @@ export class Runtime {
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
+	contemplatorUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
+
+	/** Accumulate usage from one background LLM call (contemplator flush or summary). */
+	recordContemplatorUsage(usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } }): void {
+		const totals = this.contemplatorUsage;
+		totals.input += usage.input ?? 0;
+		totals.output += usage.output ?? 0;
+		totals.cacheRead += usage.cacheRead ?? 0;
+		totals.cacheWrite += usage.cacheWrite ?? 0;
+		totals.cost += usage.cost?.total ?? 0;
+		totals.runs += 1;
+	}
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;

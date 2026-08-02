@@ -81,7 +81,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `contemplatorMinTurns` | positive integer | `10` | Minimum main-agent turns between contemplator runs. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
-`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, toggles the asynchronous compaction observer, and selects an available thinking model (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
+`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, toggles the asynchronous compaction observer, and selects an available contemplator model (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 

@@ -40,6 +40,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		lastObserverError: undefined,
 		lastReflectorError: undefined,
 		lastDropperError: undefined,
+		contemplatorUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 },
 		...args.runtime,
 	};
 	registerStatusCommand(pi as any, runtime as any);
@@ -230,5 +231,22 @@ describe("V3 /om:status", () => {
 
 			expect(output).toContain("Next compaction:  ~0 / 30 tokens (0%)");
 		});
+	});
+
+	it("shows contemplator LLM usage in the Activity section after runs", async () => {
+		const output = await setup({
+			entries: [],
+			runtime: {
+				contemplatorUsage: { input: 1500, output: 250, cacheRead: 12_000, cacheWrite: 0, cost: 0.0042, runs: 3 },
+			},
+		}).run();
+
+		expect(output).toContain("Contemplator LLM:         ↑1.5k ↓250 R12k $0.004 (3 calls)");
+	});
+
+	it("omits the contemplator LLM usage line when the contemplator has not run", async () => {
+		const output = await setup({ entries: [] }).run();
+
+		expect(output).not.toContain("Contemplator LLM");
 	});
 });

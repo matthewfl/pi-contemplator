@@ -182,4 +182,37 @@ describe("Contemplator lifecycle", () => {
 		harness.fire("turn_end");
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
+
+	it("records agentLoop usage into runtime.contemplatorUsage", async () => {
+		const usage = {
+			input: 1000,
+			output: 200,
+			cacheRead: 5000,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
+		};
+		agentMocks.agentLoop.mockImplementation(() => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => [
+				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
+			],
+		}));
+		const harness = setup();
+		harness.fire("session_start");
+		const rawA = textCustomMessage("raw-a", "branch a");
+		const obsA = observationsRecordedEntry("obs-a", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
+			coversUpToId: "raw-a",
+		});
+		harness.setEntries([rawA, obsA]);
+
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(harness.runtime.contemplatorUsage.runs).toBe(1));
+		expect(harness.runtime.contemplatorUsage.input).toBe(1000);
+		expect(harness.runtime.contemplatorUsage.output).toBe(200);
+		expect(harness.runtime.contemplatorUsage.cacheRead).toBe(5000);
+		expect(harness.runtime.contemplatorUsage.cacheWrite).toBe(0);
+		expect(harness.runtime.contemplatorUsage.cost).toBeCloseTo(0.0015);
+	});
 });

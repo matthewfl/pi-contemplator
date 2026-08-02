@@ -2,7 +2,7 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, 
 import { Type, type Message, type Model } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { generateSummary } from "@earendil-works/pi-coding-agent";
+import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fullProjection, type Entry } from "./session-ledger/index.js";
 import { createSearchMemoriesAgentTool } from "./tools/search-memories.js";
@@ -77,7 +77,7 @@ A useful probe may ask:
 
 Questions should be grounded in the actual memories rather than generic problem-solving advice.
 
-You have access to a search_memories tool for finding older observations and reflections on the current branch. Use it when the updates provided do not contain enough context, searching with distinctive terms rather than broad questions. The results include memory identifiers that you can cite in a probe. You also have a recall tool for recovering exact source context behind a specific memory identifier; use it when a search result is important but compressed.
+You have access to a \`search_memories\` tool for finding older observations and reflections on the current branch. Use it when the updates provided do not contain enough context, searching with distinctive terms rather than broad questions. The results include memory identifiers that you can cite in a probe. You also have a \`recall\` tool for recovering exact source context behind a specific memory identifier; use it when a search result is important but compressed.
 
 Specific recorded evidence that contradicts or materially weakens the current approach should produce a probe. A concrete reasoning gap that the primary agent appears to be depending upon should also produce a probe.
 
@@ -437,6 +437,13 @@ export class Contemplator {
 			const stream = agentLoop([prompt], context, config, undefined, streamSimple);
 			for await (const event of stream) logAgentStreamError("contemplator", event);
 			const result = await stream.result();
+			// The LLM call happened and was billed regardless of what we do next, so
+			// record its usage even if the session generation changed mid-run.
+			for (const message of result) {
+				if (message.role === "assistant" && message.usage) {
+					this.runtime.recordContemplatorUsage(message.usage);
+				}
+			}
 			const assistant = [...result].reverse().find((message) => message.role === "assistant");
 			debugLog("contemplator.result", {
 				messageCount: result.length,
@@ -512,12 +519,15 @@ export class Contemplator {
 			serializedLength,
 		});
 		const history = this.history.slice();
-		const summary = await generateSummary(history as AgentMessage[], model, 4_000, apiKey, headers);
+		const summaryWithUsage = await generateSummaryWithUsage(history as AgentMessage[], model, 4_000, apiKey, headers);
+		this.runtime.recordContemplatorUsage(summaryWithUsage.usage);
 		if (sessionGeneration !== this.sessionGeneration) {
 			debugLog("contemplator.compaction_stale", { reason: "session_or_branch_changed" });
 			return;
 		}
+		const summary = summaryWithUsage.text;
 		const summaryModel = model as Model<any> & { api?: unknown; provider?: string; id?: string };
+		const summaryUsage = summaryWithUsage.usage;
 		this.history = [{
 			role: "assistant",
 			content: [{ type: "text", text: `Previous contemplator context summary:\n${summary}` }],
@@ -525,8 +535,12 @@ export class Contemplator {
 			provider: summaryModel.provider ?? "unknown",
 			model: summaryModel.id ?? "contemplator",
 			usage: {
-				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				input: summaryUsage.input,
+				output: summaryUsage.output,
+				cacheRead: summaryUsage.cacheRead,
+				cacheWrite: summaryUsage.cacheWrite,
+				totalTokens: summaryUsage.input + summaryUsage.output + summaryUsage.cacheRead + summaryUsage.cacheWrite,
+				cost: summaryUsage.cost,
 			},
 			stopReason: "stop",
 			timestamp: Date.now(),

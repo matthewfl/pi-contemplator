@@ -17,6 +17,12 @@ function pct(current: number, total: number): number {
 	return total > 0 ? Math.round((current / total) * 100) : 0;
 }
 
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+	return String(n);
+}
+
 function tokenSum(items: { tokenCount: number }[]): number {
 	return items.reduce((sum, item) => sum + item.tokenCount, 0);
 }
@@ -90,6 +96,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
 			];
+
+			if (runtime.contemplatorUsage.runs > 0) {
+				const u = runtime.contemplatorUsage;
+				lines.push(`Contemplator LLM:         ↑${formatTokens(u.input)} ↓${formatTokens(u.output)}${u.cacheRead ? ` R${formatTokens(u.cacheRead)}` : ""}${u.cacheWrite ? ` W${formatTokens(u.cacheWrite)}` : ""} $${u.cost.toFixed(3)} (${u.runs} call${u.runs === 1 ? "" : "s"})`);
+			}
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
 				lines.push("", "── In flight ──");
