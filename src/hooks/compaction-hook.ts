@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import type { Runtime } from "../runtime.js";
+import { computeSessionSettings, type Runtime } from "../runtime.js";
 import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation-trigger.js";
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
 
@@ -44,12 +44,14 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			const summary = renderSummary(projection.reflections, projection.observations);
 			// Compaction removes older custom entries from the active branch. Keep
 			// session-scoped overrides in the compaction details so they can be
-			// restored after a reload from the surviving branch.
-			const getSessionSettings = (runtime as Runtime & { getSessionSettings?: () => unknown }).getSessionSettings;
+			// restored after a reload from the surviving branch. Bake the merged
+			// branch intent (live om.settings entries winning over earlier snapshots)
+			// rather than the raw in-memory overlay, which can lag out-of-band
+			// om.settings appends and would otherwise silently override newer entries
+			// at the next restore.
 			const details = {
 				...projection.details,
-				// Call through runtime so Runtime retains its `this` binding.
-				sessionSettings: typeof getSessionSettings === "function" ? runtime.getSessionSettings() : {},
+				sessionSettings: computeSessionSettings(branch),
 			};
 
 			return {

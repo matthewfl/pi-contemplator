@@ -218,4 +218,19 @@ describe("V3 dropper agent", () => {
 		})).resolves.toBeUndefined();
 		expect(called).toBe(false);
 	});
+
+	it("reports agentLoop usage through recordUsage", async () => {
+		const usage = { input: 2500, output: 300, cacheRead: 0, cacheWrite: 0, cost: { total: 0.0008 } };
+		const loop = ((_prompts: any, _context: any, _config: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => [
+				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
+			],
+		})) as any;
+		const recorded: unknown[] = [];
+
+		await runDropper({ ...baseArgs, agentLoop: loop, recordUsage: (u) => recorded.push(u) });
+
+		expect(recorded).toEqual([usage]);
+	});
 });

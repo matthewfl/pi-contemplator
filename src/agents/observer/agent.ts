@@ -10,6 +10,7 @@ import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
 import { estimateStringTokens } from "../../tokens.js";
+import type { LlmUsageInput } from "../../runtime.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
@@ -23,6 +24,7 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	recordUsage?: (usage: LlmUsageInput) => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -193,7 +195,12 @@ ${conversation}`;
 		// Drain events; the tool's execute already collects records.
 		logAgentStreamError("observer", event);
 	}
-	await stream.result();
+	const result = await stream.result();
+	if (args.recordUsage) {
+		for (const message of result) {
+			if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+		}
+	}
 
 	if (accumulated.size === 0) return undefined;
 	return Array.from(accumulated.values());

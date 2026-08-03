@@ -208,4 +208,19 @@ describe("V3 reflector agent", () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
+
+	it("reports agentLoop usage through recordUsage", async () => {
+		const usage = { input: 3000, output: 400, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } };
+		const loop = ((_prompts: any, _context: any, _config: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => [
+				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
+			],
+		})) as any;
+		const recorded: unknown[] = [];
+
+		await runReflector({ ...baseArgs, agentLoop: loop, recordUsage: (u) => recorded.push(u) });
+
+		expect(recorded).toEqual([usage]);
+	});
 });

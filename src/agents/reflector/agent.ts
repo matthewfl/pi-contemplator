@@ -11,6 +11,7 @@ import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import type { LlmUsageInput } from "../../runtime.js";
 import {
 	coverageTierForObservation,
 	reflectionCoverageMap,
@@ -29,6 +30,7 @@ interface RunReflectorArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	recordUsage?: (usage: LlmUsageInput) => void;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -189,7 +191,12 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		// Tool execution collects records.
 		logAgentStreamError("reflector", event);
 	}
-	await stream.result();
+	const result = await stream.result();
+	if (args.recordUsage) {
+		for (const message of result) {
+			if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+		}
+	}
 	const acceptedReflections = Array.from(accumulated.values());
 	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
 	debugLog("reflector.result", {

@@ -307,6 +307,7 @@ async function runObserverStage(
 		allowedSourceEntryIds: sourceEntryIds,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		recordUsage: (usage) => runtime.recordAgentUsage(usage),
 	});
 	if (options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("observer.stale", { reason: "session_or_branch_changed" });
@@ -385,6 +386,7 @@ async function runReflectorStage(
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		recordUsage: (usage) => runtime.recordAgentUsage(usage),
 	});
 	if (contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
@@ -467,6 +469,7 @@ async function runDropperStage(
 		targetTokens: runtime.config.observationsPoolTargetTokens,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		recordUsage: (usage) => runtime.recordAgentUsage(usage),
 	});
 	if (contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("dropper.stale", { reason: "session_or_branch_changed" });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Runtime } from "../src/runtime.js";
+import { computeSessionSettings, Runtime } from "../src/runtime.js";
 
 function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 	return {
@@ -116,6 +116,34 @@ describe("Runtime V3 behavior", () => {
 		]);
 
 		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 3 });
+	});
+
+	it("prefers live om.settings entries over a positionally-later stale compaction snapshot", () => {
+		// A compaction baking a stale in-memory overlay (e.g. gates 1/1/1 left over
+		// from an out-of-band append) must not override a newer om.settings entry
+		// just because the snapshot lands later in the branch. Snapshot-only keys
+		// (contemplatorMinTurns) are still preserved.
+		const runtime = new Runtime();
+		runtime.restoreSessionSettings([
+			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false, contemplatorMinTurns: 10 } },
+			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false } },
+			{ type: "compaction", details: { sessionSettings: { contemplatorEnabled: true, contemplatorMinTurns: 1 } } },
+		]);
+
+		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 10 });
+	});
+
+	it("keeps snapshot-only keys when their om.settings entries were folded away", () => {
+		// computeSessionSettings is also what the compaction hook bakes, so a
+		// snapshot chain must preserve keys whose live entries are gone.
+		expect(computeSessionSettings([
+			{ type: "compaction", details: { sessionSettings: { contemplatorMinTurns: 7 } } },
+		])).toMatchObject({ contemplatorMinTurns: 7 });
+
+		expect(computeSessionSettings([
+			{ type: "custom", customType: "om.settings", data: { contemplatorMinTurns: 8 } },
+			{ type: "compaction", details: { sessionSettings: { contemplatorMinTurns: 7 } } },
+		])).toMatchObject({ contemplatorMinTurns: 8 });
 	});
 
 	it("preserves a valid default pool target when only the maximum is overridden", () => {

@@ -17,6 +17,7 @@ import {
 	observationToDropperLine,
 } from "./coverage.js";
 import { observationPoolMetrics } from "./pool.js";
+import type { LlmUsageInput } from "../../runtime.js";
 export {
 	maxDropCountForPool,
 	observationPoolFullness,
@@ -48,6 +49,7 @@ interface RunDropperArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	recordUsage?: (usage: LlmUsageInput) => void;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -256,7 +258,12 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
 	}
-	await stream.result();
+	const result = await stream.result();
+	if (args.recordUsage) {
+		for (const message of result) {
+			if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+		}
+	}
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
 	const reason = droppedIds.length > 0
 		? "selected_nonempty"

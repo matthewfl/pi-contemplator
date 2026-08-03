@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const agentMocks = vi.hoisted(() => ({ agentLoop: vi.fn() }));
 vi.mock("@earendil-works/pi-agent-core", () => ({ agentLoop: agentMocks.agentLoop }));
 
-import { Contemplator } from "../src/contemplator.js";
+import { Contemplator } from "../src/agents/contemplator/agent.js";
 import { Runtime } from "../src/runtime.js";
 import {
 	observation,
@@ -183,7 +183,7 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
 
-	it("records agentLoop usage into runtime.contemplatorUsage", async () => {
+	it("records agentLoop usage into runtime.agentUsage", async () => {
 		const usage = {
 			input: 1000,
 			output: 200,
@@ -208,11 +208,11 @@ describe("Contemplator lifecycle", () => {
 
 		harness.fire("turn_end");
 
-		await vi.waitFor(() => expect(harness.runtime.contemplatorUsage.runs).toBe(1));
-		expect(harness.runtime.contemplatorUsage.input).toBe(1000);
-		expect(harness.runtime.contemplatorUsage.output).toBe(200);
-		expect(harness.runtime.contemplatorUsage.cacheRead).toBe(5000);
-		expect(harness.runtime.contemplatorUsage.cacheWrite).toBe(0);
-		expect(harness.runtime.contemplatorUsage.cost).toBeCloseTo(0.0015);
+		await vi.waitFor(() => expect(harness.runtime.agentUsage.runs).toBe(1));
+		expect(harness.runtime.agentUsage.input).toBe(1000);
+		expect(harness.runtime.agentUsage.output).toBe(200);
+		expect(harness.runtime.agentUsage.cacheRead).toBe(5000);
+		expect(harness.runtime.agentUsage.cacheWrite).toBe(0);
+		expect(harness.runtime.agentUsage.cost).toBeCloseTo(0.0015);
 	});
 });

@@ -72,6 +72,62 @@ export interface LlmUsageTotals {
 	runs: number;
 }
 
+export interface LlmUsageInput {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: { total?: number };
+}
+
+/**
+ * Merge session-scoped settings from branch entries into a plain settings object.
+ * Compaction details.sessionSettings snapshots are point-in-time backups of the
+ * in-memory overlay, which can lag out-of-band om.settings appends, so live
+ * om.settings entries always win: snapshots are applied first, then live entries
+ * last, regardless of branch position. Per-key application means a source only
+ * overwrites keys it actually carries, so snapshot-only keys (whose original
+ * om.settings entries were folded away pre-boundary) are still preserved. Used
+ * both by restoreSessionSettings and by the compaction hook when baking the
+ * snapshot for a new compaction entry, so the two always agree.
+ */
+export function computeSessionSettings(entries: readonly unknown[]): SessionSettings {
+	const restored: SessionSettings = {};
+	const snapshotSources: unknown[] = [];
+	const liveSources: unknown[] = [];
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown; details?: unknown };
+		if (candidate.customType === OM_SETTINGS) liveSources.push(candidate.data);
+		if (candidate.type === "compaction" && candidate.details && typeof candidate.details === "object") {
+			snapshotSources.push((candidate.details as { sessionSettings?: unknown }).sessionSettings);
+		}
+	}
+	const applySource = (source: unknown): void => {
+		if (!source || typeof source !== "object") return;
+		const data = source as Record<string, unknown>;
+		const booleanKeys = [
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "debugLog",
+		] as const;
+		const numberKeys = [
+			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
+			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
+			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
+		] as const;
+		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
+		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
+		if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
+		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
+		if (data.model === null) restored.model = null;
+		else if (isConfiguredModel(data.model)) restored.model = data.model;
+		if (data.contemplatorModel === null) restored.contemplatorModel = null;
+		else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
+	};
+	for (const source of snapshotSources) applySource(source);
+	for (const source of liveSources) applySource(source);
+	return restored;
+}
+
 export class Runtime {
 	config: Config = { ...DEFAULTS };
 	private baseConfig: Config = { ...DEFAULTS };
@@ -88,11 +144,11 @@ export class Runtime {
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
-	contemplatorUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
+	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
-	/** Accumulate usage from one background LLM call (contemplator flush or summary). */
-	recordContemplatorUsage(usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } }): void {
-		const totals = this.contemplatorUsage;
+	/** Accumulate usage from one background LLM call (contemplator flush/summary or observer/reflector/dropper run). */
+	recordAgentUsage(usage: LlmUsageInput): void {
+		const totals = this.agentUsage;
 		totals.input += usage.input ?? 0;
 		totals.output += usage.output ?? 0;
 		totals.cacheRead += usage.cacheRead ?? 0;
@@ -109,37 +165,7 @@ export class Runtime {
 	}
 
 	restoreSessionSettings(entries: readonly unknown[]): void {
-		const restored: SessionSettings = {};
-		for (const entry of entries) {
-			if (!entry || typeof entry !== "object") continue;
-			const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown; details?: unknown };
-			const settingsSources: unknown[] = [];
-			if (candidate.customType === OM_SETTINGS) settingsSources.push(candidate.data);
-			if (candidate.type === "compaction" && candidate.details && typeof candidate.details === "object") {
-				settingsSources.push((candidate.details as { sessionSettings?: unknown }).sessionSettings);
-			}
-			for (const source of settingsSources) {
-				if (!source || typeof source !== "object") continue;
-				const data = source as Record<string, unknown>;
-			const booleanKeys = [
-				"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "debugLog",
-			] as const;
-			const numberKeys = [
-				"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
-				"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
-				"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
-			] as const;
-			for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
-			for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
-			if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
-			if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
-			if (data.model === null) restored.model = null;
-			else if (isConfiguredModel(data.model)) restored.model = data.model;
-				if (data.contemplatorModel === null) restored.contemplatorModel = null;
-				else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
-			}
-		}
-		this.sessionSettings = normalizeSessionSettings(restored, this.baseConfig);
+		this.sessionSettings = normalizeSessionSettings(computeSessionSettings(entries), this.baseConfig);
 		this.applySessionSettings();
 	}
 
