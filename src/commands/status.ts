@@ -13,6 +13,8 @@ import {
 	type Entry,
 } from "../session-ledger/index.js";
 
+const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
+
 function pct(current: number, total: number): number {
 	return total > 0 ? Math.round((current / total) * 100) : 0;
 }
@@ -100,6 +102,33 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			if (runtime.agentUsage.runs > 0) {
 				const u = runtime.agentUsage;
 				lines.push(`Token usage:            ↑${formatTokens(u.input)} ↓${formatTokens(u.output)}${u.cacheRead ? ` R${formatTokens(u.cacheRead)}` : ""}${u.cacheWrite ? ` W${formatTokens(u.cacheWrite)}` : ""} $${u.cost.toFixed(3)} (${u.runs} call${u.runs === 1 ? "" : "s"})`);
+			}
+
+			// Probe stats come from the branch ledger (like /om:view contemplator):
+			// deduped by probeId so restore re-queues don't inflate the count, and
+			// entries without a probeId (sent before probe tracking existed) count
+			// individually. Survives reloads, unlike an in-memory counter.
+			const probeSuggestions: { suggestion: string }[] = [];
+			const probeIndexByProbeId = new Map<string, number>();
+			for (const entry of entries) {
+				if (entry.customType !== CONTEMPLATOR_SUGGESTION) continue;
+				const data = (entry.data ?? {}) as { suggestion?: unknown; probeId?: unknown };
+				if (typeof data.suggestion !== "string") continue;
+				if (typeof data.probeId !== "string") {
+					probeSuggestions.push({ suggestion: data.suggestion });
+					continue;
+				}
+				const existingIndex = probeIndexByProbeId.get(data.probeId);
+				if (existingIndex === undefined) {
+					probeIndexByProbeId.set(data.probeId, probeSuggestions.length);
+					probeSuggestions.push({ suggestion: data.suggestion });
+				} else {
+					probeSuggestions[existingIndex] = { suggestion: data.suggestion };
+				}
+			}
+			if (probeSuggestions.length > 0) {
+				lines.push(`Probes sent:            ${probeSuggestions.length}`);
+				lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
 			}
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {

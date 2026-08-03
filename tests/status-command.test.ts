@@ -249,4 +249,34 @@ describe("V3 /om:status", () => {
 
 		expect(output).not.toContain("Token usage");
 	});
+
+	it("shows probe count and the most recent probe from branch suggestions", async () => {
+		const suggestion = (probeId: string | undefined, text: string) => ({
+			id: `sug-${probeId ?? "legacy"}-${text.length}`,
+			parentId: "root",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			type: "custom",
+			customType: "om.contemplator.suggestion",
+			data: { suggestion: text, delivered: false, probeId },
+		});
+		const output = await setup({
+			entries: [
+				suggestion("p1", "First question?"),
+				suggestion(undefined, "Legacy question?"),
+				suggestion("p2", "Second question?"),
+				suggestion("p1", "First question? (re-queued)"),
+			],
+		}).run();
+
+		// Deduped by probeId (p1 re-queue collapses) + legacy entry without a probeId counts individually.
+		expect(output).toContain("Probes sent:            3");
+		expect(output).toContain("Last probe:             Second question?");
+	});
+
+	it("omits the probe lines when the branch has no suggestions", async () => {
+		const output = await setup({ entries: [] }).run();
+
+		expect(output).not.toContain("Probes sent");
+		expect(output).not.toContain("Last probe");
+	});
 });
