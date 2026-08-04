@@ -30,6 +30,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
 			compactionObserverEnabled: args.compactionObserverEnabled,
 		},
+		compactInFlight: false,
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
 		resolveModel: vi.fn(() => {
@@ -218,6 +219,26 @@ describe("V3 compaction hook", () => {
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("observational-memory-compaction", undefined);
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(
 			"Observational memory: compaction complete (overflow); resuming the interrupted agent run",
+			"info",
+		);
+	});
+
+	it("reports that OM proactive compaction will resume the agent", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, finish, runtime, ctx } = setup({ entries });
+		runtime.compactInFlight = true;
+
+		await run("raw-1");
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"observational-memory-compaction",
+			"OM compaction: running (proactive, resume pending)",
+		);
+
+		finish();
+
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+			"Observational memory: compaction complete (proactive); resuming the agent run",
 			"info",
 		);
 	});

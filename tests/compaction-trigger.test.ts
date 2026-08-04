@@ -10,6 +10,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			expect(name).toBe("agent_end");
 			handler = cb;
 		}),
+		sendMessage: vi.fn(),
 	};
 	const runtime = {
 		ensureConfig: vi.fn(),
@@ -25,7 +26,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 	};
 	registerCompactionTrigger(pi as any, runtime as any);
 	if (!handler) throw new Error("agent_end handler was not registered");
-	return { handler, runtime };
+	return { handler, runtime, pi };
 }
 
 function agentEnd(errorMessage?: string) {
@@ -89,12 +90,32 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
 			"observational-memory-compaction",
-			"OM compaction: running (proactive)",
+			"OM compaction: running (proactive, resume pending)",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction started (~3 tokens)",
+			"Observational memory: compaction started (~3 tokens); the agent will resume automatically",
 			"info",
 		);
+	});
+
+	it("starts a hidden continuation turn when proactive compaction completes", async () => {
+		const { handler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], {
+			compact: vi.fn((options) => options.onComplete()),
+		});
+
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Continue the current task from the compacted context without waiting for another user message.",
+			display: false,
+		}, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
 	});
 
 	it("skips passive mode", async () => {

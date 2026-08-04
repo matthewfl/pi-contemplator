@@ -65,15 +65,28 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					return;
 				}
 				if (hasUI) {
-					ui?.setStatus?.(COMPACTION_STATUS_KEY, "OM compaction: running (proactive)");
+					ui?.setStatus?.(COMPACTION_STATUS_KEY, "OM compaction: running (proactive, resume pending)");
 					ui?.notify(
-						`Observational memory: compaction started (~${currentTokens.toLocaleString()} tokens)`,
+						`Observational memory: compaction started (~${currentTokens.toLocaleString()} tokens); the agent will resume automatically`,
 						"info",
 					);
 				}
 				ctx.compact({
 					onComplete: () => {
 						runtime.compactInFlight = false;
+						try {
+							pi.sendMessage({
+								customType: "om.compaction.resume",
+								content: "Continue the current task from the compacted context without waiting for another user message.",
+								display: false,
+							}, {
+								deliverAs: "followUp",
+								triggerTurn: true,
+							});
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							if (hasUI) ui?.notify(`Observational memory: failed to resume after compaction: ${message}`, "error");
+						}
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;

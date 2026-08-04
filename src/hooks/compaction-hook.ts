@@ -29,8 +29,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
 		const reason = initiatedByOm ? "proactive" : event.reason;
 		if (ctx.hasUI) {
-			const retry = event.willRetry ? ", retry pending" : "";
-			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${retry})`);
+			let pending = "";
+			if (event.willRetry) pending = ", retry pending";
+			else if (initiatedByOm) pending = ", resume pending";
+			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${pending})`);
 			if (!initiatedByOm) {
 				const continuation = event.willRetry ? "; the interrupted agent run will resume automatically" : "";
 				ctx.ui.notify(`Observational memory: compaction started (${reason})${continuation}`, "info");
@@ -87,7 +89,9 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		const reason = initiatedByOm ? "proactive" : event.reason;
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
-		const continuation = event.willRetry ? "; resuming the interrupted agent run" : "";
+		let continuation = "";
+		if (event.willRetry) continuation = "; resuming the interrupted agent run";
+		else if (initiatedByOm) continuation = "; resuming the agent run";
 		ctx.ui.notify(`Observational memory: compaction complete (${reason})${continuation}`, "info");
 	});
 }
