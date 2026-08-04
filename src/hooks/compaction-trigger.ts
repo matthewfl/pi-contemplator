@@ -105,7 +105,11 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					onComplete: () => {
 						runtime.compactInFlight = false;
 						runtime.compactOrigin = undefined;
-						resumeAgent(pi, hasUI, ui);
+						// Only the agent-requested path terminated a turn that still had work to do;
+						// a proactive (threshold) compaction fires at agent_end after the turn
+						// ended naturally, so resuming it would spin up a spurious self-continuing
+						// turn (and risks a compact -> resume -> compact loop).
+						if (agentRequested) resumeAgent(pi, hasUI, ui);
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;

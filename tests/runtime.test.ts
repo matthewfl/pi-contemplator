@@ -173,4 +173,17 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.consolidationInFlight).toBe(false);
 		expect(runtime.consolidationPhase).toBeUndefined();
 	});
+
+	it("resets compaction state on session lifecycle (advanceContextGeneration)", () => {
+		const runtime = new Runtime();
+		runtime.compactInFlight = true;
+		runtime.compactRequested = true;
+		runtime.compactOrigin = "agent-requested";
+
+		runtime.advanceContextGeneration();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(runtime.compactRequested).toBe(false);
+		expect(runtime.compactOrigin).toBeUndefined();
+	});
 });

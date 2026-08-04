@@ -196,6 +196,14 @@ export class Runtime {
 
 	advanceContextGeneration(): void {
 		this.contextGeneration++;
+		// A session switch (or reload/shutdown) invalidates any in-flight or pending
+		// compaction state: compactRequested/compactInFlight/compactOrigin were set
+		// against a different branch and would otherwise leak across sessions
+		// (e.g. a request made in session A compacting session B's branch, or a
+		// never-cleared compactInFlight bricking all future compactions).
+		this.compactInFlight = false;
+		this.compactRequested = false;
+		this.compactOrigin = undefined;
 	}
 
 	getContextGeneration(): number {

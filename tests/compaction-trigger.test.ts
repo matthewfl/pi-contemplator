@@ -98,7 +98,7 @@ describe("V3 compaction trigger", () => {
 		);
 	});
 
-	it("starts a hidden continuation turn when proactive compaction completes", async () => {
+	it("does not resume the agent after a proactive (threshold) compaction completes", async () => {
 		const { handler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
 		const ctx = fakeCtx([dueBranch], {
 			compact: vi.fn((options) => options.onComplete()),
@@ -108,14 +108,10 @@ describe("V3 compaction trigger", () => {
 		await vi.runAllTimersAsync();
 
 		expect(runtime.compactInFlight).toBe(false);
-		expect(pi.sendMessage).toHaveBeenCalledWith({
-			customType: "om.compaction.resume",
-			content: "Continue the current task from the compacted context without waiting for another user message.",
-			display: false,
-		}, {
-			deliverAs: "followUp",
-			triggerTurn: true,
-		});
+		// A proactive compaction fires at agent_end after the turn ended naturally;
+		// resuming it would spin up a spurious self-continuing turn (and risk a
+		// compact -> resume -> compact loop), so no continuation message is sent.
+		expect(pi.sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("honors an agent-requested compaction even in passive mode and resumes afterward", async () => {
@@ -151,6 +147,27 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect((runtime as any).compactRequested).toBe(true);
 		expect(runtime.compactInFlight).toBe(false);
+	});
+
+	it("agent-requested compaction bypasses the overflow-skip guard (intentional)", async () => {
+		// compactRequested is set only by the compact_context tool, which returns terminate:true.
+		// A successful tool call implies the assistant response was parsed (stopReason tool_use),
+		// not an overflow/error — so the overflow guard would not have fired anyway. The bypass
+		// is intentional: the agent explicitly asked to compact and resume, so OM honors it.
+		const { handler, runtime, pi } = captureHandler({ compactAfterTokens: 99 });
+		(runtime as any).compactRequested = true;
+		const ctx = fakeCtx([belowBranch], {
+			compact: vi.fn((options) => options.onComplete()),
+		});
+
+		handler(agentEnd("context window exceeded: prompt is too long"), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "om.compaction.resume" }),
+			expect.objectContaining({ triggerTurn: true }),
+		);
 	});
 
 	it("skips passive mode", async () => {

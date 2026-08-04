@@ -56,4 +56,17 @@ describe("compact_context tool", () => {
 			terminate: true,
 		});
 	});
+
+	it("reports in_progress and does not double-request when a compaction is already running", async () => {
+		const state = runtime({ compactInFlight: true });
+		const tool = createCompactContextTool(state as any);
+
+		const result = await tool.execute("tool-1", {}, undefined as any, undefined as any, {} as any);
+
+		expect(state.compactRequested).toBe(false);
+		expect(result).toMatchObject({
+			details: { status: "in_progress" },
+			terminate: true,
+		});
+	});
 });
