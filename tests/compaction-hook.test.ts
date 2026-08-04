@@ -32,6 +32,9 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 		},
 		compactInFlight: false,
 		compactHookInFlight: args.compactHookInFlight ?? false,
+		compactionResumePending: false,
+		compactionResumeGeneration: 0,
+		compactionResumeTimer: undefined,
 		observerPromise: new Promise(() => {}),
 		resolveModel: vi.fn(() => {
 			throw new Error("resolveModel must not be called");
@@ -201,7 +204,7 @@ describe("V3 compaction hook", () => {
 
 	it("shows overflow retry status and confirms automatic resume after compaction", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaa")];
-		const { run, finish, ctx } = setup({ entries });
+		const { run, finish, runtime, ctx } = setup({ entries });
 
 		await run("raw-1", { reason: "overflow", willRetry: true });
 
@@ -221,6 +224,8 @@ describe("V3 compaction hook", () => {
 			"Observational memory: compaction complete (overflow); resuming the interrupted agent run",
 			"info",
 		);
+		expect(runtime.compactionResumePending).toBe(true);
+		clearTimeout(runtime.compactionResumeTimer);
 	});
 
 	it("reports that OM proactive compaction will resume the agent", async () => {

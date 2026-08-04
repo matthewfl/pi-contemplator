@@ -142,6 +142,9 @@ export class Runtime {
 	compactRequested = false;
 	compactOrigin: "proactive" | "agent-requested" | undefined;
 	compactHookInFlight = false;
+	compactionResumePending = false;
+	compactionResumeGeneration = 0;
+	compactionResumeTimer: ReturnType<typeof setTimeout> | undefined;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
@@ -204,6 +207,10 @@ export class Runtime {
 		this.compactInFlight = false;
 		this.compactRequested = false;
 		this.compactOrigin = undefined;
+		this.compactionResumePending = false;
+		this.compactionResumeGeneration += 1;
+		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
+		this.compactionResumeTimer = undefined;
 	}
 
 	getContextGeneration(): number {

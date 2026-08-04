@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { computeSessionSettings, type Runtime } from "../runtime.js";
 import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation-trigger.js";
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
+import { watchForNativeCompactionResume } from "./compaction-resume.js";
 
 const DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS = 20_000;
 const COMPACTION_STATUS_KEY = "observational-memory-compaction";
@@ -87,6 +88,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 	pi.on("session_compact", (event: any, ctx: any) => {
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
 		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
+		if (event.willRetry) watchForNativeCompactionResume(pi, runtime, ctx);
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 		let continuation = "";

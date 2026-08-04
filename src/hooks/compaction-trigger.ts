@@ -3,28 +3,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
 import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
+import {
+	registerCompactionResumeAcknowledgement,
+	resumeAfterCompaction,
+} from "./compaction-resume.js";
 
 const COMPACTION_STATUS_KEY = "observational-memory-compaction";
 
-function resumeAgent(pi: ExtensionAPI, hasUI: boolean, ui: any, afterFailure = false): void {
-	try {
-		pi.sendMessage({
-			customType: "om.compaction.resume",
-			content: afterFailure
-				? "Context compaction failed. Continue the current task without waiting for another user message."
-				: "Continue the current task from the compacted context without waiting for another user message.",
-			display: false,
-		}, {
-			deliverAs: "followUp",
-			triggerTurn: true,
-		});
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		if (hasUI) ui?.notify(`Observational memory: failed to resume after compaction: ${message}`, "error");
-	}
-}
-
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
+	registerCompactionResumeAcknowledgement(pi, runtime);
 	pi.on("agent_end", (event: any, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.compactInFlight) return;
@@ -108,7 +95,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						// Both explicit and proactive OM compactions are manual from Pi's
 						// perspective (willRetry=false), so Pi will not continue either one.
 						// Always enqueue a hidden continuation after OM finishes compacting.
-						resumeAgent(pi, hasUI, ui);
+						resumeAfterCompaction(pi, runtime, { hasUI, ui });
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
@@ -117,7 +104,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						if (error.message !== "Compaction cancelled" && hasUI) {
 							ui?.notify(`Observational memory: ${error.message}`, "error");
 						}
-						resumeAgent(pi, hasUI, ui, true);
+						resumeAfterCompaction(pi, runtime, { hasUI, ui }, true);
 					},
 				});
 			} catch (error) {
@@ -128,7 +115,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 				}
-				resumeAgent(pi, hasUI, ui, true);
+				resumeAfterCompaction(pi, runtime, { hasUI, ui }, true);
 			}
 		}, 0);
 	});

@@ -5,10 +5,11 @@ import { compactionEntry, textCustomMessage, type TestEntry } from "./fixtures/s
 
 function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
+	let agentStartHandler: (() => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
-			expect(name).toBe("agent_end");
-			handler = cb;
+			if (name === "agent_end") handler = cb;
+			if (name === "agent_start") agentStartHandler = cb as () => void;
 		}),
 		sendMessage: vi.fn(),
 	};
@@ -21,12 +22,16 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			passive: args.passive ?? false,
 		},
 		compactInFlight: args.compactInFlight ?? false,
+		compactionResumePending: false,
+		compactionResumeGeneration: 0,
+		compactionResumeTimer: undefined,
 		observerPromise: new Promise(() => {}),
 		reflectDropPromise: new Promise(() => {}),
 	};
 	registerCompactionTrigger(pi as any, runtime as any);
 	if (!handler) throw new Error("agent_end handler was not registered");
-	return { handler, runtime, pi };
+	if (!agentStartHandler) throw new Error("agent_start handler was not registered");
+	return { handler, agentStartHandler, runtime, pi };
 }
 
 function agentEnd(errorMessage?: string) {
