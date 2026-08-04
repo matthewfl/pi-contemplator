@@ -243,6 +243,27 @@ describe("V3 compaction hook", () => {
 		);
 	});
 
+	it("labels tool-requested compaction status and completion", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, finish, runtime, ctx } = setup({ entries });
+		runtime.compactInFlight = true;
+		(runtime as any).compactOrigin = "agent-requested";
+
+		await run("raw-1");
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"observational-memory-compaction",
+			"OM compaction: running (agent-requested, resume pending)",
+		);
+
+		finish();
+
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+			"Observational memory: compaction complete (agent-requested); resuming the agent run",
+			"info",
+		);
+	});
+
 	it("cancels duplicate in-flight compaction and notifies the UI", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaa")];
 		const { run, ctx } = setup({ entries, compactHookInFlight: true });

@@ -139,6 +139,8 @@ export class Runtime {
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
+	compactRequested = false;
+	compactOrigin: "proactive" | "agent-requested" | undefined;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;

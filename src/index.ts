@@ -6,6 +6,7 @@ import { registerCompactionHook } from "./hooks/compaction-hook.js";
 import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerConsolidationTrigger } from "./hooks/consolidation-trigger.js";
 import { Runtime } from "./runtime.js";
+import { registerCompactContextTool } from "./tools/compact-context.js";
 import { registerRecallTool } from "./tools/recall-observation.js";
 import { registerSearchMemoriesTool } from "./tools/search-memories.js";
 import { Contemplator } from "./agents/contemplator/agent.js";
@@ -25,6 +26,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 	registerStatusCommand(pi, runtime);
 	registerViewCommand(pi, runtime);
+	registerCompactContextTool(pi, runtime);
 	registerRecallTool(pi);
 	registerSearchMemoriesTool(pi);
 }

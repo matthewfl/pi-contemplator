@@ -27,7 +27,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		}
 
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
-		const reason = initiatedByOm ? "proactive" : event.reason;
+		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
 		if (ctx.hasUI) {
 			let pending = "";
 			if (event.willRetry) pending = ", retry pending";
@@ -86,7 +86,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 	pi.on("session_compact", (event: any, ctx: any) => {
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
-		const reason = initiatedByOm ? "proactive" : event.reason;
+		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 		let continuation = "";
