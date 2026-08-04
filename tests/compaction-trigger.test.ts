@@ -98,7 +98,7 @@ describe("V3 compaction trigger", () => {
 		);
 	});
 
-	it("does not resume the agent after a proactive (threshold) compaction completes", async () => {
+	it("resumes the agent after a proactive (threshold) compaction completes", async () => {
 		const { handler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
 		const ctx = fakeCtx([dueBranch], {
 			compact: vi.fn((options) => options.onComplete()),
@@ -108,10 +108,14 @@ describe("V3 compaction trigger", () => {
 		await vi.runAllTimersAsync();
 
 		expect(runtime.compactInFlight).toBe(false);
-		// A proactive compaction fires at agent_end after the turn ended naturally;
-		// resuming it would spin up a spurious self-continuing turn (and risk a
-		// compact -> resume -> compact loop), so no continuation message is sent.
-		expect(pi.sendMessage).not.toHaveBeenCalled();
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Continue the current task from the compacted context without waiting for another user message.",
+			display: false,
+		}, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
 	});
 
 	it("honors an agent-requested compaction even in passive mode and resumes afterward", async () => {
@@ -227,6 +231,32 @@ describe("V3 compaction trigger", () => {
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
 		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("resumes a mid-output length stop after proactive compaction", async () => {
+		const { handler, pi } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], {
+			model: { provider: "test", id: "model", contextWindow: 10 },
+			compact: vi.fn((options) => options.onComplete()),
+		});
+		const event = agentEnd() as any;
+		event.messages[event.messages.length - 1] = {
+			role: "assistant",
+			provider: "test",
+			model: "model",
+			content: [{ type: "text", text: "unfinished sentence" }],
+			stopReason: "length",
+			usage: { input: 9, output: 2, cacheRead: 0, cacheWrite: 0 },
+		};
+
+		handler(event, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "om.compaction.resume" }),
+			expect.objectContaining({ triggerTurn: true }),
+		);
 	});
 
 	it("does not await observer or reflect/drop promises before compacting", async () => {

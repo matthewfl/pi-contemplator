@@ -105,11 +105,10 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					onComplete: () => {
 						runtime.compactInFlight = false;
 						runtime.compactOrigin = undefined;
-						// Only the agent-requested path terminated a turn that still had work to do;
-						// a proactive (threshold) compaction fires at agent_end after the turn
-						// ended naturally, so resuming it would spin up a spurious self-continuing
-						// turn (and risks a compact -> resume -> compact loop).
-						if (agentRequested) resumeAgent(pi, hasUI, ui);
+						// Both explicit and proactive OM compactions are manual from Pi's
+						// perspective (willRetry=false), so Pi will not continue either one.
+						// Always enqueue a hidden continuation after OM finishes compacting.
+						resumeAgent(pi, hasUI, ui);
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
@@ -118,7 +117,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						if (error.message !== "Compaction cancelled" && hasUI) {
 							ui?.notify(`Observational memory: ${error.message}`, "error");
 						}
-						if (agentRequested) resumeAgent(pi, hasUI, ui, true);
+						resumeAgent(pi, hasUI, ui, true);
 					},
 				});
 			} catch (error) {
@@ -129,7 +128,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 				}
-				if (agentRequested) resumeAgent(pi, hasUI, ui, true);
+				resumeAgent(pi, hasUI, ui, true);
 			}
 		}, 0);
 	});
