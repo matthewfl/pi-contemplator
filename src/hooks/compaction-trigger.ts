@@ -1,15 +1,10 @@
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
 import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
-/**
- * Regex matching Pi's internal retryable error detection.
- * When the last assistant message in agent_end has stopReason "error" matching this pattern,
- * Pi will auto-retry — we must not trigger compaction between attempts.
- */
-const RETRYABLE_ERROR_RE =
-	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+const COMPACTION_STATUS_KEY = "observational-memory-compaction";
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("agent_end", (event: any, ctx: any) => {
@@ -17,39 +12,36 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
 
-		// Don't trigger compaction if Pi will auto-retry — the agent hasn't truly finished.
-		// Pi emits agent_end before its own retry check, so we must detect this ourselves.
-		// The next agent_end (after retry succeeds or exhausts attempts) will re-evaluate.
+		// agent_end fires before Pi decides whether to retry or compact-and-retry an
+		// interrupted request. Starting ctx.compact() here turns it into a manual
+		// compaction (willRetry=false) and can consume Pi's overflow recovery, leaving
+		// the agent idle. Let Pi handle every failed/aborted/overflow response; OM's
+		// session_before_compact hook still supplies the actual memory compaction.
 		const lastAssistant = [...event.messages].reverse().find(
 			(m): m is Extract<typeof m, { role: "assistant" }> => m.role === "assistant",
 		);
+		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : 0;
 		if (
 			lastAssistant
-			&& lastAssistant.stopReason === "error"
-			&& lastAssistant.errorMessage
-			&& RETRYABLE_ERROR_RE.test(lastAssistant.errorMessage)
-		) {
-			return;
-		}
+			&& (
+				lastAssistant.stopReason === "error"
+				|| lastAssistant.stopReason === "aborted"
+				|| isContextOverflow(lastAssistant, contextWindow)
+			)
+		) return;
 
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tokens = rawTokensSinceLastCompaction(entries);
 		// Resolve the proactive-compaction threshold from the active model's context
 		// window when ratio mode is configured. ctx.model is the current session model
 		// (Model<any> | undefined per ExtensionContext).
-		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
-		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
+		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow > 0 ? contextWindow : undefined);
 		if (tokens < threshold) return;
 
 		// Capture ctx properties synchronously — the setTimeout + async work below
 		// may outlive the extension ctx (stale after session replacement/reload).
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
-
-		if (hasUI) ui?.notify(
-			`Observational memory: compaction threshold reached (~${tokens.toLocaleString()} tokens); triggering compaction`,
-			"info",
-		);
 
 		runtime.compactInFlight = true;
 		setTimeout(() => {
@@ -72,13 +64,20 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					);
 					return;
 				}
+				if (hasUI) {
+					ui?.setStatus?.(COMPACTION_STATUS_KEY, "OM compaction: running (proactive)");
+					ui?.notify(
+						`Observational memory: compaction started (~${currentTokens.toLocaleString()} tokens)`,
+						"info",
+					);
+				}
 				ctx.compact({
 					onComplete: () => {
 						runtime.compactInFlight = false;
-						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
+						if (hasUI) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
 							return;
@@ -89,7 +88,10 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			} catch (error) {
 				runtime.compactInFlight = false;
 				const msg = error instanceof Error ? error.message : String(error);
-				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
+				if (hasUI) {
+					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
+				}
 			}
 		}, 0);
 	});

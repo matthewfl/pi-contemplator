@@ -47,7 +47,7 @@ function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {
 		cwd: "/tmp/project",
 		sessionManager: { getBranch },
 		hasUI: true,
-		ui: { notify: vi.fn() },
+		ui: { notify: vi.fn(), setStatus: vi.fn() },
 		isIdle: vi.fn(() => true),
 		compact: vi.fn(),
 		model: undefined,
@@ -87,8 +87,12 @@ describe("V3 compaction trigger", () => {
 		await vi.runAllTimersAsync();
 
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"observational-memory-compaction",
+			"OM compaction: running (proactive)",
+		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction threshold reached (~3 tokens); triggering compaction",
+			"Observational memory: compaction started (~3 tokens)",
 			"info",
 		);
 	});
@@ -116,11 +120,35 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
-	it("skips retryable assistant errors", async () => {
+	it.each([
+		"fetch failed: connection lost",
+		"context window exceeded: prompt is too long",
+	])("never races Pi retry/overflow recovery for assistant errors: %s", async (errorMessage) => {
 		const { handler, runtime } = captureHandler();
 		const ctx = fakeCtx([dueBranch]);
 
-		handler(agentEnd("fetch failed: connection lost"), ctx);
+		handler(agentEnd(errorMessage), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("leaves usage-detected context overflow to Pi even when stopReason is length", async () => {
+		const { handler, runtime } = captureHandler();
+		const ctx = fakeCtx([dueBranch], { model: { provider: "test", id: "model", contextWindow: 10 } });
+		const event = agentEnd() as any;
+		event.messages[event.messages.length - 1] = {
+			role: "assistant",
+			provider: "test",
+			model: "model",
+			content: [],
+			stopReason: "length",
+			usage: { input: 11, output: 0, cacheRead: 0, cacheWrite: 0 },
+		};
+
+		handler(event, ctx);
 		await vi.runAllTimersAsync();
 
 		expect(runtime.compactInFlight).toBe(false);

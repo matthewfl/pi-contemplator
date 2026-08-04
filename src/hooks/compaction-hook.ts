@@ -5,6 +5,7 @@ import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
 
 const DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS = 20_000;
+const COMPACTION_STATUS_KEY = "observational-memory-compaction";
 
 function observationsPoolMaxTokens(runtime: Runtime): number {
 	const value = (runtime.config as { observationsPoolMaxTokens?: unknown }).observationsPoolMaxTokens;
@@ -24,6 +25,20 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			}
 			return { cancel: true };
 		}
+
+		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
+		const reason = initiatedByOm ? "proactive" : event.reason;
+		if (ctx.hasUI) {
+			const retry = event.willRetry ? ", retry pending" : "";
+			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${retry})`);
+			if (!initiatedByOm) {
+				const continuation = event.willRetry ? "; the interrupted agent run will resume automatically" : "";
+				ctx.ui.notify(`Observational memory: compaction started (${reason})${continuation}`, "info");
+			}
+		}
+		event.signal?.addEventListener?.("abort", () => {
+			if (ctx.hasUI) ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+		}, { once: true });
 
 		runtime.compactHookInFlight = true;
 		try {
@@ -65,5 +80,14 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		} finally {
 			runtime.compactHookInFlight = false;
 		}
+	});
+
+	pi.on("session_compact", (event: any, ctx: any) => {
+		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
+		const reason = initiatedByOm ? "proactive" : event.reason;
+		if (!ctx.hasUI) return;
+		ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+		const continuation = event.willRetry ? "; resuming the interrupted agent run" : "";
+		ctx.ui.notify(`Observational memory: compaction complete (${reason})${continuation}`, "info");
 	});
 }

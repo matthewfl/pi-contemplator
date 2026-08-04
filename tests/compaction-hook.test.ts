@@ -16,11 +16,12 @@ import {
 } from "./fixtures/session.js";
 
 function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean; compactionObserverEnabled?: boolean }) {
-	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	let beforeHandler: ((event: any, ctx: any) => Promise<unknown>) | undefined;
+	let compactHandler: ((event: any, ctx: any) => void) | undefined;
 	const pi = {
-		on: vi.fn((eventName: string, cb: typeof handler) => {
-			expect(eventName).toBe("session_before_compact");
-			handler = cb;
+		on: vi.fn((eventName: string, cb: any) => {
+			if (eventName === "session_before_compact") beforeHandler = cb;
+			if (eventName === "session_compact") compactHandler = cb;
 		}),
 		appendEntry: vi.fn(),
 	};
@@ -38,19 +39,27 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 		launchConsolidationTask: vi.fn(() => Promise.resolve()),
 	};
 	registerCompactionHook(pi as any, runtime as any);
-	if (!handler) throw new Error("compaction handler was not registered");
+	if (!beforeHandler || !compactHandler) throw new Error("compaction handlers were not registered");
 	const ctx = {
 		cwd: "/tmp/project",
 		hasUI: true,
-		ui: { notify: vi.fn() },
+		ui: { notify: vi.fn(), setStatus: vi.fn() },
 		sessionManager: { getBranch: vi.fn(() => args.entries) },
 	};
-	const run = (firstKeptEntryId = args.entries.at(-1)?.id ?? "missing") => handler!({
+	const run = (firstKeptEntryId = args.entries.at(-1)?.id ?? "missing", event: Record<string, unknown> = {}) => beforeHandler!({
 		preparation: { firstKeptEntryId, tokensBefore: 123 },
 		branchEntries: args.entries,
 		signal: undefined,
+		reason: "manual",
+		willRetry: false,
+		...event,
 	}, ctx);
-	return { pi, runtime, ctx, run };
+	const finish = (event: Record<string, unknown> = {}) => compactHandler!({
+		reason: "manual",
+		willRetry: false,
+		...event,
+	}, ctx);
+	return { pi, runtime, ctx, run, finish };
 }
 
 describe("V3 compaction hook", () => {
@@ -187,6 +196,30 @@ describe("V3 compaction hook", () => {
 
 		expect(result).toMatchObject({ compaction: { details: { type: "om.folded" } } });
 		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	});
+
+	it("shows overflow retry status and confirms automatic resume after compaction", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, finish, ctx } = setup({ entries });
+
+		await run("raw-1", { reason: "overflow", willRetry: true });
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"observational-memory-compaction",
+			"OM compaction: running (overflow, retry pending)",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: compaction started (overflow); the interrupted agent run will resume automatically",
+			"info",
+		);
+
+		finish({ reason: "overflow", willRetry: true });
+
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("observational-memory-compaction", undefined);
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(
+			"Observational memory: compaction complete (overflow); resuming the interrupted agent run",
+			"info",
+		);
 	});
 
 	it("cancels duplicate in-flight compaction and notifies the UI", async () => {
