@@ -3,6 +3,7 @@ import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import { renderContemplator, stripAnsi } from "./contemplator-view.js";
 import { renderReviewer } from "./reviewer-view.js";
+import { executeRecall, formatRecallResultForTui } from "../tools/recall-observation.js";
 import {
 	fullProjection,
 	observationToSummaryLine,
@@ -12,15 +13,18 @@ import {
 	type Projection,
 } from "../session-ledger/index.js";
 
-function firstArg(args: unknown): string | undefined {
-	if (Array.isArray(args))
-		return typeof args[0] === "string" ? args[0] : undefined;
-	if (typeof args === "string") return args.trim().split(/\s+/)[0];
-	if (args && typeof args === "object" && "mode" in args) {
+function argAt(args: unknown, index: number): string | undefined {
+	if (Array.isArray(args)) return typeof args[index] === "string" ? args[index] : undefined;
+	if (typeof args === "string") return args.trim().split(/\s+/)[index];
+	if (args && typeof args === "object" && "mode" in args && index === 0) {
 		const mode = (args as { mode?: unknown }).mode;
 		return typeof mode === "string" ? mode : undefined;
 	}
 	return undefined;
+}
+
+function firstArg(args: unknown): string | undefined {
+	return argAt(args, 0);
 }
 
 function renderList<T>(
@@ -70,7 +74,7 @@ export function registerViewCommand(
 
 	pi.registerCommand("om:view", {
 		description:
-			"Print and copy observational memory content (visible, full, contemplator, reviewer, or reviews)",
+			"Print and copy observational memory content (visible, full, memory, contemplator, reviewer, or reviews)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -85,6 +89,20 @@ export function registerViewCommand(
 					"info",
 				);
 			};
+
+			if (mode === "memory") {
+				const memoryId = argAt(args, 1);
+				if (!memoryId) {
+					ctx.ui.notify("Usage: /om:view memory <12-character-memory-id>", "info");
+					return;
+				}
+				const recalled = executeRecall({ id: memoryId }, () => entries);
+				const output = recalled.details?.reviews.length
+					? recalled.content.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("\n")
+					: formatRecallResultForTui(recalled, false);
+				await notifyWithCopy(output);
+				return;
+			}
 
 			if (mode === "contemplator") {
 				const output = renderContemplator(entries);
@@ -124,7 +142,7 @@ export function registerViewCommand(
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [visible|full|contemplator|reviewer|reviews]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full|memory <id>|contemplator|reviewer|reviews]", "info");
 				return;
 			}
 

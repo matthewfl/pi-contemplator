@@ -97,6 +97,21 @@ describe("V3 /om:view", () => {
 		expectNoDiagnostics(output);
 	});
 
+	it("renders one memory by id as a view subcommand", async () => {
+		const entries = [
+			textCustomMessage("source", "The underlying evidence."),
+			observationsRecordedEntry("om-obs", {
+				observations: [observation("aaaaaaaaaaaa", { content: "The recorded memory.", sourceEntryIds: ["source"] })],
+				coversUpToId: "source",
+			}),
+		];
+		const { clipboardText, output } = await setup(entries).run(["memory", "aaaaaaaaaaaa"]);
+
+		expect(clipboardText).toContain("The recorded memory.");
+		expect(clipboardText).toContain("source");
+		expect(output).toContain(COPY_SUCCESS);
+	});
+
 	it("renders the contemplator view as a view subcommand", async () => {
 		const entries = [{
 			id: "cont-1",
@@ -226,6 +241,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [visible|full|contemplator|reviewer|reviews]");
+		expect(output).toBe("Usage: /om:view [visible|full|memory <id>|contemplator|reviewer|reviews]");
 	});
 });
