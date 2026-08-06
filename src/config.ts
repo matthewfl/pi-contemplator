@@ -74,7 +74,7 @@ export const DEFAULTS: Config = {
 	showWorkerNotifications: true,
 	passive: false,
 	compactionObserverEnabled: true,
-	contemplatorEnabled: false,
+	contemplatorEnabled: true,
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
 	contemplatorMinNewReflections: 1,

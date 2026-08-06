@@ -79,7 +79,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `compactionObserverEnabled` | boolean | `true` | Launches the fire-and-forget observer when compaction begins. Set `false` to compare compaction behavior without this sidecar. |
-| `contemplatorEnabled` | boolean | `false` | Enables the slower background contemplator and advisory suggestions. |
+| `contemplatorEnabled` | boolean | `true` | Enables the slower background contemplator and advisory suggestions. |
 | `contemplatorModel` | object | session model | Optional model override used only by the contemplator. |
 | `reviewerEnabled` | boolean | `true` | Enables scoped structural-review escalation. When false, the contemplator receives neither the review prompt nor the `request_review` tool. |
 | `reviewerModel` | object | session model | Optional model override used only by short-lived structural reviewers. |
