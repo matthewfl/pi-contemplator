@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import { renderContemplator, stripAnsi } from "./contemplator-view.js";
+import { renderReviewer } from "./reviewer-view.js";
 import {
 	fullProjection,
 	observationToSummaryLine,
@@ -95,6 +96,16 @@ export function registerViewCommand(
 				return;
 			}
 
+			if (mode === "reviewer") {
+				const output = renderReviewer(entries);
+				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
+				ctx.ui.notify(
+					`${output}\n\n${copied ? "Copied /om:view reviewer output to clipboard." : "Warning: failed to copy /om:view reviewer output to clipboard."}`,
+					"info",
+				);
+				return;
+			}
+
 			if (mode === "reviews") {
 				const output = renderList(
 					fullProjection(entries).reviews ?? [],
@@ -113,7 +124,7 @@ export function registerViewCommand(
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [visible|full|contemplator]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full|contemplator|reviewer|reviews]", "info");
 				return;
 			}
 

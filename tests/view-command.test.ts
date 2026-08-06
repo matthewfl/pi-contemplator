@@ -226,6 +226,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [visible|full|contemplator]");
+		expect(output).toBe("Usage: /om:view [visible|full|contemplator|reviewer|reviews]");
 	});
 });

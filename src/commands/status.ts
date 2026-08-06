@@ -14,6 +14,7 @@ import {
 } from "../session-ledger/index.js";
 
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
+const REVIEWER_NOTICE = "om.reviewer.notice";
 
 function pct(current: number, total: number): number {
 	return total > 0 ? Math.round((current / total) * 100) : 0;
@@ -23,6 +24,10 @@ function formatTokens(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
 	return String(n);
+}
+
+function truncateStatusText(value: string, limit = 1_000): string {
+	return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
 
 function tokenSum(items: { tokenCount: number }[]): number {
@@ -97,6 +102,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
+				`Structural reviewer:     ${runtime.config.reviewerEnabled === false ? "disabled" : "enabled"}`,
+				`Reviewer model:          ${runtime.config.reviewerModel ? `${runtime.config.reviewerModel.provider}/${runtime.config.reviewerModel.id}` : "current session model"}`,
 			];
 
 			if (runtime.agentUsage.runs > 0) {
@@ -131,7 +138,21 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
 			}
 
-			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
+			const latestReview = full.reviews?.at(-1);
+			if (latestReview) {
+				lines.push(`Last review:            [${latestReview.id}] ${latestReview.scope} ${latestReview.outcome}`);
+				if (latestReview.outcome === "proposal") lines.push(`Last review summary:    ${truncateStatusText(latestReview.summary)}`);
+				else lines.push(`Last review reason:     ${truncateStatusText(latestReview.reason)}`);
+			}
+			let latestNotice: string | undefined;
+			for (const entry of entries) {
+				if (entry.customType !== REVIEWER_NOTICE || !entry.data || typeof entry.data !== "object") continue;
+				const content = (entry.data as { content?: unknown }).content;
+				if (typeof content === "string") latestNotice = content;
+			}
+			if (latestNotice) lines.push(`Last reviewer notice:  ${truncateStatusText(latestNotice)}`);
+
+			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
 				lines.push("", "── In flight ──");
 				if (runtime.consolidationInFlight) {
 					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
@@ -139,6 +160,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				}
 				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
+				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}
 
 			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastDropperError) {

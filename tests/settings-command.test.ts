@@ -35,6 +35,31 @@ describe("/om:settings", () => {
 		expect(runtime.config.contemplatorMinTurns).toBe(8);
 	});
 
+	it("supports reviewer quick toggles", async () => {
+		let commandHandler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
+		const pi = {
+			on: vi.fn(),
+			appendEntry: vi.fn(),
+			registerCommand: vi.fn((_name: string, command: { handler: typeof commandHandler }) => {
+				commandHandler = command.handler;
+			}),
+		};
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		registerSettingsCommand(pi as any, runtime);
+		if (!commandHandler) throw new Error("settings handler not registered");
+		const notify = vi.fn();
+		await commandHandler("reviewer off", {
+			cwd: "/tmp/project",
+			sessionManager: { getBranch: () => [] },
+			ui: { notify },
+		});
+
+		expect(runtime.config.reviewerEnabled).toBe(false);
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_SETTINGS, { version: 1, reviewerEnabled: false });
+		expect(notify).toHaveBeenCalledWith("Structural reviewer: disabled for this session.", "info");
+	});
+
 	it("rejects a pool maximum that is not greater than the target", async () => {
 		let commandHandler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 		const pi = {

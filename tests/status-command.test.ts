@@ -273,6 +273,26 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Last probe:             Second question?");
 	});
 
+	it("shows the latest reviewer result and queued primary-agent notice", async () => {
+		const summary = "A reusable trace would preserve the repeated relationship reconstruction.";
+		const entries = [
+			{
+				id: "review-result", type: "custom", customType: "om.review.result", data: { result: {
+					id: "aaaaaaaaaaaa", version: 1, reviewRequestId: "request-1", scope: "workflow", outcome: "proposal", proposalKind: "workflow", createdAt: 1, requestedBy: "contemplator",
+					title: "Reusable trace", summary, evidence: "[bbbbbbbbbbbb] recurrence", inefficiency: "Repeated reconstruction", conceptualDesign: "Keep a durable trace.", expectedEffect: "Better reuse", uncertainties: "Environment fit remains unknown.",
+				} },
+			},
+			{
+				id: "review-notice", type: "custom", customType: "om.reviewer.notice", data: { reviewRequestId: "request-1", reviewMemoryId: "aaaaaaaaaaaa", scope: "workflow", content: `BACKGROUND WORKFLOW REVIEW PROPOSAL [aaaaaaaaaaaa]\\n\\n${summary}` },
+			},
+		] as TestEntry[];
+
+		const output = await setup({ entries }).run();
+		expect(output).toContain("Last review:            [aaaaaaaaaaaa] workflow proposal");
+		expect(output).toContain(`Last review summary:    ${summary}`);
+		expect(output).toContain("Last reviewer notice:  BACKGROUND WORKFLOW REVIEW PROPOSAL [aaaaaaaaaaaa]");
+	});
+
 	it("omits the probe lines when the branch has no suggestions", async () => {
 		const output = await setup({ entries: [] }).run();
 

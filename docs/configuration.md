@@ -49,6 +49,11 @@ The extension loads config once for its runtime. After changing settings, restar
       "provider": "openrouter",
       "id": "anthropic/claude-sonnet-4"
     },
+    "reviewerEnabled": true,
+    "reviewerModel": {
+      "provider": "openrouter",
+      "id": "anthropic/claude-sonnet-4"
+    },
     "debugLog": false
   }
 }
@@ -76,12 +81,14 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `compactionObserverEnabled` | boolean | `true` | Launches the fire-and-forget observer when compaction begins. Set `false` to compare compaction behavior without this sidecar. |
 | `contemplatorEnabled` | boolean | `false` | Enables the slower background contemplator and advisory suggestions. |
 | `contemplatorModel` | object | session model | Optional model override used only by the contemplator. |
+| `reviewerEnabled` | boolean | `true` | Enables scoped structural-review escalation. When false, the contemplator receives neither the review prompt nor the `request_review` tool. |
+| `reviewerModel` | object | session model | Optional model override used only by short-lived structural reviewers. |
 | `contemplatorMinNewObservations` | positive integer | `8` | Minimum newly recorded observations that can wake the contemplator. |
 | `contemplatorMinNewReflections` | positive integer | `1` | Minimum newly recorded reflections that can wake the contemplator. |
 | `contemplatorMinTurns` | positive integer | `10` | Minimum main-agent turns between contemplator runs. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
-`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, toggles the asynchronous compaction observer, and selects an available contemplator model (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
+`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, structural reviewer, and asynchronous compaction observer, and selects available contemplator or reviewer models (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings reviewer on`, `/om:settings reviewer off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 
@@ -188,6 +195,14 @@ When enabled, the extension launches an observer asynchronously from `session_be
 The contemplator is an optional persistent background reasoning loop. It receives coalesced observations/reflections, uses its own context, and can place a short advisory suggestion into a later main-agent model request. Its messages, summaries, and pending suggestions are stored as `om.contemplator.*` custom entries in the main session log, so they survive Pi reloads and follow the active branch/fork without being injected into the main model automatically. It has no coding tools and does not replace the main agent's compaction. Its own context is summarized with Pi's standard `generateSummary` compaction routine when it grows large. Suggestions are advisory and may be empty.
 
 `contemplatorModel` can select a stronger/slower model independently of the observer, reflector, and dropper. If unset, it uses the current session model.
+
+## `reviewerEnabled` and `reviewerModel`
+
+Structural reviewers are short-lived agents commissioned only when the contemplator identifies a sufficiently supported recurring workflow or software-design issue. `reviewerEnabled` defaults to `true`. Set it to `false` to keep the contemplator limited to probes: its prompt and tool list then contain no reviewer instructions or `request_review` tool.
+
+`reviewerModel` selects the model used for these reviews. If it is unset, a review uses the current session model rather than the contemplator model. This lets you use a stronger model for bounded design reviews without changing ordinary contemplation.
+
+Use `/om:view reviewer` to inspect the persisted reviewer assistant/tool output and any compact proposal notice queued for the primary agent. `/om:status` shows the latest review memory id, its summary or no-proposal reason, and the most recent primary-agent notice (up to 1,000 characters).
 
 ## `passive`
 

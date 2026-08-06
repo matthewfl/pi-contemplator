@@ -52,6 +52,10 @@ export interface Config {
 	compactionObserverEnabled: boolean;
 	contemplatorEnabled: boolean;
 	contemplatorModel?: ConfiguredModel;
+	/** Allow the contemplator to commission scoped structural reviewers. */
+	reviewerEnabled: boolean;
+	/** Optional model override used only by short-lived structural reviewers. */
+	reviewerModel?: ConfiguredModel;
 	contemplatorMinNewObservations: number;
 	contemplatorMinNewReflections: number;
 	contemplatorMinTurns: number;
@@ -71,6 +75,7 @@ export const DEFAULTS: Config = {
 	passive: false,
 	compactionObserverEnabled: true,
 	contemplatorEnabled: false,
+	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
 	contemplatorMinNewReflections: 1,
 	contemplatorMinTurns: 10,
@@ -218,11 +223,14 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.compactionObserverEnabled === "boolean") normalized.compactionObserverEnabled = value.compactionObserverEnabled;
 	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
+	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
 	const contemplatorModel = normalizeModel(value.contemplatorModel);
 	if (contemplatorModel) normalized.contemplatorModel = contemplatorModel;
+	const reviewerModel = normalizeModel(value.reviewerModel);
+	if (reviewerModel) normalized.reviewerModel = reviewerModel;
 	return normalized;
 }
 

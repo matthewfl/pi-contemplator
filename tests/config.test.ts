@@ -48,6 +48,7 @@ describe("V3 config", () => {
 			passive: false,
 			compactionObserverEnabled: true,
 			contemplatorEnabled: false,
+			reviewerEnabled: true,
 			contemplatorMinNewObservations: 8,
 			contemplatorMinNewReflections: 1,
 			contemplatorMinTurns: 10,
@@ -90,6 +91,20 @@ describe("V3 config", () => {
 			showWorkerNotifications: false,
 			passive: true,
 			debugLog: true,
+		});
+	});
+
+	it("loads reviewer enablement and model overrides", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				reviewerEnabled: false,
+				reviewerModel: { provider: "openai", id: "reviewer", thinking: "medium" },
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			reviewerEnabled: false,
+			reviewerModel: { provider: "openai", id: "reviewer", thinking: "medium" },
 		});
 	});
 

@@ -3,6 +3,10 @@ export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const OM_REVIEW_REQUEST = "om.review.request";
 export const OM_REVIEW_RESULT = "om.review.result";
+/** Persisted assistant/tool output from a short-lived structural reviewer. */
+export const OM_REVIEWER_MESSAGE = "om.reviewer.message";
+/** Compact proposal notice queued for the primary agent. */
+export const OM_REVIEWER_NOTICE = "om.reviewer.notice";
 export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;

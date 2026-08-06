@@ -35,12 +35,13 @@ export type SessionSettings = Partial<Pick<Config,
 	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
-	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled"
+	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "reviewerEnabled"
 	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
 	model?: ConfiguredModel | null;
 	contemplatorModel?: ConfiguredModel | null;
+	reviewerModel?: ConfiguredModel | null;
 };
 
 export interface ResolveCtx {
@@ -107,7 +108,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (!source || typeof source !== "object") return;
 		const data = source as Record<string, unknown>;
 		const booleanKeys = [
-			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "debugLog",
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "reviewerEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
@@ -122,6 +123,8 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;
 		else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
+		if (data.reviewerModel === null) restored.reviewerModel = null;
+		else if (isConfiguredModel(data.reviewerModel)) restored.reviewerModel = data.reviewerModel;
 	};
 	for (const source of snapshotSources) applySource(source);
 	for (const source of liveSources) applySource(source);
@@ -177,12 +180,13 @@ export class Runtime {
 	}
 
 	private applySessionSettings(): void {
-		const { model, contemplatorModel, ...scalarSettings } = this.sessionSettings;
+		const { model, contemplatorModel, reviewerModel, ...scalarSettings } = this.sessionSettings;
 		this.config = {
 			...this.baseConfig,
 			...scalarSettings,
 			...(model === undefined ? {} : { model: model ?? undefined }),
 			...(contemplatorModel === undefined ? {} : { contemplatorModel: contemplatorModel ?? undefined }),
+			...(reviewerModel === undefined ? {} : { reviewerModel: reviewerModel ?? undefined }),
 		};
 	}
 

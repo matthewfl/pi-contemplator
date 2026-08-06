@@ -1,4 +1,4 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { hashId } from "../../ids.js";
@@ -20,6 +20,8 @@ export interface RunStructuralReviewArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	recordUsage?: (usage: LlmUsageInput) => void;
+	/** Receives the reviewer's assistant output for durable debug/view rendering. */
+	onMessages?: (messages: AgentMessage[]) => void;
 }
 
 export function buildReviewRequestMessage(request: StructuralReviewRequest): Message {
@@ -80,6 +82,7 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 	const stream = loop([buildReviewRequestMessage(args.request)], context, config, args.signal, streamSimple);
 	for await (const event of stream) logAgentStreamError("reviewer", event);
 	const messages = await stream.result();
+	args.onMessages?.(messages.filter((message): message is AgentMessage => message.role === "assistant"));
 	if (args.recordUsage) {
 		for (const message of messages) {
 			if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);

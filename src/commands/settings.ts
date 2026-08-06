@@ -10,7 +10,7 @@ type ModelRegistryLike = {
 	getAll(): Array<{ provider: string; id: string }>;
 };
 type NumberSetting = "observeAfterTokens" | "reflectAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns";
-type BooleanSetting = "contemplatorEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
+type BooleanSetting = "contemplatorEnabled" | "reviewerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "current session model";
@@ -170,8 +170,13 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			ctx.ui.notify(`Compaction observer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
+		if (argument === "reviewer on" || argument === "reviewer off") {
+			appendSettings(pi, runtime, { reviewerEnabled: argument.endsWith("on") });
+			ctx.ui.notify(`Structural reviewer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
+			return;
+		}
 		if (argument) {
-			ctx.ui.notify("Usage: /om:settings [on|off|compaction on|compaction off]", "info");
+			ctx.ui.notify("Usage: /om:settings [on|off|reviewer on|reviewer off|compaction on|compaction off]", "info");
 			return;
 		}
 
@@ -180,6 +185,8 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			const choice = await ctx.ui.select("Observational memory settings (session overrides)", [
 				`Contemplation: ${scalarLabel(runtime, "contemplatorEnabled")}`,
 				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
+				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
+				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
 				`Memory worker model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `default (${modelLabel(runtime.getDefaultConfig().model)})`}`,
 				`Observation threshold: ${scalarLabel(runtime, "observeAfterTokens")}`,
@@ -201,6 +208,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			]);
 			if (!choice || choice === "Done") return;
 			if (choice.startsWith("Contemplation:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
+			else if (choice.startsWith("Structural reviewer:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
 			else if (choice.startsWith("Compaction observer:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
 			else if (choice.startsWith("Worker notifications:")) appendSettings(pi, runtime, { showWorkerNotifications: !runtime.config.showWorkerNotifications });
 			else if (choice.startsWith("Passive mode:")) appendSettings(pi, runtime, { passive: !runtime.config.passive });
@@ -208,6 +216,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			else if (choice.startsWith("Contemplation model:")) {
 				const model = await chooseModel(ctx, runtime.config.contemplatorModel, "Contemplation model");
 				if (model !== undefined) appendSettings(pi, runtime, { contemplatorModel: model });
+			} else if (choice.startsWith("Structural reviewer model:")) {
+				const model = await chooseModel(ctx, runtime.config.reviewerModel, "Structural reviewer model");
+				if (model !== undefined) appendSettings(pi, runtime, { reviewerModel: model });
 			} else if (choice.startsWith("Memory worker model:")) {
 				const model = await chooseModel(ctx, runtime.config.model, "Memory worker model");
 				if (model !== undefined) appendSettings(pi, runtime, { model });
