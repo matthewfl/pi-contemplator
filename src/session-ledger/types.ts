@@ -1,6 +1,8 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
+export const OM_REVIEW_REQUEST = "om.review.request";
+export const OM_REVIEW_RESULT = "om.review.result";
 export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
@@ -53,18 +55,86 @@ export type ObservationsDroppedEntryData = {
 	coversUpToId: string;
 };
 
+export type ReviewScope = "workflow" | "software";
+export type ReviewOutcome = "proposal" | "no_proposal";
+
+export type StructuralReviewRequest = {
+	id: string;
+	scope: ReviewScope;
+	evidence: string;
+	concern: string;
+	reviewFocus: string;
+	constraints?: string;
+	createdAt: number;
+	requestedBy: "contemplator";
+};
+
+type ReviewResultBase = {
+	id: string;
+	version: 1;
+	reviewRequestId: string;
+	scope: ReviewScope;
+	outcome: ReviewOutcome;
+	createdAt: number;
+	requestedBy: "contemplator";
+};
+
+export type WorkflowReviewProposal = ReviewResultBase & {
+	outcome: "proposal";
+	proposalKind: "workflow";
+	title: string;
+	summary: string;
+	evidence: string;
+	inefficiency: string;
+	conceptualDesign: string;
+	inputs?: string;
+	outputs?: string;
+	integration?: string;
+	expectedEffect: string;
+	uncertainties: string;
+};
+
+export type SoftwareReviewProposal = ReviewResultBase & {
+	outcome: "proposal";
+	proposalKind: "software";
+	title: string;
+	summary: string;
+	evidence: string;
+	structuralIssue: string;
+	conceptualDesign: string;
+	preservedBehavior: string;
+	expectedEffect: string;
+	uncertainties: string;
+};
+
+export type ReviewNoProposal = ReviewResultBase & {
+	outcome: "no_proposal";
+	reason: string;
+	evidenceReviewed: string;
+	reconsiderIf?: string;
+};
+
+export type ReviewResult = WorkflowReviewProposal | SoftwareReviewProposal | ReviewNoProposal;
+
+export type ReviewRequestEntryData = { request: StructuralReviewRequest };
+export type ReviewResultEntryData = { result: ReviewResult };
+
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
 	version: 1;
 	fullFold: boolean;
 	observations: Observation[];
 	reflections: Reflection[];
+	/** Optional so compactions written before review results remain readable. */
+	reviews?: ReviewResult[];
 };
 
 export type V3MemoryCustomType =
 	| typeof OM_OBSERVATIONS_RECORDED
 	| typeof OM_REFLECTIONS_RECORDED
-	| typeof OM_OBSERVATIONS_DROPPED;
+	| typeof OM_OBSERVATIONS_DROPPED
+	| typeof OM_REVIEW_REQUEST
+	| typeof OM_REVIEW_RESULT;
 
 export function isRelevance(value: unknown): value is Relevance {
 	return typeof value === "string" && (RELEVANCE_VALUES as readonly string[]).includes(value);
@@ -138,6 +208,42 @@ export function isObservationsDroppedData(value: unknown): value is Observations
 	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
 }
 
+function isReviewScope(value: unknown): value is ReviewScope {
+	return value === "workflow" || value === "software";
+}
+
+function isOptionalString(value: unknown): boolean {
+	return value === undefined || isNonEmptyString(value);
+}
+
+export function isStructuralReviewRequest(value: unknown): value is StructuralReviewRequest {
+	if (!isPlainRecord(value)) return false;
+	return isNonEmptyString(value.id) && isReviewScope(value.scope) &&
+		isNonEmptyString(value.evidence) && isNonEmptyString(value.concern) &&
+		isNonEmptyString(value.reviewFocus) && isOptionalString(value.constraints) &&
+		typeof value.createdAt === "number" && Number.isFinite(value.createdAt) && value.requestedBy === "contemplator";
+}
+
+export function isReviewResult(value: unknown): value is ReviewResult {
+	if (!isPlainRecord(value)) return false;
+	const base = isMemoryId(value.id) && value.version === 1 && isNonEmptyString(value.reviewRequestId) &&
+		isReviewScope(value.scope) && (value.outcome === "proposal" || value.outcome === "no_proposal") &&
+		typeof value.createdAt === "number" && Number.isFinite(value.createdAt) && value.requestedBy === "contemplator";
+	if (!base) return false;
+	if (value.outcome === "no_proposal") {
+		return isNonEmptyString(value.reason) && isNonEmptyString(value.evidenceReviewed) && isOptionalString(value.reconsiderIf);
+	}
+	if (value.scope === "workflow") {
+		return value.proposalKind === "workflow" && isNonEmptyString(value.title) && isNonEmptyString(value.summary) &&
+			isNonEmptyString(value.evidence) && isNonEmptyString(value.inefficiency) && isNonEmptyString(value.conceptualDesign) &&
+			isOptionalString(value.inputs) && isOptionalString(value.outputs) && isOptionalString(value.integration) &&
+			isNonEmptyString(value.expectedEffect) && isNonEmptyString(value.uncertainties);
+	}
+	return value.proposalKind === "software" && isNonEmptyString(value.title) && isNonEmptyString(value.summary) &&
+		isNonEmptyString(value.evidence) && isNonEmptyString(value.structuralIssue) && isNonEmptyString(value.conceptualDesign) &&
+		isNonEmptyString(value.preservedBehavior) && isNonEmptyString(value.expectedEffect) && isNonEmptyString(value.uncertainties);
+}
+
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
 	return (
@@ -147,7 +253,8 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 		Array.isArray(value.observations) &&
 		value.observations.every(isObservation) &&
 		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection)
+		value.reflections.every(isReflection) &&
+		(value.reviews === undefined || (Array.isArray(value.reviews) && value.reviews.every(isReviewResult)))
 	);
 }
 
@@ -173,6 +280,22 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	data: ObservationsDroppedEntryData;
 } {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
+}
+
+export function isReviewRequestEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_REVIEW_REQUEST;
+	data: ReviewRequestEntryData;
+} {
+	return entry.type === "custom" && entry.customType === OM_REVIEW_REQUEST && isPlainRecord(entry.data) && isStructuralReviewRequest(entry.data.request);
+}
+
+export function isReviewResultEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_REVIEW_RESULT;
+	data: ReviewResultEntryData;
+} {
+	return entry.type === "custom" && entry.customType === OM_REVIEW_RESULT && isPlainRecord(entry.data) && isReviewResult(entry.data.result);
 }
 
 export function buildObservationsRecordedData(

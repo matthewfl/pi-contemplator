@@ -2,9 +2,11 @@ import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
+	isReviewResultEntry,
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReviewResult,
 } from "./types.js";
 
 const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
@@ -40,12 +42,18 @@ export type RecalledReflection = {
 	reflectionRecordIndex: number;
 };
 
+export type RecalledReviewResult = {
+	review: ReviewResult;
+	reviewEntryId: string;
+};
+
 export type RecallResult =
 	| {
 			status: "not_found";
 			memoryId: string;
 			kind: undefined;
 			reflections: [];
+			reviews: [];
 			observations: [];
 			sourceEntries: [];
 			missingSourceEntryIds: [];
@@ -57,8 +65,9 @@ export type RecallResult =
 	| {
 			status: "found";
 			memoryId: string;
-			kind: "observation" | "reflection" | "mixed";
+			kind: "observation" | "reflection" | "review" | "mixed";
 			reflections: RecalledReflection[];
+			reviews: RecalledReviewResult[];
 			observations: RecalledObservation[];
 			sourceEntries: Entry[];
 			missingSourceEntryIds: string[];
@@ -70,6 +79,7 @@ export type RecallResult =
 
 type IndexedObservation = ObservationLedgerLocation & { observation: Observation };
 type IndexedReflection = ReflectionLedgerLocation & { reflection: Reflection };
+type IndexedReviewResult = { review: ReviewResult; entryId: string };
 
 function isSourceEntry(entry: Entry): boolean {
 	return SOURCE_TYPES.has(entry.type);
@@ -93,10 +103,12 @@ function uniqueStrings(values: string[]): string[] {
 function indexLedger(entries: Entry[]): {
 	observations: IndexedObservation[];
 	reflections: IndexedReflection[];
+	reviews: IndexedReviewResult[];
 	droppedIds: Set<string>;
 } {
 	const observations: IndexedObservation[] = [];
 	const reflections: IndexedReflection[] = [];
+	const reviews: IndexedReviewResult[] = [];
 	const droppedIds = new Set<string>();
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
@@ -115,10 +127,12 @@ function indexLedger(entries: Entry[]): {
 		}
 		if (isObservationsDroppedEntry(entry)) {
 			entry.data.observationIds.forEach((id) => droppedIds.add(id));
+			continue;
 		}
+		if (isReviewResultEntry(entry)) reviews.push({ review: entry.data.result, entryId: entry.id });
 	}
 
-	return { observations, reflections, droppedIds };
+	return { observations, reflections, reviews, droppedIds };
 }
 
 function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
@@ -159,6 +173,7 @@ function notFound(memoryId: string): RecallResult {
 		memoryId,
 		kind: undefined,
 		reflections: [],
+		reviews: [],
 		observations: [],
 		sourceEntries: [],
 		missingSourceEntryIds: [],
@@ -170,11 +185,12 @@ function notFound(memoryId: string): RecallResult {
 }
 
 export function recallMemorySources(entries: Entry[], memoryId: string): RecallResult {
-	const { observations: indexedObservations, reflections: indexedReflections, droppedIds } = indexLedger(entries);
+	const { observations: indexedObservations, reflections: indexedReflections, reviews: indexedReviews, droppedIds } = indexLedger(entries);
 	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
 	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
+	const reviewMatches = indexedReviews.filter(({ review }) => review.id === memoryId);
 
-	if (directObservationMatches.length === 0 && reflectionMatches.length === 0) return notFound(memoryId);
+	if (directObservationMatches.length === 0 && reflectionMatches.length === 0 && reviewMatches.length === 0) return notFound(memoryId);
 
 	const observationsById = new Map<string, IndexedObservation>();
 	for (const indexed of indexedObservations) {
@@ -211,21 +227,26 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		reflectionEntryId: entryId,
 		reflectionRecordIndex: recordIndex,
 	}));
+	const recalledReviews: RecalledReviewResult[] = reviewMatches.map(({ review, entryId }) => ({ review, reviewEntryId: entryId }));
 	const sourceEntries = uniqueById(recalledObservations.flatMap((match) => match.sourceEntries));
 	const missingSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.missingSourceEntryIds));
 	const nonSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.nonSourceEntryIds));
 	const uniqueMissingSupportingObservationIds = uniqueStrings(missingSupportingObservationIds);
-	const matchCount = directObservationMatches.length + reflectionMatches.length;
+	const matchCount = directObservationMatches.length + reflectionMatches.length + reviewMatches.length;
+	const kinds = [directObservationMatches.length > 0, reflectionMatches.length > 0, reviewMatches.length > 0].filter(Boolean).length;
 
 	return {
 		status: "found",
 		memoryId,
-		kind: directObservationMatches.length > 0 && reflectionMatches.length > 0
+		kind: kinds > 1
 			? "mixed"
-			: reflectionMatches.length > 0
-				? "reflection"
-				: "observation",
+			: reviewMatches.length > 0
+				? "review"
+				: reflectionMatches.length > 0
+					? "reflection"
+					: "observation",
 		reflections: recalledReflections,
+		reviews: recalledReviews,
 		observations: recalledObservations,
 		sourceEntries,
 		missingSourceEntryIds,

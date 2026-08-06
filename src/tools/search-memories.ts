@@ -11,7 +11,7 @@ import { Text } from "@earendil-works/pi-tui";
 
 export const SEARCH_MEMORIES_TOOL_NAME = "search_memories";
 export const SEARCH_MEMORIES_DESCRIPTION =
-	"Search recorded observational-memory observations and reflections by topic or keywords on the current branch. Use the returned memory id with recall to recover exact source context.";
+	"Search recorded observational-memory observations, reflections, and advisory review results by topic or keywords on the current branch. Use the returned memory id with recall to recover exact source context or a full advisory proposal.";
 
 export type SearchMemoriesArgs = Static<typeof SEARCH_MEMORIES_PARAMETERS>;
 
@@ -20,10 +20,17 @@ export type SearchDetails = {
 	limit: number;
 	observationsSearched: number;
 	reflectionsSearched: number;
+	reviewsSearched: number;
 	results: MemorySearchResult[];
 };
 
 function formatResult(result: MemorySearchResult): string {
+	if (result.kind === "review") {
+		const label = result.outcome === "proposal"
+			? `${result.scope} proposal${result.title ? ` — ${result.title}` : ""}`
+			: `${result.scope} review concluded with no proposal`;
+		return `- [${result.id}] ${label}: ${result.content}`;
+	}
 	const status = result.status === "dropped" ? " [dropped]" : "";
 	const relevance = result.relevance ? ` [${result.relevance}]` : "";
 	const timestamp = result.timestamp ? ` ${result.timestamp}` : "";
@@ -52,6 +59,7 @@ export function executeSearchMemories(branchEntries: Entry[], params: SearchMemo
 			limit,
 			observationsSearched: 0,
 			reflectionsSearched: 0,
+			reviewsSearched: 0,
 			results: [],
 		};
 		return { content: [{ type: "text", text: "Search query must not be empty." }], details };
@@ -61,11 +69,11 @@ export function executeSearchMemories(branchEntries: Entry[], params: SearchMemo
 	const details: SearchDetails = { ...search, limit };
 	const text = search.results.length
 		? [
-				`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections):`,
+				`Found ${search.results.length} matching memories (searched ${search.observationsSearched} observations, ${search.reflectionsSearched} reflections, and ${search.reviewsSearched} review results):`,
 				...search.results.map(formatResult),
 				"Use recall(<id>) for exact source context.",
 			].join("\n")
-		: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations and ${search.reflectionsSearched} reflections). Try alternate or more distinctive keywords.`;
+		: `No memories matched ${JSON.stringify(query)} (searched ${search.observationsSearched} observations, ${search.reflectionsSearched} reflections, and ${search.reviewsSearched} review results). Try alternate or more distinctive keywords.`;
 	return { content: [{ type: "text", text }], details };
 }
 

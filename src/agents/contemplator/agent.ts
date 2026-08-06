@@ -4,7 +4,8 @@ import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { fullProjection, type Entry } from "../../session-ledger/index.js";
+import { assistantOutputTokensBeforeMemory, fullProjection, isReviewRequestEntry, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
 import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
@@ -12,8 +13,28 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
 import { CONTEMPLATOR_SYSTEM } from "./prompts.js";
+import { runStructuralReview } from "../reviewer/agent.js";
 
-interface PendingUpdate { observations: string[]; reflections: string[]; }
+interface PendingUpdate {
+	observations: string[];
+	reflections: string[];
+	reviews: string[];
+	mainAgentOutputTokens: number;
+}
+
+type Intervention =
+	| { kind: "probe"; question: string }
+	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> };
+
+type QueueStructuralReviewOptions = {
+	ctx: MemoryUpdateCtx;
+	requestArgs: Extract<Intervention, { kind: "review" }>["request"];
+	branchEntries: Entry[];
+	model: Model<any>;
+	apiKey: string;
+	headers: Record<string, string> | undefined;
+	sessionGeneration: number;
+};
 
 function mergeMemoryLines(existing: string[], incoming: string[]): string[] {
 	const merged = [...existing];
@@ -26,29 +47,57 @@ function mergeMemoryLines(existing: string[], incoming: string[]): string[] {
 	}
 	return merged;
 }
+
+function reviewSummaryLine(review: ReviewResult): string {
+	return review.outcome === "proposal"
+		? `[${review.id}] ${review.scope} proposal: ${review.title} — ${review.summary}`
+		: `[${review.id}] ${review.scope} review concluded with no proposal — ${review.reason}`;
+}
+
+function reviewRequestKey(request: RequestReviewArgs): string {
+	return `${request.scope}:${hashId(`${request.evidence}\n${request.concern}`)}`;
+}
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
-const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, high-level probing question, optionally preceded by one short sentence of context." }) });
+const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
+const ReviewScopeSchema = Type.Union([Type.Literal("workflow"), Type.Literal("software")]);
+export const RequestReviewSchema = Type.Object({
+	scope: ReviewScopeSchema,
+	evidence: Type.String({ minLength: 1, description: "Memory-grounded evidence for the suspected recurring pattern." }),
+	concern: Type.String({ minLength: 1, description: "Suspected structural concern stated as a possibility." }),
+	review_focus: Type.String({ minLength: 1, description: "What the reviewer should determine without prescribing a solution." }),
+	constraints: Type.Optional(Type.String({ minLength: 1, description: "Relevant user requirements, boundaries, or uncertainties." })),
+});
 type SendProbeArgs = Static<typeof SendProbeSchema>;
+export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
 function createSendProbeTool(onProbe: (question: string) => void): AgentTool<typeof SendProbeSchema> {
 	return {
 		name: "send_probe",
 		label: "Send probe",
-		description: "Send one concise, high-level probing question to the primary agent asynchronously. Use it only when the question could materially improve the agent’s framing, expose a weak assumption, break an unproductive loop, or reveal a better decomposition. The message must contain a focused question, optionally preceded by one short sentence of context. Include relevant memory identifiers when useful. Do not use it for routine reminders, status updates, or direct task management.",
+		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review.",
 		parameters: SendProbeSchema,
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
 			onProbe(question);
-			debugLog("contemplator.tool_call", {
-				tool: "send_probe",
-				suggestionLength: question.length,
-			});
-			return {
-				content: [{ type: "text", text: "Probe queued for the primary agent's next context." }],
-				details: { queued: true },
-			};
+			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length });
+			return { content: [{ type: "text", text: "Probe queued for the primary agent's next context." }], details: { queued: true } };
+		},
+	};
+}
+
+export function createRequestReviewTool(onReview: (request: RequestReviewArgs) => string): AgentTool<typeof RequestReviewSchema> {
+	return {
+		name: "request_review",
+		label: "Request structural review",
+		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution.",
+		parameters: RequestReviewSchema,
+		execute: async (_toolCallId, params: RequestReviewArgs) => {
+			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
+			const reviewRequestId = onReview(request);
+			debugLog("contemplator.review_requested", { reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length });
+			return { content: [{ type: "text", text: `${request.scope === "workflow" ? "Workflow" : "Software"} review queued as [${reviewRequestId}].` }], details: { queued: true, scope: request.scope, reviewRequestId } };
 		},
 	};
 }
@@ -59,6 +108,8 @@ export class Contemplator {
 	private running = false;
 	private seenObservationIds = new Set<string>();
 	private seenReflectionIds = new Set<string>();
+	private seenReviewIds = new Set<string>();
+	private inFlightReviewKeys = new Set<string>();
 	private deliveredProbeIds = new Set<string>();
 	private requeuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
@@ -81,6 +132,8 @@ export class Contemplator {
 			this.pending = undefined;
 			this.seenObservationIds.clear();
 			this.seenReflectionIds.clear();
+			this.seenReviewIds.clear();
+			this.inFlightReviewKeys.clear();
 			this.deliveredProbeIds.clear();
 			this.requeuedProbeIds.clear();
 			this.turnsSinceRun = 0;
@@ -140,6 +193,7 @@ export class Contemplator {
 			const projection = fullProjection(entries);
 			this.seenObservationIds = new Set(projection.observations.map((item) => item.id));
 			this.seenReflectionIds = new Set(projection.reflections.map((item) => item.id));
+			this.seenReviewIds = new Set((projection.reviews ?? []).map((item) => item.id));
 			this.pending = undefined;
 			this.turnsSinceRun = 0;
 		}
@@ -195,33 +249,41 @@ export class Contemplator {
 		const projection = fullProjection(ctx.sessionManager.getBranch() as Entry[]);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
 		const reflections = projection.reflections.map((item) => `[${item.id}] ${item.content}`);
-		const newObservations = observations.filter((line) => {
-			const id = line.match(/^\[([^\]]+)\]/)?.[1] ?? line;
-			return !this.seenObservationIds.has(id);
-		});
-		const newReflections = reflections.filter((line) => {
-			const id = line.match(/^\[([^\]]+)\]/)?.[1] ?? line;
-			return !this.seenReflectionIds.has(id);
-		});
-		for (const line of newObservations) this.seenObservationIds.add(line.match(/^\[([^\]]+)\]/)?.[1] ?? line);
-		for (const line of newReflections) this.seenReflectionIds.add(line.match(/^\[([^\]]+)\]/)?.[1] ?? line);
+		const reviews = projection.reviews ?? [];
+		const newObservationItems = projection.observations.filter((item) => !this.seenObservationIds.has(item.id));
+		const newReflectionItems = projection.reflections.filter((item) => !this.seenReflectionIds.has(item.id));
+		const newReviewItems = reviews.filter((item) => !this.seenReviewIds.has(item.id));
+		const newObservations = newObservationItems.map((item) => `[${item.id}] ${item.content}`);
+		const newReflections = newReflectionItems.map((item) => `[${item.id}] ${item.content}`);
+		const newReviews = newReviewItems.map(reviewSummaryLine);
+		for (const item of newObservationItems) this.seenObservationIds.add(item.id);
+		for (const item of newReflectionItems) this.seenReflectionIds.add(item.id);
+		for (const item of newReviewItems) this.seenReviewIds.add(item.id);
 		debugLog("contemplator.update", {
 			observationCount: observations.length,
 			reflectionCount: reflections.length,
 			newObservationCount: newObservations.length,
 			newReflectionCount: newReflections.length,
+			newReviewCount: newReviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 			pending: this.pending !== undefined,
 			running: this.running,
 		});
-		if (newObservations.length > 0 || newReflections.length > 0) {
+		if (newObservations.length > 0 || newReflections.length > 0 || newReviews.length > 0) {
+			const observationsById = new Map(projection.observations.map((item) => [item.id, item]));
+			const sourceEntryIds = [
+				...newObservationItems.flatMap((item) => item.sourceEntryIds),
+				...newReflectionItems.flatMap((item) => item.supportingObservationIds.flatMap((id) => observationsById.get(id)?.sourceEntryIds ?? [])),
+			];
 			this.pending = {
 				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
 				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
+				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
+				mainAgentOutputTokens: assistantOutputTokensBeforeMemory(ctx.sessionManager.getBranch() as Entry[], sourceEntryIds),
 			};
 		}
 		if (!this.pending) return;
-		const enoughMemories = this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
+		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
 			debugLog("contemplator.waiting", {
 				enoughMemories,
@@ -235,6 +297,7 @@ export class Contemplator {
 		debugLog("contemplator.triggered", {
 			pendingObservationCount: this.pending.observations.length,
 			pendingReflectionCount: this.pending.reflections.length,
+			pendingReviewCount: this.pending.reviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 		});
 		void this.flush(ctx);
@@ -258,6 +321,7 @@ export class Contemplator {
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
 			newReflectionCount: update.reflections.length,
+			newReviewCount: update.reviews.length,
 			historyMessageCount: this.history.length,
 		});
 		try {
@@ -276,6 +340,8 @@ export class Contemplator {
 					this.pending = {
 						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
 						reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
+						mainAgentOutputTokens: update.mainAgentOutputTokens,
 					};
 					this.turnsSinceRun = turnsBeforeRun;
 				}
@@ -294,19 +360,34 @@ export class Contemplator {
 			const updateSections: string[] = [];
 			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
 			if (update.reflections.length > 0) updateSections.push(`REFLECTIONS:\n${update.reflections.join("\n")}`);
+			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
-			  const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, unexplored alternatives, and well-supported unproductive loops.\n\nCall \`send_probe\` only when one focused, memory-grounded question could materially improve the primary agent’s thinking.` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\ntokens generated by my agent so far: ${update.mainAgentOutputTokens}\n\nACTIVITY SIGNALS:\n\nTotal primary-agent generated tokens: ${update.mainAgentOutputTokens}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Use no more than one intervention.` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
-			let probe: string | undefined;
+			let intervention: Intervention | undefined;
 			const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 			const getBranch = () => branchEntries;
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
 			const recallTool = createRecallAgentTool(getBranch);
 			const sendProbe = createSendProbeTool((question) => {
-				probe = question;
+				if (intervention) throw new Error("Only one contemplator intervention is allowed per update.");
+				intervention = { kind: "probe", question };
 			});
-			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>] };
+			const requestReview = createRequestReviewTool((request) => {
+				if (intervention) throw new Error("Only one contemplator intervention is allowed per update.");
+				const id = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+				intervention = { kind: "review", request: {
+					id,
+					scope: request.scope,
+					evidence: request.evidence,
+					concern: request.concern,
+					reviewFocus: request.review_focus,
+					constraints: request.constraints,
+				} };
+				return id;
+			});
+			const context: AgentContext = { systemPrompt: CONTEMPLATOR_SYSTEM, messages: this.history.slice(0, -1), tools: [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>, requestReview as AgentTool<any>] };
 			const config: AgentLoopConfig = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
@@ -330,7 +411,7 @@ export class Contemplator {
 				messageCount: result.length,
 				assistantFound: assistant !== undefined,
 				assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
-				suggestionQueued: probe !== undefined,
+				intervention: intervention?.kind,
 			});
 			if (sessionGeneration === this.sessionGeneration) {
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
@@ -342,7 +423,16 @@ export class Contemplator {
 				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
 				this.markTipPersisted(ctx);
 			}
-			if (probe && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, probe, "send_probe");
+			if (intervention?.kind === "probe" && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, intervention.question, "send_probe");
+			if (intervention?.kind === "review" && sessionGeneration === this.sessionGeneration) this.queueStructuralReview({
+				ctx,
+				requestArgs: intervention.request,
+				branchEntries,
+				model: resolved.model as Model<any>,
+				apiKey: resolved.apiKey,
+				headers: resolved.headers,
+				sessionGeneration,
+			});
 			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration);
 		} catch (error) {
 			failed = true;
@@ -353,6 +443,8 @@ export class Contemplator {
 				this.pending = {
 					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
 					reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+					reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
+					mainAgentOutputTokens: update.mainAgentOutputTokens,
 				};
 				this.turnsSinceRun = turnsBeforeRun;
 			}
@@ -384,6 +476,74 @@ export class Contemplator {
 			deliverAs: "steer",
 			triggerTurn: false,
 			source,
+		});
+	}
+
+	private queueStructuralReview(options: QueueStructuralReviewOptions): void {
+		const { ctx, requestArgs, branchEntries, model, apiKey, headers, sessionGeneration } = options;
+		const requestForKey: RequestReviewArgs = {
+			scope: requestArgs.scope,
+			evidence: requestArgs.evidence,
+			concern: requestArgs.concern,
+			review_focus: requestArgs.reviewFocus,
+			constraints: requestArgs.constraints,
+		};
+		const key = reviewRequestKey(requestForKey);
+		const duplicateRequest = branchEntries.some((entry) => isReviewRequestEntry(entry) && reviewRequestKey({
+			scope: entry.data.request.scope,
+			evidence: entry.data.request.evidence,
+			concern: entry.data.request.concern,
+			review_focus: entry.data.request.reviewFocus,
+			constraints: entry.data.request.constraints,
+		}) === key);
+		if (this.inFlightReviewKeys.has(key) || duplicateRequest) {
+			debugLog("contemplator.review_coalesced", { scope: requestArgs.scope, key });
+			return;
+		}
+		this.inFlightReviewKeys.add(key);
+		const request: StructuralReviewRequest = {
+			...requestArgs,
+			id: requestArgs.id,
+			createdAt: Date.now(),
+			requestedBy: "contemplator",
+		};
+		this.pi.appendEntry(OM_REVIEW_REQUEST, { version: 1, request });
+		this.markTipPersisted(ctx);
+		void this.runtime.launchReviewTask(ctx, async () => {
+			try {
+				debugLog("reviewer.started", { reviewRequestId: request.id, scope: request.scope });
+				const result = await runStructuralReview({
+					request,
+					model,
+					apiKey,
+					headers,
+					getBranch: () => branchEntries,
+					recordUsage: (usage) => this.runtime.recordAgentUsage(usage),
+				});
+				if (!result) {
+					debugLog("reviewer.failed", { reviewRequestId: request.id, reason: "no_terminal_tool_call" });
+					return;
+				}
+				if (sessionGeneration !== this.sessionGeneration) {
+					debugLog("reviewer.failed", { reviewRequestId: request.id, reason: "session_changed" });
+					return;
+				}
+				this.pi.appendEntry(OM_REVIEW_RESULT, { result });
+				this.markTipPersisted(ctx);
+				debugLog(result.outcome === "proposal" ? "reviewer.proposal_created" : "reviewer.no_proposal", { reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope });
+				if (result.outcome === "proposal") {
+					this.pi.sendMessage({
+						customType: "om.review.proposal",
+						content: `BACKGROUND ${result.scope.toUpperCase()} REVIEW PROPOSAL [${result.id}]\n\n${result.summary}\n\nRecall memory [${result.id}] to read the full conceptual proposal when it is relevant.\n\nThis is advisory. Evaluate it against the actual environment and current work.`,
+						display: false,
+						details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope },
+					}, { deliverAs: "steer", triggerTurn: false });
+					debugLog("reviewer.primary_notice_queued", { reviewRequestId: request.id, reviewMemoryId: result.id });
+				}
+				this.runtime.notifyMemoryUpdate(ctx);
+			} finally {
+				this.inFlightReviewKeys.delete(key);
+			}
 		});
 	}
 

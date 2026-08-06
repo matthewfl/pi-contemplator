@@ -25,6 +25,29 @@ export function entryIndexForId(entries: Entry[], entryId: string | undefined): 
 	return idx ?? -1;
 }
 
+/**
+ * Sum primary-agent output tokens from assistant messages before the latest
+ * source entry associated with a memory update.
+ */
+export function assistantOutputTokensBeforeMemory(entries: Entry[], sourceEntryIds: readonly string[]): number {
+	const sourceIndex = sourceEntryIds.reduce((latest, sourceEntryId) => {
+		const index = entryIndexForId(entries, sourceEntryId);
+		return index > latest ? index : latest;
+	}, -1);
+	if (sourceIndex < 0) return 0;
+
+	let total = 0;
+	for (let index = 0; index < sourceIndex; index++) {
+		const entry = entries[index];
+		if (entry.type !== "message" || !isObject(entry.message) || entry.message.role !== "assistant") continue;
+		const usage = entry.message.usage;
+		if (isObject(usage) && typeof usage.output === "number" && Number.isFinite(usage.output)) {
+			total += Math.max(0, usage.output);
+		}
+	}
+	return total;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }

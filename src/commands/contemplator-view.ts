@@ -2,6 +2,8 @@ import type { Entry } from "../session-ledger/index.js";
 
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
+const REVIEW_REQUEST = "om.review.request";
+const REVIEW_RESULT = "om.review.result";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
@@ -58,12 +60,25 @@ function renderMessage(message: StoredMessage, compacted: boolean): string {
 export function renderContemplator(entries: Entry[]): string {
 	const messages: Array<{ message: StoredMessage; compacted: boolean }> = [];
 	const suggestions: Array<{ suggestion: string; delivered: boolean }> = [];
+	const reviews: Array<{ requestId: string; scope: string; outcome: string; memoryId?: string }> = [];
 	const suggestionIndexByProbeId = new Map<string, number>();
 	for (const entry of entries) {
 		if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
 			const data = entry.data as { message?: unknown; compacted?: unknown };
 			if (data.message && typeof data.message === "object") {
 				messages.push({ message: data.message as StoredMessage, compacted: data.compacted === true });
+			}
+		}
+		if (entry.customType === REVIEW_REQUEST && entry.data && typeof entry.data === "object") {
+			const request = (entry.data as { request?: { id?: unknown; scope?: unknown } }).request;
+			if (typeof request?.id === "string" && typeof request.scope === "string") reviews.push({ requestId: request.id, scope: request.scope, outcome: "pending" });
+		}
+		if (entry.customType === REVIEW_RESULT && entry.data && typeof entry.data === "object") {
+			const result = (entry.data as { result?: { reviewRequestId?: unknown; scope?: unknown; outcome?: unknown; id?: unknown } }).result;
+			if (typeof result?.reviewRequestId === "string" && typeof result.scope === "string" && typeof result.outcome === "string") {
+				const existing = reviews.find((review) => review.requestId === result.reviewRequestId);
+				const review = { requestId: result.reviewRequestId, scope: result.scope, outcome: result.outcome, memoryId: typeof result.id === "string" ? result.id : undefined };
+				if (existing) Object.assign(existing, review); else reviews.push(review);
 			}
 		}
 		if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
@@ -100,6 +115,10 @@ export function renderContemplator(entries: Entry[]): string {
 	if (suggestions.length > 0) {
 		lines.push("", `${DIM}── Probes ──${RESET}`);
 		for (const item of suggestions) lines.push(`${item.delivered ? "[delivered]" : "[pending]"} ${item.suggestion}`);
+	}
+	if (reviews.length > 0) {
+		lines.push("", `${DIM}── Structural reviews ──${RESET}`);
+		for (const review of reviews) lines.push(`[${review.outcome}] ${review.scope} ${review.requestId}${review.memoryId ? ` → [${review.memoryId}]` : ""}`);
 	}
 	return lines.join("\n");
 }

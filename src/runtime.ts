@@ -135,6 +135,8 @@ export class Runtime {
 	configLoaded = false;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
+	reviewInFlight = false;
+	reviewPromise: Promise<void> | null = null;
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
@@ -262,6 +264,16 @@ export class Runtime {
 			if (this.consolidationPromise === promise) this.consolidationPromise = null;
 		});
 		this.consolidationPromise = promise;
+		return promise;
+	}
+
+	launchReviewTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
+		this.reviewInFlight = true;
+		const promise = this.launchTrackedTask(ctx, "structural review", work, () => {
+			this.reviewInFlight = false;
+			if (this.reviewPromise === promise) this.reviewPromise = null;
+		});
+		this.reviewPromise = promise;
 		return promise;
 	}
 

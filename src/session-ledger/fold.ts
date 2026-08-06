@@ -5,9 +5,12 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_REVIEW_RESULT,
+	isReviewResultEntry,
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReviewResult,
 } from "./types.js";
 
 export type FoldLedgerOptions = {
@@ -28,6 +31,9 @@ export type FoldedLedger = {
 	observationsById: Map<string, Observation>;
 	/** All first-valid reflection records by id. */
 	reflectionsById: Map<string, Reflection>;
+	/** All first-valid advisory review results by memory id. */
+	reviews: ReviewResult[];
+	reviewsById: Map<string, ReviewResult>;
 };
 
 function foldEndIndex(entries: Entry[], upToEntryId: string | undefined): number {
@@ -50,6 +56,7 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {
 	const observationsById = new Map<string, Observation>();
 	const reflectionsById = new Map<string, Reflection>();
+	const reviewsById = new Map<string, ReviewResult>();
 	const droppedObservationIds = new Set<string>();
 	const endIdx = foldEndIndex(entries, options.upToEntryId);
 
@@ -82,19 +89,27 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 			for (const observationId of entry.data.observationIds) {
 				droppedObservationIds.add(observationId);
 			}
+			continue;
+		}
+
+		if (entry.customType === OM_REVIEW_RESULT && isReviewResultEntry(entry) && !reviewsById.has(entry.data.result.id)) {
+			reviewsById.set(entry.data.result.id, entry.data.result);
 		}
 	}
 
 	const observations = Array.from(observationsById.values());
 	const activeObservations = observations.filter((observation) => !droppedObservationIds.has(observation.id));
 	const reflections = Array.from(reflectionsById.values());
+	const reviews = Array.from(reviewsById.values());
 
 	return {
 		observations,
 		activeObservations,
 		droppedObservationIds,
 		reflections,
+		reviews,
 		observationsById,
 		reflectionsById,
+		reviewsById,
 	};
 }

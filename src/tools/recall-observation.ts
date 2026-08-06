@@ -10,7 +10,7 @@ import {
 	type RecallResult,
 	type RecalledObservation,
 } from "../session-ledger/recall.js";
-import type { Observation, Reflection } from "../session-ledger/index.js";
+import type { Observation, Reflection, ReviewResult } from "../session-ledger/index.js";
 import { renderRecallSourceEntries, renderRecallSourceEntry } from "../serialize.js";
 import { estimateEntryTokens } from "../tokens.js";
 
@@ -63,6 +63,7 @@ export type RecallObservationToolDetails = {
 	collision: boolean;
 	partial: boolean;
 	reflections: ReflectionDetails[];
+	reviews: ReviewResult[];
 	directObservationMatches: RecallObservationMatchDetails[];
 	observations: RecallObservationMatchDetails[];
 	matches: RecallObservationMatchDetails[];
@@ -180,6 +181,7 @@ function emptyDetails(status: RecallObservationToolStatus, memoryId: string, mes
 		collision: false,
 		partial: false,
 		reflections: [],
+		reviews: [],
 		directObservationMatches: [],
 		observations: [],
 		matches: [],
@@ -245,6 +247,32 @@ function unavailableSupportingLineText(item: RecallUnavailableSupportingObservat
 	return `Supporting observation ${item.observationId} is unavailable on the current branch.`;
 }
 
+function renderReviewText(review: ReviewResult): string {
+	const lines = [
+		`[${review.id}] ${review.scope.toUpperCase()} REVIEW ${review.outcome === "proposal" ? "PROPOSAL" : "CONCLUDED WITH NO PROPOSAL"}`,
+		"Author: background reviewer",
+		"Requested by: contemplator",
+		"Status: advisory; not evidence of implementation or validation",
+		`Review request: ${review.reviewRequestId}`,
+	];
+	if (review.outcome === "no_proposal") {
+		lines.push("", "Reason:", review.reason, "", "Evidence reviewed:", review.evidenceReviewed);
+		if (review.reconsiderIf) lines.push("", "Reconsider if:", review.reconsiderIf);
+		return lines.join("\n");
+	}
+	lines.push("", "Title:", review.title, "", "Summary:", review.summary, "", "Evidence:", review.evidence);
+	if (review.proposalKind === "workflow") {
+		lines.push("", "Inefficiency:", review.inefficiency, "", "Conceptual design:", review.conceptualDesign);
+		if (review.inputs) lines.push("", "Inputs:", review.inputs);
+		if (review.outputs) lines.push("", "Outputs:", review.outputs);
+		if (review.integration) lines.push("", "Integration:", review.integration);
+	} else {
+		lines.push("", "Structural issue:", review.structuralIssue, "", "Conceptual design:", review.conceptualDesign, "", "Preserved behavior:", review.preservedBehavior);
+	}
+	lines.push("", "Expected effect:", review.expectedEffect, "", "Uncertainties:", review.uncertainties);
+	return lines.join("\n");
+}
+
 function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): string {
 	const sections: string[] = [];
 	if (result.collision) sections.push(`Memory id ${result.memoryId} matched multiple observations/reflections; returning all available evidence from the current branch.`);
@@ -265,6 +293,7 @@ function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): s
 
 function resultDetails(result: Extract<RecallResult, { status: "found" }>, includeSourceContent = true): RecallObservationToolDetails {
 	const reflections = result.reflections.map((match) => reflectionDetails(match.reflection, match.reflectionRecordIndex));
+	const reviews = result.reviews.map((match) => match.review);
 	const observations = result.observations.map((match) => observationMatchDetails(match, includeSourceContent));
 	const directMatches = directObservationMatches(result).map((match) => observationMatchDetails(match, includeSourceContent));
 	const sourceEntries = result.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent));
@@ -274,6 +303,7 @@ function resultDetails(result: Extract<RecallResult, { status: "found" }>, inclu
 		collision: result.collision,
 		partial: result.partial,
 		reflections,
+		reviews,
 		directObservationMatches: directMatches,
 		observations,
 		matches: directMatches,
@@ -292,7 +322,9 @@ function isObservationOnly(details: RecallObservationToolDetails): boolean {
 
 function renderFoundResult(result: Extract<RecallResult, { status: "found" }>): ReturnType<typeof textResult> {
 	const details = resultDetails(result);
-	const text = result.kind === "observation" ? renderObservationOnlyTextFromResult(result) : renderMemoryText(result);
+	const text = result.kind === "review"
+		? result.reviews.map((match) => renderReviewText(match.review)).join("\n\n")
+		: result.kind === "observation" ? renderObservationOnlyTextFromResult(result) : renderMemoryText(result);
 	return textResult(text, details);
 }
 

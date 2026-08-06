@@ -2,17 +2,23 @@ import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
+	isReviewResultEntry,
 	type Entry,
 	type Relevance,
+	type ReviewOutcome,
+	type ReviewScope,
 } from "./types.js";
 
 export type MemorySearchResult = {
-	kind: "observation" | "reflection";
+	kind: "observation" | "reflection" | "review";
 	id: string;
 	content: string;
 	relevance?: Relevance;
 	timestamp?: string;
 	status?: "active" | "dropped";
+	scope?: ReviewScope;
+	outcome?: ReviewOutcome;
+	title?: string;
 	score: number;
 };
 
@@ -21,6 +27,7 @@ export type MemorySearch = {
 	results: MemorySearchResult[];
 	observationsSearched: number;
 	reflectionsSearched: number;
+	reviewsSearched: number;
 };
 
 type SearchCandidate = Omit<MemorySearchResult, "score"> & {
@@ -65,6 +72,7 @@ function candidates(entries: Entry[]): {
 	items: SearchCandidate[];
 	observations: number;
 	reflections: number;
+	reviews: number;
 } {
 	const dropped = new Set<string>();
 	for (const entry of entries) {
@@ -76,6 +84,7 @@ function candidates(entries: Entry[]): {
 	const items: SearchCandidate[] = [];
 	let observations = 0;
 	let reflections = 0;
+	let reviews = 0;
 	for (let sourceIndex = 0; sourceIndex < entries.length; sourceIndex++) {
 		const entry = entries[sourceIndex];
 		if (isObservationsRecordedEntry(entry)) {
@@ -102,9 +111,26 @@ function candidates(entries: Entry[]): {
 					sourceIndex,
 				});
 			}
+			continue;
+		}
+		if (isReviewResultEntry(entry)) {
+			const review = entry.data.result;
+			reviews++;
+			const content = review.outcome === "proposal"
+				? [review.scope, "proposal", review.title, review.summary, review.evidence, review.conceptualDesign].join("\n")
+				: [review.scope, "review concluded with no proposal", review.reason, review.evidenceReviewed, review.reconsiderIf ?? ""].join("\n");
+			items.push({
+				kind: "review",
+				id: review.id,
+				content,
+				scope: review.scope,
+				outcome: review.outcome,
+				title: review.outcome === "proposal" ? review.title : undefined,
+				sourceIndex,
+			});
 		}
 	}
-	return { items, observations, reflections };
+	return { items, observations, reflections, reviews };
 }
 
 export function searchMemories(
@@ -138,6 +164,9 @@ export function searchMemories(
 				relevance: candidate.relevance,
 				timestamp: candidate.timestamp,
 				status: candidate.status,
+				scope: candidate.scope,
+				outcome: candidate.outcome,
+				title: candidate.title,
 				score: lexical + relevanceBoost + kindBoost + recencyBoost,
 			} satisfies MemorySearchResult;
 		})
@@ -150,5 +179,6 @@ export function searchMemories(
 		results,
 		observationsSearched: searched.observations,
 		reflectionsSearched: searched.reflections,
+		reviewsSearched: searched.reviews,
 	};
 }

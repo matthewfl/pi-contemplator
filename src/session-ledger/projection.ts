@@ -4,15 +4,19 @@ import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
+	isReviewResultEntry,
 	type Entry,
 	type MemoryDetails,
 	type Observation,
 	type Reflection,
+	type ReviewResult,
 } from "./types.js";
 
 export type Projection = {
 	observations: Observation[];
 	reflections: Reflection[];
+	/** Optional for compatibility with older callers; projections produced here always populate it. */
+	reviews?: ReviewResult[];
 };
 
 export type ProjectionDiff = {
@@ -39,6 +43,7 @@ type ProjectionFoldOptions = {
 	observationsBoundary: ProjectionBoundary;
 	reflectionsBoundary: ProjectionBoundary;
 	dropsBoundary: ProjectionBoundary;
+	reviewsBoundary: ProjectionBoundary;
 };
 
 function entryIndexById(entries: Entry[]): Map<string, number> {
@@ -86,10 +91,13 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	const observationsBoundary = boundaryIndex(entries, indexes, options.observationsBoundary);
 	const reflectionsBoundary = boundaryIndex(entries, indexes, options.reflectionsBoundary);
 	const dropsBoundary = boundaryIndex(entries, indexes, options.dropsBoundary);
+	const reviewsBoundary = boundaryIndex(entries, indexes, options.reviewsBoundary);
 	const observations: Observation[] = [];
 	const reflections: Reflection[] = [];
+	const reviews: ReviewResult[] = [];
 	const observationsById = new Set<string>();
 	const reflectionsById = new Set<string>();
+	const reviewIds = new Set<string>();
 	const droppedObservationIds = new Set<string>();
 
 	for (const entry of entries) {
@@ -113,19 +121,30 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 
 		if (isObservationsDroppedEntry(entry) && isCoveredAtOrBefore(entry, indexes, dropsBoundary)) {
 			for (const observationId of entry.data.observationIds) droppedObservationIds.add(observationId);
+			continue;
+		}
+
+		if (isReviewResultEntry(entry) && isAtOrBefore(indexes.get(entry.id) ?? -1, reviewsBoundary)) {
+			if (!reviewIds.has(entry.data.result.id)) {
+				reviewIds.add(entry.data.result.id);
+				reviews.push(entry.data.result);
+			}
 		}
 	}
 
 	return {
 		observations: observations.filter((observation) => !droppedObservationIds.has(observation.id)),
 		reflections,
+		...(reviews.length > 0 ? { reviews } : {}),
 	};
 }
 
 function projectionFromMemoryDetails(details: MemoryDetails): Projection {
+	const reviews = details.reviews ?? [];
 	return {
 		observations: [...details.observations],
 		reflections: [...details.reflections],
+		...(reviews.length > 0 ? { reviews: [...reviews] } : {}),
 	};
 }
 
@@ -144,6 +163,7 @@ export function fullProjection(entries: Entry[], upToEntryId?: string): Projecti
 		observationsBoundary: boundary,
 		reflectionsBoundary: boundary,
 		dropsBoundary: boundary,
+		reviewsBoundary: boundary,
 	});
 }
 
@@ -181,6 +201,7 @@ export function buildCompactionProjection(
 		observationsBoundary: entryBoundary(firstKeptEntryId),
 		reflectionsBoundary: maintenanceBoundary,
 		dropsBoundary: maintenanceBoundary,
+		reviewsBoundary: entryBoundary(firstKeptEntryId),
 	});
 	const observationTokens = normalProjection.observations.reduce(
 		(total, observation) => total + observation.tokenCount,
@@ -197,12 +218,14 @@ export function buildCompactionProjection(
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		...(projection.reviews?.length ? { reviews: projection.reviews } : {}),
 	};
 
 	return {
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		...(projection.reviews?.length ? { reviews: projection.reviews } : {}),
 		details,
 	};
 }

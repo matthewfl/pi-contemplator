@@ -30,30 +30,29 @@ function renderList<T>(
 	return items.length > 0 ? items.map(render).join("\n") : empty;
 }
 
+function reviewSummaryLine(review: NonNullable<Projection["reviews"]>[number]): string {
+	if (review.outcome === "proposal") return `[${review.id}] ${review.scope} proposal: ${review.title} — ${review.summary}`;
+	return `[${review.id}] ${review.scope} review concluded with no proposal — ${review.reason}`;
+}
+
 function renderContentOnlyProjection(
 	projection: Projection,
 	emptyScope: "visible" | "recorded",
 ): string {
-	return [
+	const lines = [
 		"── Reflections ──",
-		renderList(
-			projection.reflections,
-			reflectionToSummaryLine,
-			`No ${emptyScope} reflections.`,
-		),
+		renderList(projection.reflections, reflectionToSummaryLine, `No ${emptyScope} reflections.`),
 		"",
 		"── Observations ──",
-		renderList(
-			projection.observations,
-			observationToSummaryLine,
-			`No ${emptyScope} observations.`,
-		),
-	].join("\n");
+		renderList(projection.observations, observationToSummaryLine, `No ${emptyScope} observations.`),
+	];
+	if (projection.reviews?.length) lines.push("", "── Advisory reviews ──", ...projection.reviews.map(reviewSummaryLine));
+	return lines.join("\n");
 }
 
 function hasMemory(projection: Projection): boolean {
 	return (
-		projection.reflections.length > 0 || projection.observations.length > 0
+		projection.reflections.length > 0 || projection.observations.length > 0 || (projection.reviews?.length ?? 0) > 0
 	);
 }
 
@@ -93,6 +92,16 @@ export function registerViewCommand(
 					`${output}\n\n${copied ? "Copied /om:view contemplator output to clipboard." : "Warning: failed to copy /om:view contemplator output to clipboard."}`,
 					"info",
 				);
+				return;
+			}
+
+			if (mode === "reviews") {
+				const output = renderList(
+					fullProjection(entries).reviews ?? [],
+					reviewSummaryLine,
+					"No advisory reviews recorded.",
+				);
+				await notifyWithCopy(output);
 				return;
 			}
 
