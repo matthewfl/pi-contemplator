@@ -202,7 +202,9 @@ Structural reviewers are short-lived agents commissioned only when the contempla
 
 `reviewerModel` selects the model used for these reviews. If it is unset, a review uses the current session model rather than the contemplator model. This lets you use a stronger model for bounded design reviews without changing ordinary contemplation.
 
-Use `/om:view reviewer` to inspect the persisted reviewer assistant/tool output and any compact proposal notice queued for the primary agent. `/om:status` shows the latest review memory id, its summary or no-proposal reason, and the most recent primary-agent notice (up to 1,000 characters).
+Use `/om:view reviewer` to inspect the persisted reviewer transcript (user continuation prompts, assistant output, and tool calls) and any compact proposal notice queued for the primary agent. `/om:status` shows the latest review memory id, its summary or no-proposal reason, and the most recent primary-agent notice (up to 1,000 characters).
+
+A review is complete only when it calls one terminal tool. If the model stops without one, the request and transcript remain on the session branch. On the next session start or tree restoration, the extension finds unresolved review requests and resumes them from that transcript by appending a keep-going user prompt. This recovery does not replay a terminal result or inject an incomplete review into the primary agent.
 
 ## `passive`
 

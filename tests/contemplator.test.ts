@@ -207,6 +207,27 @@ describe("Contemplator lifecycle", () => {
 		expect(prompt.content[0].text).toContain("ACTIVITY SIGNAL primary-agent generated tokens: 123");
 	});
 
+	it("resumes a pending reviewer transcript with a keep-going prompt on session start", async () => {
+		const reviewRequest = {
+			id: "review-pending", scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		};
+		const persistedAssistant = { role: "assistant", content: [{ type: "text", text: "I need more evidence." }], timestamp: 1, usage: { output: 10 } };
+		const harness = setup([
+			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+			{ id: "review-message", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: persistedAssistant } },
+		] as TestEntry[]);
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+
+		const [prompts, context] = agentMocks.agentLoop.mock.calls[0];
+		expect(prompts[0].content[0].text).toContain("You have not yet produced a terminal review outcome");
+		expect(context.messages).toEqual([persistedAssistant]);
+		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.reviewer.message", expect.objectContaining({ reviewRequestId: "review-pending", message: expect.objectContaining({ role: "user" }) }));
+	});
+
 	it("removes reviewer instructions and tools when reviewers are disabled", async () => {
 		const harness = setup();
 		harness.runtime.config = { ...harness.runtime.config, reviewerEnabled: false };

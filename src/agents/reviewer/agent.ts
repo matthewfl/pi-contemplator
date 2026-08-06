@@ -25,6 +25,8 @@ export interface RunStructuralReviewArgs {
 	recordUsage?: (usage: LlmUsageInput) => void;
 	/** Receives the reviewer's assistant output for durable debug/view rendering. */
 	onMessages?: (messages: AgentMessage[]) => void;
+	/** Previously persisted reviewer transcript; a non-empty history resumes work. */
+	history?: AgentMessage[];
 }
 
 export function buildReviewRequestMessage(request: StructuralReviewRequest): Message {
@@ -91,45 +93,46 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 	};
 	const loop = args.agentLoop ?? agentLoop;
 
-	const history: AgentMessage[] = [];
-	const assistantMessages: AgentMessage[] = [];
+	const history = [...(args.history ?? [])];
 	let totalOutputTokens = 0;
 
-	// Re-invoke the bounded loop with an accumulated transcript so the reviewer
-	// can keep working across iterations. Each call returns its own new messages;
-	// the passed-in history is copied internally, so we append the results here.
-	const runOnce = async (prompts: AgentMessage[]): Promise<void> => {
-		const context: AgentContext = { systemPrompt: buildReviewerSystemPrompt(args.request.scope), messages: history, tools };
-		const stream = loop(prompts, context, config, args.signal, streamSimple);
+	// Persist both the user continuation and the returned messages immediately.
+	// This makes the transcript sufficient to resume a review after shutdown.
+	const runOnce = async (prompt: Message): Promise<void> => {
+		const promptMessage = prompt as AgentMessage;
+		// agentLoop receives the new prompt separately. Its context must therefore
+		// contain only prior messages, otherwise a resumed prompt is sent twice.
+		const context: AgentContext = { systemPrompt: buildReviewerSystemPrompt(args.request.scope), messages: history.slice(), tools };
+		history.push(promptMessage);
+		args.onMessages?.([promptMessage]);
+		const stream = loop([prompt], context, config, args.signal, streamSimple);
 		for await (const event of stream) logAgentStreamError("reviewer", event);
 		const newMessages = await stream.result();
 		history.push(...newMessages);
+		args.onMessages?.(newMessages);
 		const assistants = newMessages.filter((message): message is AgentMessage => message.role === "assistant");
-		assistantMessages.push(...assistants);
 		if (args.recordUsage) {
 			for (const message of assistants) {
-				if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+				const usage = (message as { usage?: LlmUsageInput }).usage;
+				if (usage) args.recordUsage(usage);
 			}
 		}
 		totalOutputTokens += assistantOutputTokens(assistants);
 	};
 
-	await runOnce([buildReviewRequestMessage(args.request)]);
+	await runOnce(history.length === 0
+		? buildReviewRequestMessage(args.request)
+		: { role: "user", content: [{ type: "text", text: REVIEWER_KEEP_GOING_MESSAGE }], timestamp: Date.now() });
 
-	// Keep-going loop: if the reviewer stops without a terminal call, prompt it
-	// to continue until it reaches a terminal outcome or the cumulative budget.
+	// A terminal tool is the only completion condition. A budget/no-progress stop
+	// leaves the request pending; a future session restoration injects another
+	// keep-going user message rather than treating the review as concluded.
 	while (!terminal && totalOutputTokens < REVIEWER_TOTAL_TOKEN_LIMIT) {
 		const iterationStartTokens = totalOutputTokens;
 		const keepGoing: Message = { role: "user", content: [{ type: "text", text: REVIEWER_KEEP_GOING_MESSAGE }], timestamp: Date.now() };
-		await runOnce([keepGoing]);
-		// Stop immediately once a terminal tool has been recorded (end of this run).
-		if (terminal) break;
-		// Guard against a pathological/zero-token non-terminal stop: an iteration
-		// that produces no new output should not spin forever.
-		if (totalOutputTokens - iterationStartTokens === 0) break;
+		await runOnce(keepGoing);
+		if (terminal || totalOutputTokens - iterationStartTokens === 0) break;
 	}
-
-	args.onMessages?.(assistantMessages);
 	if (!terminal) return undefined;
 	return {
 		...terminal,

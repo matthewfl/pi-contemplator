@@ -129,6 +129,32 @@ describe("reviewer keep-going loop", () => {
 		expect(invocations).toBe(2);
 	});
 
+	it("emits a durable transcript including continuation prompts", async () => {
+		let invocations = 0;
+		const transcript: any[] = [];
+		const agentLoop = ((_prompts: any, context: any) => {
+			invocations++;
+			return {
+				async *[Symbol.asyncIterator]() {
+					if (invocations === 2) {
+						const tool = context.tools.find((c: any) => c.name === "submit_workflow_proposal");
+						await tool.execute("terminal", workflowArgs);
+					}
+				},
+				result: async () => [assistantText(`pass ${invocations}`, 10)],
+			};
+		}) as any;
+
+		await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+			onMessages: (messages) => transcript.push(...messages),
+		});
+
+		expect(transcript.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+		expect(transcript[1].content[0].text).toBe("pass 1");
+		expect(transcript[2].content[0].text).toBe(REVIEWER_KEEP_GOING_MESSAGE);
+	});
+
 	it("stops the keep-going loop immediately once a terminal tool is recorded", async () => {
 		let invocations = 0;
 		const agentLoop = ((_prompts: any, context: any) => {
