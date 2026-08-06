@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	assistantOutputTokens,
 	earlierCoverageMarkerId,
 	entryIndexById,
 	isSourceEntry,
@@ -36,6 +37,18 @@ describe("session-ledger V3 progress helpers", () => {
 			coversUpToId: "raw-1",
 		}))).toBe(false);
 		expect(isSourceEntry(compactionEntry("cmp-1"))).toBe(false);
+	});
+
+	it("sums assistant output tokens across the current branch", () => {
+		const entries = [
+			{ id: "user", type: "message", message: { role: "user" } },
+			{ id: "assistant-1", type: "message", message: { role: "assistant", usage: { output: 125 } } },
+			{ id: "memory", type: "custom", customType: "om.observations.recorded" },
+			{ id: "assistant-2", type: "message", message: { role: "assistant", usage: { output: 75 } } },
+			{ id: "invalid", type: "message", message: { role: "assistant", usage: { output: -20 } } },
+		] as any[];
+
+		expect(assistantOutputTokens(entries)).toBe(200);
 	});
 
 	it("builds a branch id to index map", () => {

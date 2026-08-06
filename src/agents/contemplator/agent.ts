@@ -4,7 +4,7 @@ import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assistantOutputTokensBeforeMemory, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { assistantOutputTokens, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
@@ -308,16 +308,11 @@ export class Contemplator {
 			running: this.running,
 		});
 		if (newObservations.length > 0 || newReflections.length > 0 || newReviews.length > 0) {
-			const observationsById = new Map(projection.observations.map((item) => [item.id, item]));
-			const sourceEntryIds = [
-				...newObservationItems.flatMap((item) => item.sourceEntryIds),
-				...newReflectionItems.flatMap((item) => item.supportingObservationIds.flatMap((id) => observationsById.get(id)?.sourceEntryIds ?? [])),
-			];
 			this.pending = {
 				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
 				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
-				mainAgentOutputTokens: assistantOutputTokensBeforeMemory(ctx.sessionManager.getBranch() as Entry[], sourceEntryIds),
+				mainAgentOutputTokens: assistantOutputTokens(ctx.sessionManager.getBranch() as Entry[]),
 			};
 		}
 		if (!this.pending) return;
@@ -404,7 +399,7 @@ export class Contemplator {
 			const interventionInstruction = reviewerEnabled
 				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Use no more than one intervention."
 				: "Use send_probe only when one focused question is materially useful. Use no more than one intervention.";
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nACTIVITY SIGNAL primary-agent generated tokens: ${update.mainAgentOutputTokens}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nACTIVITY SIGNAL cumulative primary-agent generated tokens: ${update.mainAgentOutputTokens}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
 			let intervention: Intervention | undefined;
