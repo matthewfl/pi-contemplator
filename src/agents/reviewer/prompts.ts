@@ -26,7 +26,9 @@ export const REVIEWER_TERMINAL_RULES = `Reach exactly one terminal outcome.
 
 Use the proposal tool available in this review only when the evidence supports a durable structural design. Use review_concluded_no_proposal when the pattern is isolated, evidence is incomplete or contradictory, an existing proposal/capability already addresses it, it would be generic advice, the concern depends on unavailable details, or likely value does not justify durable advisory reasoning.
 
-A no-proposal conclusion is valid. Do not emit ordinary assistant text; make exactly one terminal tool call.`;
+A no-proposal conclusion is valid. When you are ready to conclude, make exactly one terminal tool call and stop: once a proposal or no-proposal result has been recorded, the review ends immediately and you must not call any further tools.
+
+You may reason and call non-terminal tools (search_memories, recall) before concluding. If you stop without recording a terminal outcome, you will be given a reminder to continue; keep working until you can record a supported conclusion or a no-proposal result.`;
 
 export function buildReviewerSystemPrompt(scope: ReviewScope): string {
 	return [

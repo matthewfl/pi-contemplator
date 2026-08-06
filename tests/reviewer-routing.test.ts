@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runStructuralReview } from "../src/agents/reviewer/agent.js";
+import { REVIEWER_KEEP_GOING_MESSAGE, runStructuralReview } from "../src/agents/reviewer/agent.js";
 import {
 	REVIEWER_COMMON_SYSTEM,
 	SOFTWARE_REVIEWER_SCOPE,
@@ -88,5 +88,84 @@ describe("scoped structural reviewer routing", () => {
 			agentLoop: (() => ({ async *[Symbol.asyncIterator]() {}, result: async () => [] })) as any,
 		});
 		expect(result).toBeUndefined();
+	});
+});
+
+const workflowArgs = {
+	title: "T", summary: "S", evidence: "[aaaaaaaaaaaa] e", inefficiency: "i",
+	conceptual_design: "d", expected_effect: "x", uncertainties: "u",
+};
+
+function assistantText(text: string, output: number): any {
+	return { role: "assistant", content: [{ type: "text", text }], timestamp: 1, usage: { input: 0, output } };
+}
+
+describe("reviewer keep-going loop", () => {
+	it("re-invokes the loop with a keep-going message on a non-terminal stop, then accepts a terminal outcome", async () => {
+		let invocations = 0;
+		const seenPrompts: any[] = [];
+		const agentLoop = ((_prompts: any, context: any) => {
+			invocations++;
+			seenPrompts.push(_prompts);
+			return {
+				async *[Symbol.asyncIterator]() {
+					if (invocations >= 2) {
+						const tool = context.tools.find((c: any) => c.name === "submit_workflow_proposal");
+						await tool.execute("terminal", workflowArgs);
+					}
+				},
+				result: async () => (invocations === 1 ? [assistantText("first non-terminal stop", 100)] : [assistantText("terminal reached", 50)]),
+			};
+		}) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+		});
+
+		expect(result).toMatchObject({ scope: "workflow", outcome: "proposal", proposalKind: "workflow" });
+		// The keeper prompt was inserted after the first non-terminal stop, and the
+		// run stopped immediately after the terminal call (no third invocation).
+		expect(seenPrompts[1]?.[0]?.content?.[0]?.text).toBe(REVIEWER_KEEP_GOING_MESSAGE);
+		expect(invocations).toBe(2);
+	});
+
+	it("stops the keep-going loop immediately once a terminal tool is recorded", async () => {
+		let invocations = 0;
+		const agentLoop = ((_prompts: any, context: any) => {
+			invocations++;
+			return {
+				async *[Symbol.asyncIterator]() {
+					if (invocations === 1) {
+						const tool = context.tools.find((c: any) => c.name === "submit_workflow_proposal");
+						await tool.execute("terminal", workflowArgs);
+					}
+				},
+				result: async () => [assistantText("terminal on first pass", 50)],
+			};
+		}) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+		});
+		expect(result).toMatchObject({ outcome: "proposal", proposalKind: "workflow" });
+		expect(invocations).toBe(1);
+	});
+
+	it("stops the keep-going loop when an iteration makes no output progress", async () => {
+		let invocations = 0;
+		const agentLoop = ((_prompts: any, context: any) => {
+			invocations++;
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => (invocations === 1 ? [assistantText("first", 100)] : []),
+			};
+		}) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+		});
+		expect(result).toBeUndefined();
+		// initial run + exactly one keep-going attempt before the no-progress guard.
+		expect(invocations).toBe(2);
 	});
 });
