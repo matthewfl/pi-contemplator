@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { createRequestReviewTool } from "../src/agents/contemplator/agent.js";
-import { buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
+import { CONTEMPLATOR_SYSTEM, buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
 describe("contemplator review request tool", () => {
 	it("includes review escalation only when reviewers are enabled", () => {
 		const enabled = buildContemplatorSystemPrompt(true);
 		const disabled = buildContemplatorSystemPrompt(false);
 
+		expect(enabled).toBe(CONTEMPLATOR_SYSTEM);
 		expect(enabled).toContain("request_review");
+		expect(enabled).toContain("recurring structural patterns");
+
+		// Non-review improvements from the revision remain shared.
+		expect(disabled).toContain("direct progress may be more informative than further hypothesis formation");
+		expect(disabled).toContain("Activity measurements may support the diagnosis");
+
+		// Only instructions specific to the structural-review tool are omitted.
 		expect(disabled).not.toContain("request_review");
 		expect(disabled.toLowerCase()).not.toContain("reviewer");
 	});

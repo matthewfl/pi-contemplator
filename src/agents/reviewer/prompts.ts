@@ -67,7 +67,7 @@ The conceptual design should explain:
 - how it could be reused, refined, and extended instead of reinvented;
 - how it would improve evidence quality, reliability, speed, token use, reproducibility, or reviewability.
 
-Do not prescribe a particular implementation technology unless the memories make that constraint strategically important. The design should describe the capability needed, not take over its implementation.
+Do not prescribe a particular implementation technology unless the memories make that constraint strategically important. The design should describe the capability needed, and not take over its implementation.
 
 Use submit_workflow_proposal only when the evidence supports a durable workflow design.`;
 
@@ -123,10 +123,9 @@ A no-proposal conclusion is a valid result. Explain what was examined and, when 
 
 Produce exactly one terminal tool call. Do not emit ordinary assistant text.`;
 
+/** Assemble only the prompt subset and terminal rules for the requested scope. */
 export function buildReviewerSystemPrompt(scope: ReviewScope): string {
-	return [
-		REVIEWER_COMMON_SYSTEM,
-		scope === "workflow" ? WORKFLOW_REVIEWER_SCOPE : SOFTWARE_REVIEWER_SCOPE,
-		REVIEWER_TERMINAL_RULES,
-	].join("\n\n");
+	const scopedPrompt = scope === "workflow" ? WORKFLOW_REVIEWER_SCOPE : SOFTWARE_REVIEWER_SCOPE;
+
+	return [REVIEWER_COMMON_SYSTEM, scopedPrompt, REVIEWER_TERMINAL_RULES].join("\n\n");
 }
