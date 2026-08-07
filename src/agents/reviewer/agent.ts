@@ -8,6 +8,7 @@ import type { Entry, ReviewResult, StructuralReviewRequest } from "../../session
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { createReadChatHistoryAgentTool, createSearchChatHistoryAgentTool } from "./history-tools.js";
 import { buildReviewerSystemPrompt } from "./prompts.js";
 import { createNoProposalTool, createSoftwareProposalTool, createWorkflowProposalTool, type ReviewTerminalResult } from "./tools.js";
 
@@ -75,11 +76,20 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 	};
 	const searchMemories = createSearchMemoriesAgentTool(args.getBranch);
 	const recall = createRecallAgentTool(args.getBranch);
+	const searchChatHistory = createSearchChatHistoryAgentTool(args.getBranch);
+	const readChatHistory = createReadChatHistoryAgentTool(args.getBranch);
 	const scopeTool = args.request.scope === "workflow"
 		? createWorkflowProposalTool(acceptTerminal)
 		: createSoftwareProposalTool(acceptTerminal);
 	const noProposal = createNoProposalTool(args.request.scope, acceptTerminal);
-	const tools = [searchMemories as AgentTool<any>, recall as AgentTool<any>, scopeTool as AgentTool<any>, noProposal as AgentTool<any>];
+	const tools = [
+		searchMemories as AgentTool<any>,
+		recall as AgentTool<any>,
+		searchChatHistory as AgentTool<any>,
+		readChatHistory as AgentTool<any>,
+		scopeTool as AgentTool<any>,
+		noProposal as AgentTool<any>,
+	];
 	const config: AgentLoopConfig = {
 		model: args.model,
 		apiKey: args.apiKey,

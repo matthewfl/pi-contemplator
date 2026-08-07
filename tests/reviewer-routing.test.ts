@@ -53,7 +53,7 @@ describe("scoped structural reviewer routing", () => {
 				})(prompts, context);
 			}) as any,
 		});
-		expect(names).toEqual(["search_memories", "recall", "submit_workflow_proposal", "review_concluded_no_proposal"]);
+		expect(names).toEqual(["search_memories", "recall", "search_chat_history", "read_chat_history", "submit_workflow_proposal", "review_concluded_no_proposal"]);
 		expect(result).toMatchObject({ scope: "workflow", outcome: "proposal", proposalKind: "workflow" });
 	});
 
@@ -68,7 +68,7 @@ describe("scoped structural reviewer routing", () => {
 				})(prompts, context);
 			}) as any,
 		});
-		expect(names).toEqual(["search_memories", "recall", "submit_software_proposal", "review_concluded_no_proposal"]);
+		expect(names).toEqual(["search_memories", "recall", "search_chat_history", "read_chat_history", "submit_software_proposal", "review_concluded_no_proposal"]);
 		expect(result).toMatchObject({ scope: "software", outcome: "proposal", proposalKind: "software" });
 	});
 

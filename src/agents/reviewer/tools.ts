@@ -8,7 +8,7 @@ const prose = (description: string) => Type.String({ minLength: 1, description }
 export const WorkflowProposalSchema = Type.Object({
 	title: prose("Short natural-language name for the workflow improvement."),
 	summary: prose("Compact advisory summary suitable for the primary-agent notice."),
-	evidence: prose("Memory-grounded evidence, including relevant contrary evidence."),
+	evidence: prose("Evidence grounded in cited memory or primary-chat entry ids, including relevant contrary evidence."),
 	inefficiency: prose("Recurring expensive, unreliable, or difficult-to-review work."),
 	conceptual_design: prose("High-level planning prose describing the improved capability or process; no code or implementation steps."),
 	inputs: Type.Optional(prose("Ordinary-language inputs, artifacts, context, or questions.")),
@@ -21,7 +21,7 @@ export const WorkflowProposalSchema = Type.Object({
 export const SoftwareProposalSchema = Type.Object({
 	title: prose("Short natural-language name for the software design improvement."),
 	summary: prose("Compact advisory summary suitable for the primary-agent notice."),
-	evidence: prose("Memory-grounded evidence, including relevant contrary evidence."),
+	evidence: prose("Evidence grounded in cited memory or primary-chat entry ids, including relevant contrary evidence."),
 	structural_issue: prose("Recurring structural symptom, missing invariant, duplicated concept, or unsuitable boundary."),
 	conceptual_design: prose("High-level design of concepts, responsibilities, relationships, and invariants; no code or implementation steps."),
 	preserved_behavior: prose("User intent, visible behavior, constraints, and semantics to preserve."),
@@ -31,7 +31,7 @@ export const SoftwareProposalSchema = Type.Object({
 
 export const NoProposalSchema = Type.Object({
 	reason: prose("Why a durable proposal is not currently justified."),
-	evidence_reviewed: prose("Memories examined and evidence supporting this conclusion."),
+	evidence_reviewed: prose("Memories and primary-chat entries examined, with ids, and the evidence supporting this conclusion."),
 	reconsider_if: Type.Optional(prose("Specific future evidence or recurrence that would justify reconsideration.")),
 });
 
