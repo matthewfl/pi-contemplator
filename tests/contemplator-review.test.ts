@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { createRequestReviewTool } from "../src/agents/contemplator/agent.js";
+import { buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
 describe("contemplator review request tool", () => {
+	it("includes review escalation only when reviewers are enabled", () => {
+		const enabled = buildContemplatorSystemPrompt(true);
+		const disabled = buildContemplatorSystemPrompt(false);
+
+		expect(enabled).toContain("request_review");
+		expect(disabled).not.toContain("request_review");
+		expect(disabled.toLowerCase()).not.toContain("reviewer");
+	});
+
 	it("accepts a scoped request and returns its queued identifier", async () => {
 		let received: unknown;
 		const tool = createRequestReviewTool((request) => {
