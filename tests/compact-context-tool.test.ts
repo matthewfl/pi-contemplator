@@ -29,6 +29,9 @@ describe("compact_context tool", () => {
 		expect(tool.description).not.toMatch(/observational|\bOM\b/i);
 		expect(tool.promptGuidelines.join(" ")).toMatch(/sparingly/i);
 		expect(tool.promptGuidelines.join(" ")).toMatch(/substantial additional work/i);
+		expect(tool.promptGuidelines.join(" ")).toMatch(/not enough context left/i);
+		expect(tool.promptGuidelines.join(" ")).toMatch(/struggling to focus/i);
+		expect(tool.promptGuidelines.join(" ")).toMatch(/reason about it reliably/i);
 	});
 
 	it("schedules compaction and terminates the current tool turn", async () => {

@@ -4,7 +4,7 @@ import type { Runtime } from "../runtime.js";
 
 export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 export const COMPACT_CONTEXT_DESCRIPTION =
-	"Force manual compaction. Use sparingly when substantial work remains and context is nearly full.";
+	"Force manual compaction. Use sparingly when substantial work remains but the remaining context is insufficient, or when accumulated context has become noisy or stale enough to impair focus and reliable reasoning.";
 
 export type CompactContextDetails = {
 	status: "scheduled" | "already_pending" | "in_progress";
@@ -16,10 +16,10 @@ export function createCompactContextTool(runtime: Runtime) {
 		label: "Compact context",
 		description: COMPACT_CONTEXT_DESCRIPTION,
 		promptSnippet:
-			"Force manual context compaction when context is nearly full and substantial work remains",
+			"Force manual context compaction when substantial work remains but context is running out, or when context degradation is impairing focus",
 		promptGuidelines: [
-			"Use compact_context sparingly, only when the context is nearly full and you are planning to do substantial additional work.",
-			"Do not use compact_context routinely, for short tasks, or merely because the conversation is long.",
+			"Use compact_context sparingly when either substantial additional work remains and there is not enough context left to complete it, or accumulated past context has become noisy, stale, or distracting enough that you are struggling to focus on the current task or reason about it reliably.",
+			"Do not use compact_context routinely, for short tasks, or merely because the conversation is long; use it for genuine context-capacity pressure or context degradation that is interfering with the work.",
 			"Call compact_context by itself and stop the current turn; observational memory will compact the context and automatically resume the task.",
 		],
 		parameters: Type.Object({}),
