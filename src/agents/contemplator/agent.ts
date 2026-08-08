@@ -4,7 +4,7 @@ import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assistantOutputTokens, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
@@ -20,6 +20,7 @@ interface PendingUpdate {
 	reflections: string[];
 	reviews: string[];
 	mainAgentOutputTokens: number;
+	mainAgentToolCalls: number;
 }
 
 type Intervention =
@@ -313,6 +314,7 @@ export class Contemplator {
 				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
 				mainAgentOutputTokens: assistantOutputTokens(ctx.sessionManager.getBranch() as Entry[]),
+				mainAgentToolCalls: assistantToolCallCount(ctx.sessionManager.getBranch() as Entry[]),
 			};
 		}
 		if (!this.pending) return;
@@ -375,6 +377,7 @@ export class Contemplator {
 						reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
 						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 						mainAgentOutputTokens: update.mainAgentOutputTokens,
+						mainAgentToolCalls: update.mainAgentToolCalls,
 					};
 					this.turnsSinceRun = turnsBeforeRun;
 				}
@@ -399,7 +402,7 @@ export class Contemplator {
 			const interventionInstruction = reviewerEnabled
 				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Use no more than one intervention."
 				: "Use send_probe only when one focused question is materially useful. Use no more than one intervention.";
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nACTIVITY SIGNAL cumulative primary-agent generated tokens: ${update.mainAgentOutputTokens}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nACTIVITY SIGNAL cumulative primary-agent generated tokens: ${update.mainAgentOutputTokens}; cumulative primary-agent tool calls: ${update.mainAgentToolCalls}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
 			let intervention: Intervention | undefined;
@@ -499,6 +502,7 @@ export class Contemplator {
 					reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
 					reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 					mainAgentOutputTokens: update.mainAgentOutputTokens,
+					mainAgentToolCalls: update.mainAgentToolCalls,
 				};
 				this.turnsSinceRun = turnsBeforeRun;
 			}

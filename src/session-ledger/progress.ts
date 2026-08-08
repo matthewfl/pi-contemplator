@@ -38,6 +38,20 @@ export function assistantOutputTokens(entries: Entry[]): number {
 	return total;
 }
 
+/** Count all primary-agent tool calls visible on the current session branch. */
+export function assistantToolCallCount(entries: Entry[]): number {
+	let total = 0;
+	for (const entry of entries) {
+		if (entry.type !== "message" || !isObject(entry.message) || entry.message.role !== "assistant") continue;
+		const content = entry.message.content;
+		if (!Array.isArray(content)) continue;
+		for (const block of content) {
+			if (isObject(block) && block.type === "toolCall") total++;
+		}
+	}
+	return total;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }

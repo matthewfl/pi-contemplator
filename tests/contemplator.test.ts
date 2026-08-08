@@ -183,16 +183,16 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
 
-	it("includes cumulative primary-agent output tokens on the current branch", async () => {
+	it("includes cumulative primary-agent output tokens and tool calls on the current branch", async () => {
 		const earlierAssistant = {
 			type: "message",
 			id: "assistant-before-memory",
-			message: { role: "assistant", usage: { output: 123 } },
+			message: { role: "assistant", content: [{ type: "toolCall", name: "read" }], usage: { output: 123 } },
 		} as TestEntry;
 		const latestAssistant = {
 			type: "message",
 			id: "assistant-memory-source",
-			message: { role: "assistant", usage: { output: 77 } },
+			message: { role: "assistant", content: [{ type: "toolCall", name: "edit" }, { type: "toolCall", name: "read" }], usage: { output: 77 } },
 		} as TestEntry;
 		const memory = observationsRecordedEntry("obs-memory", {
 			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["assistant-memory-source"] })],
@@ -204,7 +204,7 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
 
 		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
-		expect(prompt.content[0].text).toContain("ACTIVITY SIGNAL cumulative primary-agent generated tokens: 200");
+		expect(prompt.content[0].text).toContain("ACTIVITY SIGNAL cumulative primary-agent generated tokens: 200; cumulative primary-agent tool calls: 3");
 	});
 
 	it("resumes a pending reviewer transcript with a keep-going prompt on session start", async () => {

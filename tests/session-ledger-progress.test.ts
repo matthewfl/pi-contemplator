@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	assistantOutputTokens,
+	assistantToolCallCount,
 	earlierCoverageMarkerId,
 	entryIndexById,
 	isSourceEntry,
@@ -49,6 +50,17 @@ describe("session-ledger V3 progress helpers", () => {
 		] as any[];
 
 		expect(assistantOutputTokens(entries)).toBe(200);
+	});
+
+	it("counts assistant tool calls across the current branch", () => {
+		const entries = [
+			{ id: "user", type: "message", message: { role: "user", content: [{ type: "toolCall" }] } },
+			{ id: "assistant-1", type: "message", message: { role: "assistant", content: [{ type: "text" }, { type: "toolCall" }] } },
+			{ id: "memory", type: "custom", data: { message: { role: "assistant", content: [{ type: "toolCall" }] } } },
+			{ id: "assistant-2", type: "message", message: { role: "assistant", content: [{ type: "toolCall" }, { type: "toolCall" }] } },
+		] as any[];
+
+		expect(assistantToolCallCount(entries)).toBe(3);
 	});
 
 	it("builds a branch id to index map", () => {
