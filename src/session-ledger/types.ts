@@ -5,7 +5,7 @@ export const OM_REVIEW_REQUEST = "om.review.request";
 export const OM_REVIEW_RESULT = "om.review.result";
 /** Persisted assistant/tool output from a short-lived structural reviewer. */
 export const OM_REVIEWER_MESSAGE = "om.reviewer.message";
-/** Snapshot of a reviewer transcript retained across primary-session compaction. */
+/** Compact checkpoint referencing reviewer transcript entries across primary-session compaction. */
 export const OM_REVIEWER_STATE = "om.reviewer.state";
 /** Compact proposal notice queued for the primary agent. */
 export const OM_REVIEWER_NOTICE = "om.reviewer.notice";

@@ -27,7 +27,14 @@ type Intervention =
 	| { kind: "probe"; question: string }
 	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> };
 
-type ReviewerSession = { scope: StructuralReviewRequest["scope"]; history: AgentMessage[] };
+type ReviewerSession = {
+	scope: StructuralReviewRequest["scope"];
+	history: AgentMessage[];
+	/** Latest compact checkpoint; older transcript content stays in referenced append-only entries. */
+	checkpointEntryId?: string;
+	/** Reviewer message entries appended since checkpointEntryId. */
+	messageEntryIds: string[];
+};
 
 type QueueStructuralReviewOptions = {
 	ctx: MemoryUpdateCtx;
@@ -252,16 +259,32 @@ export class Contemplator {
 				}
 			}
 			if (entry.customType === OM_REVIEWER_STATE && entry.data && typeof entry.data === "object") {
-				const state = entry.data as { reviewRequestId?: unknown; scope?: unknown; history?: unknown };
-				if (typeof state.reviewRequestId === "string" && (state.scope === "workflow" || state.scope === "software") && Array.isArray(state.history)) {
-					this.reviewerSessions.set(state.reviewRequestId, { scope: state.scope, history: state.history.filter((message): message is AgentMessage => !!message && typeof message === "object") });
+				const state = entry.data as { version?: unknown; reviewRequestId?: unknown; scope?: unknown; history?: unknown; messageEntryIds?: unknown };
+				if (typeof state.reviewRequestId === "string" && (state.scope === "workflow" || state.scope === "software")) {
+					if (state.version === 1 && Array.isArray(state.history)) {
+						// Backward compatibility for the old, expensive full-transcript snapshots.
+						this.reviewerSessions.set(state.reviewRequestId, {
+							scope: state.scope,
+							history: state.history.filter((message): message is AgentMessage => !!message && typeof message === "object"),
+							checkpointEntryId: entry.id,
+							messageEntryIds: [],
+						});
+					} else if (state.version === 2 && Array.isArray(state.messageEntryIds) && state.messageEntryIds.every((id) => typeof id === "string")) {
+						// V2 checkpoints contain references only. The referenced state/messages
+						// have already been folded while walking this append-only branch.
+						const session = this.reviewerSessions.get(state.reviewRequestId) ?? { scope: state.scope, history: [], messageEntryIds: [] };
+						session.checkpointEntryId = entry.id;
+						session.messageEntryIds = [];
+						this.reviewerSessions.set(state.reviewRequestId, session);
+					}
 				}
 			}
 			if (entry.customType === OM_REVIEWER_MESSAGE && entry.data && typeof entry.data === "object") {
 				const data = entry.data as { reviewRequestId?: unknown; scope?: unknown; message?: unknown };
 				if (typeof data.reviewRequestId === "string" && (data.scope === "workflow" || data.scope === "software") && data.message && typeof data.message === "object") {
-					const session = this.reviewerSessions.get(data.reviewRequestId) ?? { scope: data.scope, history: [] };
+					const session = this.reviewerSessions.get(data.reviewRequestId) ?? { scope: data.scope, history: [], messageEntryIds: [] };
 					session.history.push(data.message as AgentMessage);
+					session.messageEntryIds.push(entry.id);
 					this.reviewerSessions.set(data.reviewRequestId, session);
 				}
 			}
@@ -572,7 +595,7 @@ export class Contemplator {
 		this.resumedReviewIds.add(request.id);
 		this.inFlightReviewIds.add(request.id);
 		if (key) this.inFlightReviewKeys.add(key);
-		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [] };
+		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [], messageEntryIds: [] };
 		this.reviewerSessions.set(request.id, session);
 		const task = this.runtime.launchReviewTask(ctx, async () => {
 			try {
@@ -587,8 +610,9 @@ export class Contemplator {
 						for (const message of messages) {
 							session.history.push(message);
 							this.pi.appendEntry(OM_REVIEWER_MESSAGE, { version: 1, reviewRequestId: request.id, scope: request.scope, message });
+							const entryId = this.markTipPersisted(ctx);
+							if (entryId) session.messageEntryIds.push(entryId);
 						}
-						if (messages.length > 0) this.markTipPersisted(ctx);
 					},
 				});
 				if (sessionGeneration !== this.sessionGeneration) {
@@ -643,10 +667,18 @@ export class Contemplator {
 
 	private persistReviewerStates(ctx: MemoryUpdateCtx): void {
 		for (const [reviewRequestId, session] of this.reviewerSessions) {
-			if (session.history.length === 0) continue;
-			this.pi.appendEntry(OM_REVIEWER_STATE, { version: 1, reviewRequestId, scope: session.scope, history: session.history });
+			if (session.messageEntryIds.length === 0) continue;
+			this.pi.appendEntry(OM_REVIEWER_STATE, {
+				version: 2,
+				reviewRequestId,
+				scope: session.scope,
+				previousStateEntryId: session.checkpointEntryId,
+				messageEntryIds: session.messageEntryIds,
+			});
+			const checkpointEntryId = this.markTipPersisted(ctx);
+			if (checkpointEntryId) session.checkpointEntryId = checkpointEntryId;
+			session.messageEntryIds = [];
 		}
-		if (this.reviewerSessions.size > 0) this.markTipPersisted(ctx);
 	}
 
 	private async resumePendingReviews(ctx: MemoryUpdateCtx): Promise<void> {
@@ -669,8 +701,9 @@ export class Contemplator {
 		}
 	}
 
-	private markTipPersisted(ctx: MemoryUpdateCtx): void {
+	private markTipPersisted(ctx: MemoryUpdateCtx): string | undefined {
 		this.restoredTipId = (ctx.sessionManager.getBranch() as Entry[]).at(-1)?.id;
+		return this.restoredTipId;
 	}
 
 	private async compactHistory(model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number): Promise<void> {

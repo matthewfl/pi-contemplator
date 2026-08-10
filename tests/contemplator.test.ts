@@ -228,6 +228,76 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.reviewer.message", expect.objectContaining({ reviewRequestId: "review-pending", message: expect.objectContaining({ role: "user" }) }));
 	});
 
+	it("persists reviewer compaction state as entry references without copying history", () => {
+		const reviewRequest = {
+			id: "review-pending", scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		};
+		const largeMessage = { role: "toolResult", content: [{ type: "text", text: "x".repeat(100_000) }], timestamp: 1 };
+		const harness = setup([
+			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+			{ id: "review-message-1", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: largeMessage } },
+		] as TestEntry[]);
+		harness.runtime.config = { ...harness.runtime.config, reviewerEnabled: false };
+		harness.fire("session_start");
+
+		harness.fire("session_compact");
+
+		const firstState = harness.pi.appendEntry.mock.calls.find(([type]) => type === "om.reviewer.state")?.[1] as Record<string, unknown>;
+		expect(firstState).toEqual({
+			version: 2,
+			reviewRequestId: "review-pending",
+			scope: "workflow",
+			previousStateEntryId: undefined,
+			messageEntryIds: ["review-message-1"],
+		});
+		expect(firstState).not.toHaveProperty("history");
+		expect(JSON.stringify(firstState).length).toBeLessThan(250);
+
+		// No transcript changes means there is no reason to append another checkpoint.
+		harness.fire("session_compact");
+		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.reviewer.state")).toHaveLength(1);
+
+		const secondMessage = {
+			id: "review-message-2", type: "custom", customType: "om.reviewer.message",
+			data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: { role: "assistant", content: [], timestamp: 2 } },
+		} as TestEntry;
+		harness.setEntries([...harness.getEntries(), secondMessage]);
+		harness.fire("session_tree");
+		harness.fire("session_compact");
+
+		const states = harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.reviewer.state");
+		expect(states).toHaveLength(2);
+		expect(states[1][1]).toEqual(expect.objectContaining({
+			version: 2,
+			previousStateEntryId: "appended-1",
+			messageEntryIds: ["review-message-2"],
+		}));
+	});
+
+	it("restores referenced reviewer checkpoints and legacy inline snapshots", async () => {
+		const reviewRequest = {
+			id: "review-pending", scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		};
+		const legacyMessage = { role: "assistant", content: [{ type: "text", text: "legacy" }], timestamp: 1, usage: { output: 10 } };
+		const newerMessage = { role: "assistant", content: [{ type: "text", text: "newer" }], timestamp: 2, usage: { output: 10 } };
+		const harness = setup([
+			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+			{ id: "legacy-state", type: "custom", customType: "om.reviewer.state", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", history: [legacyMessage] } },
+			{ id: "review-message", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: newerMessage } },
+			{ id: "reference-state", type: "custom", customType: "om.reviewer.state", data: { version: 2, reviewRequestId: reviewRequest.id, scope: "workflow", previousStateEntryId: "legacy-state", messageEntryIds: ["review-message"] } },
+		] as TestEntry[]);
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+
+		const [, context] = agentMocks.agentLoop.mock.calls[0];
+		expect(context.messages).toEqual([legacyMessage, newerMessage]);
+	});
+
 	it("runs persisted review requests one at a time", async () => {
 		const firstGate = deferred();
 		agentMocks.agentLoop
