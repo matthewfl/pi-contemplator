@@ -1,23 +1,31 @@
 {
-  "name": "pi-observational-memory",
-  "version": "3.0.3",
-  "description": "Observational memory extension for pi — cache-friendly tiered compaction with observations and reflections.",
+  "name": "@matthewfl/pi-contemplator",
+  "version": "0.0.1",
+  "description": "A Pi extension that keeps long-running agentic sessions on track with background memory, contemplation, and structural review.",
   "type": "module",
   "license": "MIT",
-  "author": "elpapi42",
+  "author": "matthewfl",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/elpapi42/pi-observational-memory.git"
+    "url": "git+https://github.com/matthewfl/pi-contemplator.git"
   },
-  "homepage": "https://github.com/elpapi42/pi-observational-memory#readme",
+  "homepage": "https://github.com/matthewfl/pi-contemplator#readme",
+  "bugs": {
+    "url": "https://github.com/matthewfl/pi-contemplator/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "pi",
     "pi-agent",
     "pi-package",
     "extension",
+    "contemplator",
     "observational-memory",
     "memory",
-    "compaction"
+    "compaction",
+    "agentic"
   ],
   "pi": {
     "extensions": [

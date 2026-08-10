@@ -1,6 +1,6 @@
 # How it works
 
-This is the V3 technical reference for `pi-observational-memory`.
+This is the V3 technical reference for `pi-contemplator`.
 
 V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. Compaction is model-free and renders a projection of that ledger into the summary the agent sees.
 

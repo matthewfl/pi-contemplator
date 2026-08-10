@@ -1,6 +1,6 @@
 # Configuration
 
-This page documents the current V3 configuration for `pi-observational-memory`.
+This page documents the current V3 configuration for `pi-contemplator`.
 
 V3 keeps the existing `observational-memory` settings namespace, but the setting names changed. Old V2 keys are not aliases; they are ignored. If you are upgrading, read [Migrating from V2](#migrating-from-v2).
 

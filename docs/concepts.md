@@ -1,6 +1,6 @@
 # Concepts
 
-This page defines the V3 vocabulary used by `pi-observational-memory`.
+This page defines the V3 vocabulary used by `pi-contemplator`.
 
 ## The big picture
 
