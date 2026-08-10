@@ -220,12 +220,39 @@ describe("Contemplator lifecycle", () => {
 		] as TestEntry[]);
 
 		harness.fire("session_start");
-		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
 
 		const [prompts, context] = agentMocks.agentLoop.mock.calls[0];
 		expect(prompts[0].content[0].text).toContain("You have not yet produced a terminal review outcome");
 		expect(context.messages).toEqual([persistedAssistant]);
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.reviewer.message", expect.objectContaining({ reviewRequestId: "review-pending", message: expect.objectContaining({ role: "user" }) }));
+	});
+
+	it("runs persisted review requests one at a time", async () => {
+		const firstGate = deferred();
+		agentMocks.agentLoop
+			.mockImplementationOnce(() => stream(firstGate.promise))
+			.mockImplementation(() => stream());
+		const reviewRequest = (id: string) => ({
+			id, scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		});
+		const harness = setup([
+			{ id: "request-one", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest("review-one") } },
+			{ id: "request-two", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest("review-two") } },
+		] as TestEntry[]);
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect(harness.runtime.reviewInFlight).toBe(true);
+
+		firstGate.resolve();
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+		const firstPrompt = agentMocks.agentLoop.mock.calls[0][0][0].content[0].text;
+		const secondPrompt = agentMocks.agentLoop.mock.calls[1][0][0].content[0].text;
+		expect(firstPrompt).toContain("review-one");
+		expect(secondPrompt).toContain("review-two");
 	});
 
 	it("removes reviewer instructions and tools when reviewers are disabled", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { REVIEWER_KEEP_GOING_MESSAGE, runStructuralReview } from "../src/agents/reviewer/agent.js";
+import { REVIEWER_KEEP_GOING_MESSAGE, REVIEWER_MAX_INVOCATIONS_PER_LAUNCH, runStructuralReview } from "../src/agents/reviewer/agent.js";
+import { REVIEWER_TOTAL_TOKEN_LIMIT } from "../src/model-budget.js";
 import {
 	REVIEWER_COMMON_SYSTEM,
 	SOFTWARE_REVIEWER_SCOPE,
@@ -175,6 +176,58 @@ describe("reviewer keep-going loop", () => {
 		});
 		expect(result).toMatchObject({ outcome: "proposal", proposalKind: "workflow" });
 		expect(invocations).toBe(1);
+	});
+
+	it("bounds repeated non-terminal text stops within one live launch", async () => {
+		let invocations = 0;
+		const agentLoop = (() => {
+			invocations++;
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => [assistantText(`non-terminal ${invocations}`, 1)],
+			};
+		}) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+		});
+
+		expect(result).toBeUndefined();
+		expect(invocations).toBe(REVIEWER_MAX_INVOCATIONS_PER_LAUNCH);
+	});
+
+	it("counts persisted output usage against the lifetime request budget", async () => {
+		let configuredMaxTokens: number | undefined;
+		let invocations = 0;
+		const history = [assistantText("earlier reviewer output", REVIEWER_TOTAL_TOKEN_LIMIT - 7)];
+		const agentLoop = ((_prompts: any, _context: any, config: any) => {
+			invocations++;
+			configuredMaxTokens = config.maxTokens;
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => [assistantText("remaining output", 7)],
+			};
+		}) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop, history,
+		});
+
+		expect(result).toBeUndefined();
+		expect(invocations).toBe(1);
+		expect(configuredMaxTokens).toBe(7);
+	});
+
+	it("does not resume a request whose persisted transcript exhausted its budget", async () => {
+		let invocations = 0;
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [],
+			history: [assistantText("budget exhausted", REVIEWER_TOTAL_TOKEN_LIMIT)],
+			agentLoop: (() => { invocations++; throw new Error("must not run"); }) as any,
+		});
+
+		expect(result).toBeUndefined();
+		expect(invocations).toBe(0);
 	});
 
 	it("stops the keep-going loop when an iteration makes no output progress", async () => {

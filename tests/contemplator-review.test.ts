@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRequestReviewTool } from "../src/agents/contemplator/agent.js";
+import { createRequestReviewTool, createSendProbeTool } from "../src/agents/contemplator/agent.js";
 import { CONTEMPLATOR_SYSTEM, buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
 describe("contemplator review request tool", () => {
@@ -18,6 +18,28 @@ describe("contemplator review request tool", () => {
 		// Only instructions specific to the structural-review tool are omitted.
 		expect(disabled).not.toContain("request_review");
 		expect(disabled.toLowerCase()).not.toContain("reviewer");
+	});
+
+	it("returns advisory results instead of throwing for second interventions", async () => {
+		const reviewTool = createRequestReviewTool(() => undefined);
+		const probeTool = createSendProbeTool(() => false);
+
+		const reviewResult = await reviewTool.execute("review-call", {
+			scope: "workflow",
+			evidence: "[aaaaaaaaaaaa] repeated work",
+			concern: "A recurring issue may exist.",
+			review_focus: "Determine whether review is justified.",
+		});
+		const probeResult = await probeTool.execute("probe-call", { question: "Should this be investigated?" });
+
+		expect(reviewResult).toMatchObject({
+			content: [{ type: "text", text: expect.stringContaining("already has an intervention") }],
+			details: { queued: false, scope: "workflow" },
+		});
+		expect(probeResult).toMatchObject({
+			content: [{ type: "text", text: expect.stringContaining("already has an intervention") }],
+			details: { queued: false },
+		});
 	});
 
 	it("accepts a scoped request and returns its queued identifier", async () => {

@@ -86,7 +86,7 @@ export const RequestReviewSchema = Type.Object({
 type SendProbeArgs = Static<typeof SendProbeSchema>;
 export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
-function createSendProbeTool(onProbe: (question: string) => void): AgentTool<typeof SendProbeSchema> {
+export function createSendProbeTool(onProbe: (question: string) => boolean): AgentTool<typeof SendProbeSchema> {
 	return {
 		name: "send_probe",
 		label: "Send probe",
@@ -94,14 +94,16 @@ function createSendProbeTool(onProbe: (question: string) => void): AgentTool<typ
 		parameters: SendProbeSchema,
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
-			onProbe(question);
+			if (!onProbe(question)) {
+				return { content: [{ type: "text", text: "No probe was queued because this update already has an intervention. Continue without calling another intervention tool." }], details: { queued: false } };
+			}
 			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length });
 			return { content: [{ type: "text", text: "Probe queued for the primary agent's next context." }], details: { queued: true } };
 		},
 	};
 }
 
-export function createRequestReviewTool(onReview: (request: RequestReviewArgs) => string): AgentTool<typeof RequestReviewSchema> {
+export function createRequestReviewTool(onReview: (request: RequestReviewArgs) => string | undefined): AgentTool<typeof RequestReviewSchema> {
 	return {
 		name: "request_review",
 		label: "Request structural review",
@@ -110,6 +112,9 @@ export function createRequestReviewTool(onReview: (request: RequestReviewArgs) =
 		execute: async (_toolCallId, params: RequestReviewArgs) => {
 			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
 			const reviewRequestId = onReview(request);
+			if (!reviewRequestId) {
+				return { content: [{ type: "text", text: "No review was queued because this update already has an intervention. Continue without calling another intervention tool." }], details: { queued: false, scope: request.scope } };
+			}
 			debugLog("contemplator.review_requested", { reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length });
 			return { content: [{ type: "text", text: `${request.scope === "workflow" ? "Workflow" : "Software"} review queued as [${reviewRequestId}].` }], details: { queued: true, scope: request.scope, reviewRequestId } };
 		},
@@ -125,11 +130,13 @@ export class Contemplator {
 	private seenReviewIds = new Set<string>();
 	private inFlightReviewKeys = new Set<string>();
 	private inFlightReviewIds = new Set<string>();
+	private resolvingReviewIds = new Set<string>();
 	private resumedReviewIds = new Set<string>();
 	private reviewerSessions = new Map<string, ReviewerSession>();
 	private deliveredProbeIds = new Set<string>();
 	private requeuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
+	private latestCtx: MemoryUpdateCtx | undefined;
 	private turnsSinceRun = 0;
 	private restoredTipId: string | undefined;
 
@@ -152,10 +159,12 @@ export class Contemplator {
 			this.seenReviewIds.clear();
 			this.inFlightReviewKeys.clear();
 			this.inFlightReviewIds.clear();
+			this.resolvingReviewIds.clear();
 			this.resumedReviewIds.clear();
 			this.reviewerSessions.clear();
 			this.deliveredProbeIds.clear();
 			this.requeuedProbeIds.clear();
+			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
 			this.restoredTipId = undefined;
 		});
@@ -203,6 +212,7 @@ export class Contemplator {
 	}
 
 	private restore(ctx: MemoryUpdateCtx, resetTracking = false): void {
+		this.latestCtx = ctx;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tipId = entries.at(-1)?.id;
 		if (this.running && !resetTracking) return;
@@ -212,6 +222,7 @@ export class Contemplator {
 			this.deliveredProbeIds.clear();
 			this.requeuedProbeIds.clear();
 			this.inFlightReviewIds.clear();
+			this.resolvingReviewIds.clear();
 			this.resumedReviewIds.clear();
 			this.reviewerSessions.clear();
 			const projection = fullProjection(entries);
@@ -411,13 +422,14 @@ export class Contemplator {
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
 			const recallTool = createRecallAgentTool(getBranch);
 			const sendProbe = createSendProbeTool((question) => {
-				if (intervention) throw new Error("Only one contemplator intervention is allowed per update.");
+				if (intervention) return false;
 				intervention = { kind: "probe", question };
+				return true;
 			});
 			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>];
 			if (reviewerEnabled) {
 				const requestReview = createRequestReviewTool((request) => {
-					if (intervention) throw new Error("Only one contemplator intervention is allowed per update.");
+					if (intervention) return undefined;
 					const id = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 					intervention = { kind: "review", request: {
 						id,
@@ -546,23 +558,23 @@ export class Contemplator {
 			debugLog("contemplator.review_coalesced", { scope: requestArgs.scope, key });
 			return;
 		}
-		this.inFlightReviewKeys.add(key);
 		const request: StructuralReviewRequest = { ...requestArgs, id: requestArgs.id, createdAt: Date.now(), requestedBy: "contemplator" };
 		this.pi.appendEntry(OM_REVIEW_REQUEST, { version: 1, request });
 		this.markTipPersisted(ctx);
 		this.launchStructuralReview({ ctx, request, model, apiKey, headers, sessionGeneration, key });
 	}
 
-	private launchStructuralReview(options: LaunchStructuralReviewOptions): void {
+	private launchStructuralReview(options: LaunchStructuralReviewOptions): boolean {
 		const { ctx, request, model, apiKey, headers, sessionGeneration, key } = options;
-		if (this.inFlightReviewIds.has(request.id)) return;
+		if (this.runtime.reviewInFlight || this.inFlightReviewIds.has(request.id)) return false;
 		// Do not spin a no-progress reviewer repeatedly in one live session. The
 		// request stays pending and a later session/tree restoration resumes it.
 		this.resumedReviewIds.add(request.id);
 		this.inFlightReviewIds.add(request.id);
+		if (key) this.inFlightReviewKeys.add(key);
 		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [] };
 		this.reviewerSessions.set(request.id, session);
-		void this.runtime.launchReviewTask(ctx, async () => {
+		const task = this.runtime.launchReviewTask(ctx, async () => {
 			try {
 				debugLog("reviewer.started", { reviewRequestId: request.id, scope: request.scope, resumed: session.history.length > 0 });
 				const result = await runStructuralReview({
@@ -606,9 +618,21 @@ export class Contemplator {
 			} finally {
 				this.inFlightReviewIds.delete(request.id);
 				if (key) this.inFlightReviewKeys.delete(key);
-				if (sessionGeneration === this.sessionGeneration) void this.resumePendingReviews(ctx);
 			}
 		});
+		if (!task) {
+			this.inFlightReviewIds.delete(request.id);
+			this.resumedReviewIds.delete(request.id);
+			if (key) this.inFlightReviewKeys.delete(key);
+			return false;
+		}
+		// Runtime clears reviewInFlight in its own finally before this continuation,
+		// so the next persisted pending request can start without overlap.
+		void task.then(() => {
+			const resumeCtx = this.latestCtx;
+			if (resumeCtx) void this.resumePendingReviews(resumeCtx);
+		});
+		return true;
 	}
 
 	private reviewIsPending(ctx: MemoryUpdateCtx, reviewRequestId: string): boolean {
@@ -629,16 +653,20 @@ export class Contemplator {
 		if (!this.runtime.config.reviewerEnabled || this.runtime.config.passive || this.runtime.reviewInFlight) return;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const completed = new Set(entries.filter(isReviewResultEntry).map((entry) => entry.data.result.reviewRequestId));
-		const request = entries.filter(isReviewRequestEntry).map((entry) => entry.data.request).find((item) => !completed.has(item.id) && !this.resumedReviewIds.has(item.id) && !this.inFlightReviewIds.has(item.id));
+		const request = entries.filter(isReviewRequestEntry).map((entry) => entry.data.request).find((item) => !completed.has(item.id) && !this.resumedReviewIds.has(item.id) && !this.inFlightReviewIds.has(item.id) && !this.resolvingReviewIds.has(item.id));
 		if (!request) return;
-		this.resumedReviewIds.add(request.id);
+		this.resolvingReviewIds.add(request.id);
 		const generation = this.sessionGeneration;
-		const resolved = await this.runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui, configuredModel: this.runtime.config.reviewerModel ?? null });
-		if (!resolved.ok || generation !== this.sessionGeneration) {
-			debugLog("reviewer.resume_skipped", { reviewRequestId: request.id, reason: resolved.ok ? "session_changed" : resolved.reason });
-			return;
+		try {
+			const resolved = await this.runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui, configuredModel: this.runtime.config.reviewerModel ?? null });
+			if (!resolved.ok || generation !== this.sessionGeneration) {
+				debugLog("reviewer.resume_skipped", { reviewRequestId: request.id, reason: resolved.ok ? "session_changed" : resolved.reason });
+				return;
+			}
+			this.launchStructuralReview({ ctx, request, model: resolved.model as Model<any>, apiKey: resolved.apiKey, headers: resolved.headers, sessionGeneration: generation, history: this.reviewerSessions.get(request.id)?.history ?? [] });
+		} finally {
+			this.resolvingReviewIds.delete(request.id);
 		}
-		this.launchStructuralReview({ ctx, request, model: resolved.model as Model<any>, apiKey: resolved.apiKey, headers: resolved.headers, sessionGeneration: generation, history: this.reviewerSessions.get(request.id)?.history ?? [] });
 	}
 
 	private markTipPersisted(ctx: MemoryUpdateCtx): void {

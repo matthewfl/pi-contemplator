@@ -271,7 +271,10 @@ export class Runtime {
 		return promise;
 	}
 
-	launchReviewTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
+	launchReviewTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> | undefined {
+		// Structural reviews are intentionally serialized. Pending requests are
+		// persisted in the session ledger and resumed after the active task exits.
+		if (this.reviewInFlight) return undefined;
 		this.reviewInFlight = true;
 		const promise = this.launchTrackedTask(ctx, "structural review", work, () => {
 			this.reviewInFlight = false;

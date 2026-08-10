@@ -91,6 +91,26 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.consolidationPhase).toBeUndefined();
 	});
 
+	it("rejects overlapping structural review tasks", async () => {
+		const runtime = new Runtime();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const firstWork = vi.fn(async () => { await gate; });
+		const overlappingWork = vi.fn(async () => {});
+
+		const first = runtime.launchReviewTask({ hasUI: false }, firstWork);
+		const overlapping = runtime.launchReviewTask({ hasUI: false }, overlappingWork);
+
+		expect(first).toBeDefined();
+		expect(overlapping).toBeUndefined();
+		expect(overlappingWork).not.toHaveBeenCalled();
+		expect(runtime.reviewInFlight).toBe(true);
+		release();
+		await first;
+		expect(runtime.reviewInFlight).toBe(false);
+		expect(runtime.reviewPromise).toBeNull();
+	});
+
 	it("records stage-specific consolidation errors", () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();
