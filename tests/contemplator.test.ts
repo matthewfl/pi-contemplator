@@ -298,6 +298,57 @@ describe("Contemplator lifecycle", () => {
 		expect(context.messages).toEqual([legacyMessage, newerMessage]);
 	});
 
+	it("does not credit a concurrently-appended foreign entry as a reviewer message", async () => {
+		const reviewRequest = {
+			id: "review-pending", scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		};
+		const harness = setup([
+			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+		] as TestEntry[]);
+		agentMocks.agentLoop.mockImplementation(() => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => [{ role: "assistant", content: [{ type: "text", text: "investigating" }], timestamp: Date.now() }],
+		}));
+		// Simulate a concurrent append landing immediately after each of ours,
+		// ahead of any branch-tail based id inference. (Capture the pre-wrap
+		// implementation: re-entering the vi.fn itself would recurse.)
+		const baseAppend = harness.pi.appendEntry.getMockImplementation()!;
+		harness.pi.appendEntry.mockImplementation((customType: string, data: unknown) => {
+			baseAppend(customType, data);
+			harness.setEntries([...harness.getEntries(), { id: `foreign-${harness.pi.appendEntry.mock.calls.length}`, type: "custom", customType: "om.other", data: {} } as TestEntry]);
+		});
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.reviewer.message")).toHaveLength(2));
+
+		harness.fire("session_compact");
+		const states = harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.reviewer.state");
+		expect(states).toHaveLength(1);
+		expect(states[0][1]).toEqual(expect.objectContaining({ version: 2, messageEntryIds: ["appended-1", "appended-2"] }));
+	});
+
+	it("does not duplicate reviewer session state when the branch tip advances between turns", () => {
+		const message = (text: string, timestamp: number) => ({ role: "user", content: [{ type: "text", text }], timestamp });
+		const harness = setup([
+			{ id: "rm-1", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: "review-pending", scope: "workflow", message: message("one", 1) } },
+		] as TestEntry[]);
+		harness.runtime.config = { ...harness.runtime.config, reviewerEnabled: false };
+		harness.fire("session_start");
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+
+		harness.setEntries([...harness.getEntries(), { id: "rm-2", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: "review-pending", scope: "workflow", message: message("two", 2) } } as TestEntry]);
+		harness.fire("turn_end");
+		harness.setEntries([...harness.getEntries(), { id: "rm-3", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: "review-pending", scope: "workflow", message: message("three", 3) } } as TestEntry]);
+		harness.fire("turn_end");
+
+		harness.fire("session_compact");
+		const states = harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.reviewer.state");
+		expect(states).toHaveLength(1);
+		expect(states[0][1]).toEqual(expect.objectContaining({ version: 2, messageEntryIds: ["rm-1", "rm-2", "rm-3"] }));
+	});
+
 	it("runs persisted review requests one at a time", async () => {
 		const firstGate = deferred();
 		agentMocks.agentLoop

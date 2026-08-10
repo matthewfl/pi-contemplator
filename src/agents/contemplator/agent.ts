@@ -34,6 +34,8 @@ type ReviewerSession = {
 	checkpointEntryId?: string;
 	/** Reviewer message entries appended since checkpointEntryId. */
 	messageEntryIds: string[];
+	/** Message-entry ids already folded into `history` in this live session (restore re-walk guard). */
+	foldedEntryIds: Set<string>;
 };
 
 type QueueStructuralReviewOptions = {
@@ -268,11 +270,12 @@ export class Contemplator {
 							history: state.history.filter((message): message is AgentMessage => !!message && typeof message === "object"),
 							checkpointEntryId: entry.id,
 							messageEntryIds: [],
+							foldedEntryIds: new Set(),
 						});
 					} else if (state.version === 2 && Array.isArray(state.messageEntryIds) && state.messageEntryIds.every((id) => typeof id === "string")) {
 						// V2 checkpoints contain references only. The referenced state/messages
 						// have already been folded while walking this append-only branch.
-						const session = this.reviewerSessions.get(state.reviewRequestId) ?? { scope: state.scope, history: [], messageEntryIds: [] };
+						const session = this.reviewerSessions.get(state.reviewRequestId) ?? { scope: state.scope, history: [], messageEntryIds: [], foldedEntryIds: new Set() };
 						session.checkpointEntryId = entry.id;
 						session.messageEntryIds = [];
 						this.reviewerSessions.set(state.reviewRequestId, session);
@@ -282,10 +285,18 @@ export class Contemplator {
 			if (entry.customType === OM_REVIEWER_MESSAGE && entry.data && typeof entry.data === "object") {
 				const data = entry.data as { reviewRequestId?: unknown; scope?: unknown; message?: unknown };
 				if (typeof data.reviewRequestId === "string" && (data.scope === "workflow" || data.scope === "software") && data.message && typeof data.message === "object") {
-					const session = this.reviewerSessions.get(data.reviewRequestId) ?? { scope: data.scope, history: [], messageEntryIds: [] };
-					session.history.push(data.message as AgentMessage);
-					session.messageEntryIds.push(entry.id);
-					this.reviewerSessions.set(data.reviewRequestId, session);
+					let session = this.reviewerSessions.get(data.reviewRequestId);
+					if (!session) {
+						session = { scope: data.scope, history: [], messageEntryIds: [], foldedEntryIds: new Set() };
+						this.reviewerSessions.set(data.reviewRequestId, session);
+					}
+					// restore() re-walks the whole branch whenever the tip moves
+					// (turn_end), so fold each message entry at most once per live session.
+					if (!session.foldedEntryIds.has(entry.id)) {
+						session.foldedEntryIds.add(entry.id);
+						session.history.push(data.message as AgentMessage);
+						session.messageEntryIds.push(entry.id);
+					}
 				}
 			}
 			if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.data && typeof entry.data === "object") {
@@ -595,7 +606,7 @@ export class Contemplator {
 		this.resumedReviewIds.add(request.id);
 		this.inFlightReviewIds.add(request.id);
 		if (key) this.inFlightReviewKeys.add(key);
-		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [], messageEntryIds: [] };
+		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [], messageEntryIds: [], foldedEntryIds: new Set() };
 		this.reviewerSessions.set(request.id, session);
 		const task = this.runtime.launchReviewTask(ctx, async () => {
 			try {
@@ -609,9 +620,11 @@ export class Contemplator {
 						if (sessionGeneration !== this.sessionGeneration || !this.reviewIsPending(ctx, request.id)) return;
 						for (const message of messages) {
 							session.history.push(message);
-							this.pi.appendEntry(OM_REVIEWER_MESSAGE, { version: 1, reviewRequestId: request.id, scope: request.scope, message });
-							const entryId = this.markTipPersisted(ctx);
-							if (entryId) session.messageEntryIds.push(entryId);
+							const entryId = this.appendEntryWithId(ctx, OM_REVIEWER_MESSAGE, { version: 1, reviewRequestId: request.id, scope: request.scope, message }, request.id);
+							if (entryId) {
+								session.foldedEntryIds.add(entryId);
+								session.messageEntryIds.push(entryId);
+							}
 						}
 					},
 				});
@@ -668,14 +681,13 @@ export class Contemplator {
 	private persistReviewerStates(ctx: MemoryUpdateCtx): void {
 		for (const [reviewRequestId, session] of this.reviewerSessions) {
 			if (session.messageEntryIds.length === 0) continue;
-			this.pi.appendEntry(OM_REVIEWER_STATE, {
+			const checkpointEntryId = this.appendEntryWithId(ctx, OM_REVIEWER_STATE, {
 				version: 2,
 				reviewRequestId,
 				scope: session.scope,
 				previousStateEntryId: session.checkpointEntryId,
 				messageEntryIds: session.messageEntryIds,
-			});
-			const checkpointEntryId = this.markTipPersisted(ctx);
+			}, reviewRequestId);
 			if (checkpointEntryId) session.checkpointEntryId = checkpointEntryId;
 			session.messageEntryIds = [];
 		}
@@ -704,6 +716,24 @@ export class Contemplator {
 	private markTipPersisted(ctx: MemoryUpdateCtx): string | undefined {
 		this.restoredTipId = (ctx.sessionManager.getBranch() as Entry[]).at(-1)?.id;
 		return this.restoredTipId;
+	}
+
+	/**
+	 * Append a custom entry and return the id of the entry just written, or
+	 * undefined when it cannot be attributed. pi.appendEntry() does not return
+	 * the entry id, so the branch is diffed around the synchronous append and the
+	 * candidate is matched by customType + reviewRequestId. This never credits a
+	 * concurrently-appended foreign entry reached via the branch tail. A failed
+	 * attribution is harmless: restore rebuilds transcripts from the durable
+	 * om.reviewer.message entries themselves and only skips a checkpoint.
+	 */
+	private appendEntryWithId(ctx: MemoryUpdateCtx, customType: string, data: Record<string, unknown>, reviewRequestId: string): string | undefined {
+		const branch = ctx.sessionManager.getBranch() as readonly Entry[];
+		const before = branch.length;
+		this.pi.appendEntry(customType, data);
+		const added = (ctx.sessionManager.getBranch() as readonly Entry[]).slice(before);
+		const own = added.find((entry) => entry.customType === customType && (entry.data as { reviewRequestId?: unknown } | undefined)?.reviewRequestId === reviewRequestId);
+		return own?.id;
 	}
 
 	private async compactHistory(model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number): Promise<void> {
