@@ -143,7 +143,8 @@ export class Contemplator {
 	private resumedReviewIds = new Set<string>();
 	private reviewerSessions = new Map<string, ReviewerSession>();
 	private deliveredProbeIds = new Set<string>();
-	private requeuedProbeIds = new Set<string>();
+	/** Probe ids passed to pi.sendMessage by this live extension runtime. */
+	private queuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
 	private latestCtx: MemoryUpdateCtx | undefined;
 	private turnsSinceRun = 0;
@@ -153,12 +154,19 @@ export class Contemplator {
 
 	register(): void {
 		this.runtime.setMemoryUpdateListener((ctx) => this.withDebugContext(ctx, () => this.observeTurn(ctx)));
-		const restoreSessionBranch = (_event: any, ctx: ExtensionContext) => {
+		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
-			this.restore(ctx, true);
-		};
-		this.pi.on("session_start", restoreSessionBranch);
-		this.pi.on("session_tree", restoreSessionBranch);
+			// AgentSession preserves its steering queue across extension reloads. An
+			// undelivered tracking entry therefore still has a live queued message;
+			// restoring it here would enqueue the same probe a second time.
+			const reload = event?.reason === "reload";
+			this.restore(ctx, true, reload, reload);
+		});
+		this.pi.on("session_tree", (_event: any, ctx: ExtensionContext) => {
+			this.sessionGeneration++;
+			// Pending steering messages remain queued while navigating the tree.
+			this.restore(ctx, true, true);
+		});
 		this.pi.on("session_shutdown", () => {
 			this.sessionGeneration++;
 			this.history = [];
@@ -172,7 +180,7 @@ export class Contemplator {
 			this.resumedReviewIds.clear();
 			this.reviewerSessions.clear();
 			this.deliveredProbeIds.clear();
-			this.requeuedProbeIds.clear();
+			this.queuedProbeIds.clear();
 			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
 			this.restoredTipId = undefined;
@@ -220,7 +228,7 @@ export class Contemplator {
 		}, fn);
 	}
 
-	private restore(ctx: MemoryUpdateCtx, resetTracking = false): void {
+	private restore(ctx: MemoryUpdateCtx, resetTracking = false, retainQueuedIds = false, skipUndeliveredRestore = false): void {
 		this.latestCtx = ctx;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tipId = entries.at(-1)?.id;
@@ -229,7 +237,7 @@ export class Contemplator {
 		this.history = [];
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
-			this.requeuedProbeIds.clear();
+			if (!retainQueuedIds) this.queuedProbeIds.clear();
 			this.inFlightReviewIds.clear();
 			this.resolvingReviewIds.clear();
 			this.resumedReviewIds.clear();
@@ -312,8 +320,7 @@ export class Contemplator {
 		}
 		this.restoredTipId = tipId;
 		for (const [probeId, question] of undeliveredSuggestions) {
-			if (queuedProbeIds.has(probeId) || this.requeuedProbeIds.has(probeId)) continue;
-			this.requeuedProbeIds.add(probeId);
+			if (skipUndeliveredRestore || queuedProbeIds.has(probeId) || this.queuedProbeIds.has(probeId)) continue;
 			this.queueProbe(ctx, question, "restore", probeId);
 		}
 		if (resetTracking) void this.resumePendingReviews(ctx);
@@ -571,6 +578,10 @@ export class Contemplator {
 			display: false,
 			details: { version: 1, question, source, probeId },
 		}, { deliverAs: "steer", triggerTurn: false });
+		// sendMessage queues synchronously. Mark every source (not only restore)
+		// before a later turn_end can rebuild state from the still-undelivered
+		// tracking entry and enqueue this probe again.
+		this.queuedProbeIds.add(probeId);
 		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: false, source, probeId });
 		this.markTipPersisted(ctx);
 		debugLog("contemplator.suggestion_queued", {

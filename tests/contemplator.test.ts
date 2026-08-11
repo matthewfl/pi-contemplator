@@ -116,6 +116,51 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
 	});
 
+	it("does not requeue a live probe at turn_end before Pi delivers its steer", () => {
+		const harness = setup();
+		harness.fire("session_start", { reason: "startup" });
+		(harness.contemplator as any).queueProbe(harness.ctx, "Question?", "send_probe", "probe-1");
+		harness.setEntries([
+			...harness.getEntries(),
+			{ id: "main-agent-result", type: "message", message: { role: "toolResult", content: [] } } as TestEntry,
+		]);
+
+		harness.fire("turn_end");
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+	});
+
+	it("does not requeue an undelivered steer preserved across extension reload", () => {
+		const harness = setup([{
+			id: "probe-tracking",
+			type: "custom",
+			customType: "om.contemplator.suggestion",
+			data: { probeId: "probe-1", suggestion: "Question?", delivered: false },
+		}] as TestEntry[]);
+
+		harness.fire("session_start", { reason: "reload" });
+
+		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("restores an undelivered probe on fresh session startup", () => {
+		const harness = setup([{
+			id: "probe-tracking",
+			type: "custom",
+			customType: "om.contemplator.suggestion",
+			data: { probeId: "probe-1", suggestion: "Question?", delivered: false },
+		}] as TestEntry[]);
+
+		harness.fire("session_start", { reason: "startup" });
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
+		}), { deliverAs: "steer", triggerTurn: false });
+	});
+
 	it("resets branch-local tracking and pending work on tree navigation", () => {
 		const branchA = [textCustomMessage("raw-a", "branch a")];
 		const branchB = [textCustomMessage("raw-b", "branch b")];
