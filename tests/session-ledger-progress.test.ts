@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	agentActiveTimeMs,
 	assistantOutputTokens,
 	assistantToolCallCount,
 	earlierCoverageMarkerId,
@@ -61,6 +62,17 @@ describe("session-ledger V3 progress helpers", () => {
 		] as any[];
 
 		expect(assistantToolCallCount(entries)).toBe(3);
+	});
+
+	it("sums valid persisted main-agent activity segments", () => {
+		const entries = [
+			{ id: "activity-1", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 1_250 } },
+			{ id: "other", type: "custom", customType: "om.other", data: { durationMs: 99_000 } },
+			{ id: "invalid", type: "custom", customType: "om.agent.activity", data: { durationMs: -10 } },
+			{ id: "activity-2", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 2_750 } },
+		] as any[];
+
+		expect(agentActiveTimeMs(entries)).toBe(4_000);
 	});
 
 	it("builds a branch id to index map", () => {

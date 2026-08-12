@@ -232,6 +232,35 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.suggestion", expect.objectContaining({ probeId: "probe-2", delivered: true }));
 	});
 
+	it("records active run time without counting idle user waits or parallel tools twice", () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const harness = setup();
+		harness.runtime.config = { ...harness.runtime.config, contemplatorEnabled: false };
+
+		harness.fire("agent_start");
+		harness.fire("tool_execution_start", { toolCallId: "one" });
+		harness.fire("tool_execution_start", { toolCallId: "two" });
+		time = 6_000;
+		harness.fire("turn_end");
+		time = 7_000;
+		harness.fire("agent_end");
+
+		// Ninety-three seconds waiting for user input is outside any agent run.
+		time = 100_000;
+		harness.fire("agent_start");
+		time = 102_000;
+		harness.fire("agent_end");
+		now.mockRestore();
+
+		const durations = harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.map((entry) => (entry.data as { durationMs: number }).durationMs);
+		expect(durations).toEqual([5_000, 1_000, 2_000]);
+		expect(durations.reduce((sum, duration) => sum + duration, 0)).toBe(8_000);
+	});
+
 	it("rechecks turn throttling before processing updates queued during a run", async () => {
 		const gate = deferred();
 		agentMocks.agentLoop
@@ -264,7 +293,29 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
 
-	it("includes cumulative primary-agent output tokens and tool calls on the current branch", async () => {
+	it("refreshes cumulative activity while a pending update waits for its turn threshold", async () => {
+		const raw = textCustomMessage("raw-a", "branch a");
+		const memory = observationsRecordedEntry("obs-a", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
+			coversUpToId: "raw-a",
+		});
+		const firstActivity = { id: "activity-1", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 1_000 } } as TestEntry;
+		const harness = setup([raw, memory, firstActivity]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+
+		harness.fire("turn_end");
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+
+		const laterActivity = { id: "activity-2", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 4_000 } } as TestEntry;
+		harness.setEntries([...harness.getEntries(), laterActivity]);
+		harness.fire("turn_end");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+
+		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
+		expect(prompt.content[0].text).toContain("CUMULATIVE ACTIVITY: 0 generated tokens; 0 tool calls; less than 5 minutes active.");
+	});
+
+	it("includes cumulative primary-agent tokens, tool calls, and active time on the current branch", async () => {
 		const earlierAssistant = {
 			type: "message",
 			id: "assistant-before-memory",
@@ -279,13 +330,19 @@ describe("Contemplator lifecycle", () => {
 			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["assistant-memory-source"] })],
 			coversUpToId: "assistant-memory-source",
 		});
-		const harness = setup([earlierAssistant, latestAssistant, memory]);
+		const activity = {
+			id: "agent-activity",
+			type: "custom",
+			customType: "om.agent.activity",
+			data: { version: 1, durationMs: 754_000 },
+		} as TestEntry;
+		const harness = setup([earlierAssistant, latestAssistant, memory, activity]);
 
 		harness.fire("turn_end");
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
 
 		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
-		expect(prompt.content[0].text).toContain("ACTIVITY SIGNAL cumulative primary-agent generated tokens: 200; cumulative primary-agent tool calls: 3");
+		expect(prompt.content[0].text).toContain("CUMULATIVE ACTIVITY: 200 generated tokens; 3 tool calls; about 10 minutes active.");
 	});
 
 	it("resumes a pending reviewer transcript with a keep-going prompt on session start", async () => {

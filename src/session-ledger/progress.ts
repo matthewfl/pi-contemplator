@@ -1,5 +1,6 @@
 import { estimateEntryTokens } from "../tokens.js";
 import {
+	OM_AGENT_ACTIVITY,
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
@@ -48,6 +49,17 @@ export function assistantToolCallCount(entries: Entry[]): number {
 		for (const block of content) {
 			if (isObject(block) && block.type === "toolCall") total++;
 		}
+	}
+	return total;
+}
+
+/** Sum persisted main-agent active wall-clock time on the current branch. */
+export function agentActiveTimeMs(entries: Entry[]): number {
+	let total = 0;
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== OM_AGENT_ACTIVITY || !isObject(entry.data)) continue;
+		const durationMs = entry.data.durationMs;
+		if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) total += durationMs;
 	}
 	return total;
 }

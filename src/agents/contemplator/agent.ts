@@ -5,7 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
@@ -22,6 +22,7 @@ interface PendingUpdate {
 	reviews: string[];
 	mainAgentOutputTokens: number;
 	mainAgentToolCalls: number;
+	mainAgentActiveTimeMs: number;
 }
 
 type Intervention =
@@ -89,6 +90,19 @@ function customMessageText(content: unknown): string {
 		.map((block) => block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")
 		.filter(Boolean)
 		.join("\n");
+}
+
+const AGENT_TIME_BUCKET_MINUTES = 5;
+
+function coarseAgentTime(durationMs: number): string {
+	const totalMinutes = Math.floor(durationMs / 60_000);
+	const bucketMinutes = Math.floor(totalMinutes / AGENT_TIME_BUCKET_MINUTES) * AGENT_TIME_BUCKET_MINUTES;
+	if (bucketMinutes < AGENT_TIME_BUCKET_MINUTES) return `less than ${AGENT_TIME_BUCKET_MINUTES} minutes`;
+	const hours = Math.floor(bucketMinutes / 60);
+	const minutes = bucketMinutes % 60;
+	if (hours === 0) return `about ${minutes} minutes`;
+	const hourLabel = `${hours} hour${hours === 1 ? "" : "s"}`;
+	return minutes === 0 ? `about ${hourLabel}` : `about ${hourLabel} ${minutes} minutes`;
 }
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_STATE = "om.contemplator.state";
@@ -160,6 +174,8 @@ export class Contemplator {
 	private latestCtx: MemoryUpdateCtx | undefined;
 	private turnsSinceRun = 0;
 	private restoredTipId: string | undefined;
+	/** Start of the unpersisted portion of the current main-agent run. */
+	private agentActiveSince: number | undefined;
 
 	constructor(private readonly pi: ExtensionAPI, private readonly runtime: Runtime) {}
 
@@ -176,8 +192,16 @@ export class Contemplator {
 			return box;
 		});
 		this.runtime.setMemoryUpdateListener((ctx) => this.withDebugContext(ctx, () => this.observeTurn(ctx)));
+		this.pi.on("agent_start", () => {
+			this.agentActiveSince = Date.now();
+		});
+		this.pi.on("agent_end", (_event: unknown, ctx: ExtensionContext) => {
+			this.persistAgentActivity(ctx);
+			this.agentActiveSince = undefined;
+		});
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			this.agentActiveSince = undefined;
 			// AgentSession preserves its steering queue across extension reloads. An
 			// undelivered tracking entry therefore still has a live queued message;
 			// restoring it here would enqueue the same probe a second time.
@@ -186,11 +210,13 @@ export class Contemplator {
 		});
 		this.pi.on("session_tree", (_event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			this.agentActiveSince = undefined;
 			// Pending steering messages remain queued while navigating the tree.
 			this.restore(ctx, true, true);
 		});
 		this.pi.on("session_shutdown", () => {
 			this.sessionGeneration++;
+			this.agentActiveSince = undefined;
 			this.history = [];
 			this.pending = undefined;
 			this.seenObservationIds.clear();
@@ -234,9 +260,21 @@ export class Contemplator {
 			}
 		});
 		this.pi.on("turn_end", (_event: any, ctx: ExtensionContext) => {
+			this.persistAgentActivity(ctx);
 			this.turnsSinceRun++;
 			this.withDebugContext(ctx, () => this.observeTurn(ctx));
 		});
+	}
+
+	private persistAgentActivity(ctx: MemoryUpdateCtx): void {
+		const startedAt = this.agentActiveSince;
+		if (startedAt === undefined) return;
+		const endedAt = Date.now();
+		this.agentActiveSince = endedAt;
+		const durationMs = Math.max(0, endedAt - startedAt);
+		if (durationMs === 0) return;
+		this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
+		debugLog("agent.activity_recorded", { durationMs });
 	}
 
 	private withDebugContext<T>(ctx: MemoryUpdateCtx, fn: () => T): T {
@@ -359,7 +397,8 @@ export class Contemplator {
 			debugLog("contemplator.skipped", { reason: "passive" });
 			return;
 		}
-		const projection = fullProjection(ctx.sessionManager.getBranch() as Entry[]);
+		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
+		const projection = fullProjection(branchEntries);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
 		const reflections = projection.reflections.map((item) => `[${item.id}] ${item.content}`);
 		const reviews = projection.reviews ?? [];
@@ -387,11 +426,18 @@ export class Contemplator {
 				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
 				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
-				mainAgentOutputTokens: assistantOutputTokens(ctx.sessionManager.getBranch() as Entry[]),
-				mainAgentToolCalls: assistantToolCallCount(ctx.sessionManager.getBranch() as Entry[]),
+				mainAgentOutputTokens: assistantOutputTokens(branchEntries),
+				mainAgentToolCalls: assistantToolCallCount(branchEntries),
+				mainAgentActiveTimeMs: agentActiveTimeMs(branchEntries),
 			};
 		}
 		if (!this.pending) return;
+		// Activity values are cumulative send-time snapshots, not values frozen when
+		// the first memory entered a pending batch. This includes work performed
+		// while that batch waits for its memory/turn thresholds.
+		this.pending.mainAgentOutputTokens = assistantOutputTokens(branchEntries);
+		this.pending.mainAgentToolCalls = assistantToolCallCount(branchEntries);
+		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
 		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
 			debugLog("contemplator.waiting", {
@@ -452,6 +498,7 @@ export class Contemplator {
 						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 						mainAgentOutputTokens: update.mainAgentOutputTokens,
 						mainAgentToolCalls: update.mainAgentToolCalls,
+						mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
 					};
 					this.turnsSinceRun = turnsBeforeRun;
 				}
@@ -476,7 +523,7 @@ export class Contemplator {
 			const interventionInstruction = reviewerEnabled
 				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Use no more than one intervention."
 				: "Use send_probe only when one focused question is materially useful. Use no more than one intervention.";
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nACTIVITY SIGNAL cumulative primary-agent generated tokens: ${update.mainAgentOutputTokens}; cumulative primary-agent tool calls: ${update.mainAgentToolCalls}\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
 			let intervention: Intervention | undefined;
@@ -578,6 +625,7 @@ export class Contemplator {
 					reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 					mainAgentOutputTokens: update.mainAgentOutputTokens,
 					mainAgentToolCalls: update.mainAgentToolCalls,
+					mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
 				};
 				this.turnsSinceRun = turnsBeforeRun;
 			}

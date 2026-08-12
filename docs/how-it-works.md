@@ -19,6 +19,12 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | `search_memories` tool | Search recorded observations and reflections by topic or keywords. |
 | `recall` tool | Recover source evidence for a memory id. |
 
+## Main-agent activity time
+
+The extension records small `om.agent.activity` custom entries while the primary Pi agent is running. Timing starts at `agent_start`, checkpoints at `turn_end`, and records any remainder at `agent_end`. The cumulative value therefore measures wall-clock time spent inside main-agent runs—model generation, tool execution, and their orchestration—while excluding idle time waiting for the user.
+
+Parallel tools share the same running clock, so two concurrent ten-second tool calls add roughly ten seconds rather than twenty. Because activity segments are custom entries on the active session branch, the cumulative value survives reloads and follows tree navigation without modifying primary `AgentMessage` objects. Milliseconds are retained internally for correct accumulation, but the contemplator receives a human-readable value rounded down to a five-minute bucket alongside cumulative generated tokens and tool-call count. This is an advisory long-run efficiency signal: high active time combined with memory evidence of limited progress may justify investigation or a workflow review, but elapsed time alone is not proof of a problem.
+
 ## Lifecycle overview
 
 ```mermaid

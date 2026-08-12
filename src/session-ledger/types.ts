@@ -9,6 +9,8 @@ export const OM_REVIEWER_MESSAGE = "om.reviewer.message";
 export const OM_REVIEWER_STATE = "om.reviewer.state";
 /** Compact proposal notice queued for the primary agent. */
 export const OM_REVIEWER_NOTICE = "om.reviewer.notice";
+/** Main-agent active wall-clock time, excluding idle waits for user input. */
+export const OM_AGENT_ACTIVITY = "om.agent.activity";
 export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
