@@ -4,6 +4,7 @@ const agentMocks = vi.hoisted(() => ({ agentLoop: vi.fn() }));
 vi.mock("@earendil-works/pi-agent-core", () => ({ agentLoop: agentMocks.agentLoop }));
 
 import { Contemplator } from "../src/agents/contemplator/agent.js";
+import { REVIEWER_TOTAL_TOKEN_LIMIT } from "../src/model-budget.js";
 import { Runtime } from "../src/runtime.js";
 import {
 	observation,
@@ -271,6 +272,34 @@ describe("Contemplator lifecycle", () => {
 		expect(prompts[0].content[0].text).toContain("You have not yet produced a terminal review outcome");
 		expect(context.messages).toEqual([persistedAssistant]);
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.reviewer.message", expect.objectContaining({ reviewRequestId: "review-pending", message: expect.objectContaining({ role: "user" }) }));
+	});
+
+	it("records a terminal result for an exhausted pending review", async () => {
+		const reviewRequest = {
+			id: "review-exhausted", scope: "software", evidence: "[aaaaaaaaaaaa] recurring work",
+			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
+			createdAt: 1, requestedBy: "contemplator",
+		};
+		const exhaustedAssistant = { role: "assistant", content: [{ type: "text", text: "No budget remains." }], timestamp: 1, usage: { output: REVIEWER_TOTAL_TOKEN_LIMIT } };
+		const harness = setup([
+			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+			{ id: "review-message", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "software", message: exhaustedAssistant } },
+		] as TestEntry[]);
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.review.result", {
+			result: expect.objectContaining({
+				reviewRequestId: "review-exhausted",
+				outcome: "no_proposal",
+				reason: expect.stringContaining("lifetime output-token budget"),
+			}),
+		}));
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+
+		const resultCount = harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.review.result").length;
+		harness.fire("session_tree");
+		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.review.result")).toHaveLength(resultCount);
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
 	});
 
 	it("persists reviewer compaction state as entry references without copying history", () => {

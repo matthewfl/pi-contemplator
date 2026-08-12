@@ -196,7 +196,7 @@ describe("reviewer keep-going loop", () => {
 		expect(invocations).toBe(REVIEWER_MAX_INVOCATIONS_PER_LAUNCH);
 	});
 
-	it("counts persisted output usage against the lifetime request budget", async () => {
+	it("completes a review that exhausts its remaining lifetime budget", async () => {
 		let configuredMaxTokens: number | undefined;
 		let invocations = 0;
 		const history = [assistantText("earlier reviewer output", REVIEWER_TOTAL_TOKEN_LIMIT - 7)];
@@ -213,12 +213,16 @@ describe("reviewer keep-going loop", () => {
 			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop, history,
 		});
 
-		expect(result).toBeUndefined();
+		expect(result).toMatchObject({
+			outcome: "no_proposal",
+			scope: "workflow",
+			reason: expect.stringContaining("lifetime output-token budget"),
+		});
 		expect(invocations).toBe(1);
 		expect(configuredMaxTokens).toBe(7);
 	});
 
-	it("does not resume a request whose persisted transcript exhausted its budget", async () => {
+	it("completes an already-exhausted request without invoking the model", async () => {
 		let invocations = 0;
 		const result = await runStructuralReview({
 			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [],
@@ -226,7 +230,11 @@ describe("reviewer keep-going loop", () => {
 			agentLoop: (() => { invocations++; throw new Error("must not run"); }) as any,
 		});
 
-		expect(result).toBeUndefined();
+		expect(result).toMatchObject({
+			outcome: "no_proposal",
+			scope: "workflow",
+			reason: expect.stringContaining("lifetime output-token budget"),
+		});
 		expect(invocations).toBe(0);
 	});
 

@@ -71,6 +71,27 @@ function assistantOutputTokens(messages: AgentMessage[]): number {
 	return total;
 }
 
+function completeReview(request: StructuralReviewRequest, terminal: ReviewTerminalResult): ReviewResult {
+	return {
+		...terminal,
+		id: hashId(`${request.id}:${JSON.stringify(terminal)}:${Date.now()}`),
+		version: 1,
+		reviewRequestId: request.id,
+		createdAt: Date.now(),
+		requestedBy: "contemplator",
+	} as ReviewResult;
+}
+
+function budgetExhaustedResult(request: StructuralReviewRequest): ReviewResult {
+	return completeReview(request, {
+		outcome: "no_proposal",
+		scope: request.scope,
+		reason: "The reviewer exhausted its lifetime output-token budget before recording a terminal proposal decision.",
+		evidenceReviewed: "The persisted reviewer transcript was retained, but no terminal evidence assessment was recorded before the budget was exhausted.",
+		reconsiderIf: "A new review can be requested with a narrower scope or a smaller evidence set.",
+	});
+}
+
 export async function runStructuralReview(args: RunStructuralReviewArgs): Promise<ReviewResult | undefined> {
 	let terminal: ReviewTerminalResult | undefined;
 	const acceptTerminal = (candidate: ReviewTerminalResult): void => {
@@ -98,7 +119,7 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 	// Usage on persisted assistant messages makes this a lifetime request budget,
 	// rather than a fresh allowance on each session/tree resumption.
 	let totalOutputTokens = assistantOutputTokens(history);
-	if (totalOutputTokens >= REVIEWER_TOTAL_TOKEN_LIMIT) return undefined;
+	if (totalOutputTokens >= REVIEWER_TOTAL_TOKEN_LIMIT) return budgetExhaustedResult(args.request);
 
 	// Persist both the user continuation and the returned messages immediately.
 	// This makes the transcript sufficient to resume a review after shutdown.
@@ -175,13 +196,10 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		progress = await runOnce(keepGoing);
 		invocations++;
 	}
-	if (!terminal) return undefined;
-	return {
-		...terminal,
-		id: hashId(`${args.request.id}:${JSON.stringify(terminal)}:${Date.now()}`),
-		version: 1,
-		reviewRequestId: args.request.id,
-		createdAt: Date.now(),
-		requestedBy: "contemplator",
-	} as ReviewResult;
+	if (!terminal) {
+		return totalOutputTokens >= REVIEWER_TOTAL_TOKEN_LIMIT
+			? budgetExhaustedResult(args.request)
+			: undefined;
+	}
+	return completeReview(args.request, terminal);
 }
