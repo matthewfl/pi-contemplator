@@ -123,9 +123,10 @@ describe("V3 compaction trigger", () => {
 		});
 	});
 
-	it("honors an agent-requested compaction even in passive mode and resumes afterward", async () => {
+	it("honors an agent-requested compaction even in passive mode and resumes with its continuation", async () => {
 		const { handler, runtime, pi } = captureHandler({ compactAfterTokens: 99, passive: true });
 		(runtime as any).compactRequested = true;
+		(runtime as any).compactContinuationPrompt = "Inspect the failing test output, then fix the parser.";
 		const ctx = fakeCtx([belowBranch], {
 			compact: vi.fn((options) => options.onComplete()),
 		});
@@ -139,10 +140,15 @@ describe("V3 compaction trigger", () => {
 			"observational-memory-compaction",
 			"OM compaction: running (agent-requested, resume pending)",
 		);
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "om.compaction.resume", display: false }),
-			expect.objectContaining({ triggerTurn: true }),
-		);
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Inspect the failing test output, then fix the parser.",
+			display: false,
+		}, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
+		expect((runtime as any).compactContinuationPrompt).toBeUndefined();
 	});
 
 	it("requeues an agent-requested compaction if the agent becomes busy", async () => {

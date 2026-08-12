@@ -30,13 +30,22 @@ function isCurrentWatch(runtime: Runtime, generation: number): boolean {
 	return runtime.compactionResumePending && runtime.compactionResumeGeneration === generation;
 }
 
-function sendResumeMessage(pi: ExtensionAPI, ctx: ResumeCtx, afterFailure: boolean): void {
+function continuationMessage(afterFailure: boolean, shortContinuationPrompt?: string): string {
+	if (shortContinuationPrompt) {
+		return afterFailure
+			? `Context compaction failed. Continue with these instructions:\n\n${shortContinuationPrompt}`
+			: shortContinuationPrompt;
+	}
+	return afterFailure
+		? "Context compaction failed. Continue the current task without waiting for another user message."
+		: "Continue the current task from the compacted context without waiting for another user message.";
+}
+
+function sendResumeMessage(pi: ExtensionAPI, ctx: ResumeCtx, afterFailure: boolean, shortContinuationPrompt?: string): void {
 	try {
 		pi.sendMessage({
 			customType: "om.compaction.resume",
-			content: afterFailure
-				? "Context compaction failed. Continue the current task without waiting for another user message."
-				: "Continue the current task from the compacted context without waiting for another user message.",
+			content: continuationMessage(afterFailure, shortContinuationPrompt),
 			display: false,
 		}, {
 			deliverAs: "followUp",
@@ -54,6 +63,7 @@ function scheduleResumeRetries(
 	ctx: ResumeCtx,
 	generation: number,
 	afterFailure: boolean,
+	shortContinuationPrompt: string | undefined,
 	retryIndex = 0,
 ): void {
 	if (!isCurrentWatch(runtime, generation)) return;
@@ -75,8 +85,8 @@ function scheduleResumeRetries(
 			`Observational memory: continuation did not start; retrying (${retryIndex + 1}/${RESUME_RETRY_DELAYS_MS.length})`,
 			"warning",
 		);
-		sendResumeMessage(pi, ctx, afterFailure);
-		scheduleResumeRetries(pi, runtime, ctx, generation, afterFailure, retryIndex + 1);
+		sendResumeMessage(pi, ctx, afterFailure, shortContinuationPrompt);
+		scheduleResumeRetries(pi, runtime, ctx, generation, afterFailure, shortContinuationPrompt, retryIndex + 1);
 	}, RESUME_RETRY_DELAYS_MS[retryIndex]);
 }
 
@@ -86,10 +96,11 @@ export function resumeAfterCompaction(
 	runtime: Runtime,
 	ctx: ResumeCtx,
 	afterFailure = false,
+	shortContinuationPrompt?: string,
 ): void {
 	const generation = beginResumeWatch(runtime);
-	sendResumeMessage(pi, ctx, afterFailure);
-	scheduleResumeRetries(pi, runtime, ctx, generation, afterFailure);
+	sendResumeMessage(pi, ctx, afterFailure, shortContinuationPrompt);
+	scheduleResumeRetries(pi, runtime, ctx, generation, afterFailure, shortContinuationPrompt);
 }
 
 /**
@@ -111,7 +122,7 @@ export function watchForNativeCompactionResume(
 			"warning",
 		);
 		sendResumeMessage(pi, ctx, false);
-		scheduleResumeRetries(pi, runtime, ctx, generation, false);
+		scheduleResumeRetries(pi, runtime, ctx, generation, false, undefined);
 	}, NATIVE_RESUME_GRACE_MS);
 }
 

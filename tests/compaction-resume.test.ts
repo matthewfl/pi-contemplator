@@ -44,13 +44,18 @@ describe("compaction resume watchdog", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("retrying"), "warning");
 	});
 
-	it("retries an unacknowledged OM continuation and reports final failure", async () => {
+	it("retries the agent-authored continuation and reports final failure", async () => {
 		const { pi, runtime, ctx } = setup();
 
-		resumeAfterCompaction(pi as any, runtime as any, ctx);
+		resumeAfterCompaction(pi as any, runtime as any, ctx, false, "Run the targeted test, then continue the implementation.");
 		await vi.runAllTimersAsync();
 
 		expect(pi.sendMessage).toHaveBeenCalledTimes(3);
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Run the targeted test, then continue the implementation.",
+			display: false,
+		}, { deliverAs: "followUp", triggerTurn: true });
 		expect(runtime.compactionResumePending).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"Observational memory: the agent did not acknowledge continuation after compaction",

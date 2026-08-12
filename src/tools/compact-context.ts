@@ -4,7 +4,7 @@ import type { Runtime } from "../runtime.js";
 
 export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 export const COMPACT_CONTEXT_DESCRIPTION =
-	"Force manual compaction. Use sparingly when substantial work remains but the remaining context is insufficient, or when accumulated context has become noisy or stale enough to impair focus and reliable reasoning.";
+	"Force manual compaction and resume with agent-authored next-step instructions. Use sparingly when substantial work remains but the remaining context is insufficient, or when accumulated context has become noisy or stale enough to impair focus and reliable reasoning.";
 
 export type CompactContextDetails = {
 	status: "scheduled" | "already_pending" | "in_progress";
@@ -20,10 +20,17 @@ export function createCompactContextTool(runtime: Runtime) {
 		promptGuidelines: [
 			"Use compact_context sparingly when either substantial additional work remains and there is not enough context left to complete it, or accumulated past context has become noisy, stale, or distracting enough that you are struggling to focus on the current task or reason about it reliably.",
 			"Do not use compact_context routinely, for short tasks, or merely because the conversation is long; use it for genuine context-capacity pressure or context degradation that is interfering with the work.",
-			"Call compact_context by itself and stop the current turn; observational memory will compact the context and automatically resume the task.",
+			"Call compact_context by itself, provide short_continuation_prompt with concrete instructions for the next agent step, and stop the current turn; observational memory will compact the context and automatically resume with those instructions.",
 		],
-		parameters: Type.Object({}),
-		async execute() {
+		parameters: Type.Object({
+			short_continuation_prompt: Type.String({
+				minLength: 1,
+				maxLength: 1_000,
+				pattern: "\\S",
+				description: "Short, concrete instructions to your post-compaction self describing the next action and any critical immediate constraint. Do not summarize the whole conversation.",
+			}),
+		}),
+		async execute(_toolCallId, params) {
 			if (runtime.compactInFlight) {
 				return {
 					content: [{ type: "text" as const, text: "Context compaction is already in progress. Stop this turn and wait for automatic resume." }],
@@ -40,6 +47,7 @@ export function createCompactContextTool(runtime: Runtime) {
 			}
 
 			runtime.compactRequested = true;
+			runtime.compactContinuationPrompt = params.short_continuation_prompt.trim();
 			return {
 				content: [{ type: "text" as const, text: "Context compaction scheduled. Stop this turn; the task will resume automatically after compaction." }],
 				details: { status: "scheduled" } as CompactContextDetails,

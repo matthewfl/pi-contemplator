@@ -17,6 +17,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		if (runtime.compactInFlight) return;
 
 		const agentRequested = runtime.compactRequested;
+		const shortContinuationPrompt = agentRequested ? runtime.compactContinuationPrompt : undefined;
 		if (agentRequested) runtime.compactRequested = false;
 		else if (runtime.config.passive === true) return;
 
@@ -88,6 +89,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						"info",
 					);
 				}
+				if (agentRequested) runtime.compactContinuationPrompt = undefined;
 				ctx.compact({
 					onComplete: () => {
 						runtime.compactInFlight = false;
@@ -95,7 +97,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						// Both explicit and proactive OM compactions are manual from Pi's
 						// perspective (willRetry=false), so Pi will not continue either one.
 						// Always enqueue a hidden continuation after OM finishes compacting.
-						resumeAfterCompaction(pi, runtime, { hasUI, ui });
+						resumeAfterCompaction(pi, runtime, { hasUI, ui }, false, shortContinuationPrompt);
 					},
 					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
@@ -104,18 +106,19 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						if (error.message !== "Compaction cancelled" && hasUI) {
 							ui?.notify(`Observational memory: ${error.message}`, "error");
 						}
-						resumeAfterCompaction(pi, runtime, { hasUI, ui }, true);
+						resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 					},
 				});
 			} catch (error) {
 				runtime.compactInFlight = false;
+				if (agentRequested) runtime.compactContinuationPrompt = undefined;
 				runtime.compactOrigin = undefined;
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) {
 					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 				}
-				resumeAfterCompaction(pi, runtime, { hasUI, ui }, true);
+				resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 			}
 		}, 0);
 	});

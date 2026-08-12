@@ -145,6 +145,8 @@ export class Runtime {
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactRequested = false;
+	/** Agent-authored instructions to deliver after an explicit compact_context request. */
+	compactContinuationPrompt: string | undefined;
 	compactOrigin: "proactive" | "agent-requested" | undefined;
 	compactHookInFlight = false;
 	compactionResumePending = false;
@@ -212,6 +214,7 @@ export class Runtime {
 		// never-cleared compactInFlight bricking all future compactions).
 		this.compactInFlight = false;
 		this.compactRequested = false;
+		this.compactContinuationPrompt = undefined;
 		this.compactOrigin = undefined;
 		this.compactionResumePending = false;
 		this.compactionResumeGeneration += 1;
