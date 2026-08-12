@@ -49,6 +49,7 @@ The extension loads config once for its runtime. After changing settings, restar
       "provider": "openrouter",
       "id": "anthropic/claude-sonnet-4"
     },
+    "showContemplatorMessages": true,
     "reviewerEnabled": true,
     "reviewerModel": {
       "provider": "openrouter",
@@ -81,6 +82,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `compactionObserverEnabled` | boolean | `true` | Launches the fire-and-forget observer when compaction begins. Set `false` to compare compaction behavior without this sidecar. |
 | `contemplatorEnabled` | boolean | `true` | Enables the slower background contemplator and advisory suggestions. |
 | `contemplatorModel` | object | session model | Optional model override used only by the contemplator. |
+| `showContemplatorMessages` | boolean | `true` | Shows newly sent contemplator probes and structural-review proposal notices in the chat transcript with distinct purple styling. The messages still reach the main agent when hidden. |
 | `reviewerEnabled` | boolean | `true` | Enables scoped structural-review escalation. When false, the contemplator receives neither the review prompt nor the `request_review` tool. |
 | `reviewerModel` | object | session model | Optional model override used only by short-lived structural reviewers. |
 | `contemplatorMinNewObservations` | positive integer | `8` | Minimum newly recorded observations that can wake the contemplator. |
@@ -88,7 +90,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `contemplatorMinTurns` | positive integer | `10` | Minimum main-agent turns between contemplator runs. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
-`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, structural reviewer, and asynchronous compaction observer, and selects available contemplator or reviewer models (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings reviewer on`, `/om:settings reviewer off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
+`/om:settings` opens an interactive menu for the current session. It toggles the contemplator, contemplator-message visibility, structural reviewer, and asynchronous compaction observer, and selects available contemplator or reviewer models (or the current session model). Model selection first asks for an optional provider/model filter, then presents the matching models in a scrollable selector. For quick toggles, `/om:settings on`, `/om:settings off`, `/om:settings messages on`, `/om:settings messages off`, `/om:settings reviewer on`, `/om:settings reviewer off`, `/om:settings compaction on`, and `/om:settings compaction off` are also supported. Session settings are appended as `om.settings` entries, so they follow the active Pi branch and survive reloads without changing the global/project defaults.
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 
@@ -195,6 +197,14 @@ When enabled, the extension launches an observer asynchronously from `session_be
 The contemplator is an optional persistent background reasoning loop. It receives coalesced observations/reflections, uses its own context, and can place a short advisory suggestion into a later main-agent model request. Its messages, summaries, and pending suggestions are stored as `om.contemplator.*` custom entries in the main session log, so they survive Pi reloads and follow the active branch/fork without being injected into the main model automatically. It has no coding tools and does not replace the main agent's compaction. Its own context is summarized with Pi's standard `generateSummary` compaction routine when it grows large. Suggestions are advisory and may be empty.
 
 `contemplatorModel` can select a stronger/slower model independently of the observer, reflector, and dropper. If unset, it uses the current session model.
+
+## `showContemplatorMessages`
+
+Default: `true`.
+
+When enabled, newly queued probes and structural-review proposal notices appear in the Pi chat transcript as purple contemplator cards. They remain custom steer messages and are still delivered to the main agent exactly as before. Set this to `false`, or use `/om:settings messages off`, to hide subsequently queued messages from the transcript without preventing their delivery to the agent.
+
+The setting does not rewrite existing append-only session entries, so toggling it affects messages queued after the change. The renderer uses Pi's theme-aware `thinkingHigh` color token, which is purple in the built-in dark and light themes and remains customizable in third-party themes.
 
 ## `reviewerEnabled` and `reviewerModel`
 

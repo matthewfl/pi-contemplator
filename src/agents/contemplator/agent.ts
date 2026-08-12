@@ -4,6 +4,7 @@ import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
@@ -80,9 +81,19 @@ function reviewSummaryLine(review: ReviewResult): string {
 function reviewRequestKey(request: RequestReviewArgs): string {
 	return `${request.scope}:${hashId(`${request.evidence}\n${request.concern}`)}`;
 }
+
+function customMessageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block) => block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")
+		.filter(Boolean)
+		.join("\n");
+}
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
+const REVIEW_PROPOSAL_MESSAGE = "om.review.proposal";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
 const ReviewScopeSchema = Type.Union([Type.Literal("workflow"), Type.Literal("software")]);
 export const RequestReviewSchema = Type.Object({
@@ -153,6 +164,17 @@ export class Contemplator {
 	constructor(private readonly pi: ExtensionAPI, private readonly runtime: Runtime) {}
 
 	register(): void {
+		this.pi.registerMessageRenderer(CONTEMPLATOR_SUGGESTION, (message, _options, theme) => {
+			const content = customMessageText(message.content).replace(/^Background contemplator probe \(advisory\):\n?/, "");
+			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			box.addChild(new Text(theme.fg("thinkingHigh", `${theme.bold("◆ CONTEMPLATOR PROBE")}\n${content}`), 0, 0));
+			return box;
+		});
+		this.pi.registerMessageRenderer(REVIEW_PROPOSAL_MESSAGE, (message, _options, theme) => {
+			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			box.addChild(new Text(theme.fg("thinkingHigh", `${theme.bold("◆ CONTEMPLATOR REVIEW")}\n${customMessageText(message.content)}`), 0, 0));
+			return box;
+		});
 		this.runtime.setMemoryUpdateListener((ctx) => this.withDebugContext(ctx, () => this.observeTurn(ctx)));
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
@@ -575,7 +597,7 @@ export class Contemplator {
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}`,
-			display: false,
+			display: this.runtime.config.showContemplatorMessages,
 			details: { version: 1, question, source, probeId },
 		}, { deliverAs: "steer", triggerTurn: false });
 		// sendMessage queues synchronously. Mark every source (not only restore)
@@ -657,7 +679,7 @@ export class Contemplator {
 				debugLog(result.outcome === "proposal" ? "reviewer.proposal_created" : "reviewer.no_proposal", { reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope });
 				if (result.outcome === "proposal") {
 					const notice = `BACKGROUND ${result.scope.toUpperCase()} REVIEW PROPOSAL [${result.id}]\n\n${result.summary}\n\nRecall memory [${result.id}] to read the full conceptual proposal when it is relevant.\n\nThis is advisory. Evaluate it against the actual environment and current work.`;
-					this.pi.sendMessage({ customType: "om.review.proposal", content: notice, display: false, details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope } }, { deliverAs: "steer", triggerTurn: false });
+					this.pi.sendMessage({ customType: REVIEW_PROPOSAL_MESSAGE, content: notice, display: this.runtime.config.showContemplatorMessages, details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope } }, { deliverAs: "steer", triggerTurn: false });
 					this.pi.appendEntry(OM_REVIEWER_NOTICE, { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope, content: notice });
 					this.markTipPersisted(ctx);
 					debugLog("reviewer.primary_notice_queued", { reviewRequestId: request.id, reviewMemoryId: result.id });

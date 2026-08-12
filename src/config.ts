@@ -52,6 +52,8 @@ export interface Config {
 	compactionObserverEnabled: boolean;
 	contemplatorEnabled: boolean;
 	contemplatorModel?: ConfiguredModel;
+	/** Show contemplator probes and review notices in the chat transcript. */
+	showContemplatorMessages: boolean;
 	/** Allow the contemplator to commission scoped structural reviewers. */
 	reviewerEnabled: boolean;
 	/** Optional model override used only by short-lived structural reviewers. */
@@ -75,6 +77,7 @@ export const DEFAULTS: Config = {
 	passive: false,
 	compactionObserverEnabled: true,
 	contemplatorEnabled: true,
+	showContemplatorMessages: true,
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
 	contemplatorMinNewReflections: 1,
@@ -223,6 +226,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.compactionObserverEnabled === "boolean") normalized.compactionObserverEnabled = value.compactionObserverEnabled;
 	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
+	if (typeof value.showContemplatorMessages === "boolean") normalized.showContemplatorMessages = value.showContemplatorMessages;
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);

@@ -10,7 +10,7 @@ type ModelRegistryLike = {
 	getAll(): Array<{ provider: string; id: string }>;
 };
 type NumberSetting = "observeAfterTokens" | "reflectAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns";
-type BooleanSetting = "contemplatorEnabled" | "reviewerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
+type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "current session model";
@@ -175,8 +175,13 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			ctx.ui.notify(`Structural reviewer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
+		if (argument === "messages on" || argument === "messages off") {
+			appendSettings(pi, runtime, { showContemplatorMessages: argument.endsWith("on") });
+			ctx.ui.notify(`Contemplator messages: ${argument.endsWith("on") ? "visible" : "hidden"} for this session.`, "info");
+			return;
+		}
 		if (argument) {
-			ctx.ui.notify("Usage: /om:settings [on|off|reviewer on|reviewer off|compaction on|compaction off]", "info");
+			ctx.ui.notify("Usage: /om:settings [on|off|messages on|messages off|reviewer on|reviewer off|compaction on|compaction off]", "info");
 			return;
 		}
 
@@ -185,6 +190,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			const choice = await ctx.ui.select("Observational memory settings (session overrides)", [
 				`Contemplation: ${scalarLabel(runtime, "contemplatorEnabled")}`,
 				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
+				`Contemplator messages visible: ${scalarLabel(runtime, "showContemplatorMessages")}`,
 				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
@@ -208,6 +214,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			]);
 			if (!choice || choice === "Done") return;
 			if (choice.startsWith("Contemplation:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
+			else if (choice.startsWith("Contemplator messages visible:")) appendSettings(pi, runtime, { showContemplatorMessages: !runtime.config.showContemplatorMessages });
 			else if (choice.startsWith("Structural reviewer:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
 			else if (choice.startsWith("Compaction observer:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
 			else if (choice.startsWith("Worker notifications:")) appendSettings(pi, runtime, { showWorkerNotifications: !runtime.config.showWorkerNotifications });

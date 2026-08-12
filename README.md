@@ -96,7 +96,7 @@ pi -e ./src/index.ts
 
 ## Configuration and commands
 
-The plugin works with its defaults, including the contemplator and reviewer. Model selection, trigger thresholds, passive mode, compaction behavior, and other settings are documented in [docs/configuration.md](docs/configuration.md).
+The plugin works with its defaults, including the contemplator and reviewer. Contemplator probes and review notices appear as purple cards in the chat by default; use `/om:settings messages off` to hide newly sent cards without stopping their delivery to the agent. Model selection, trigger thresholds, passive mode, compaction behavior, and other settings are documented in [docs/configuration.md](docs/configuration.md).
 
 Useful commands include:
 

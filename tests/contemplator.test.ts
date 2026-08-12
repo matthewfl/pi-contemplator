@@ -37,6 +37,7 @@ function setup(initialEntries: TestEntry[] = []) {
 		on: vi.fn((event: string, handler: (event: any, ctx: any) => void) => {
 			(handlers[event] ??= []).push(handler);
 		}),
+		registerMessageRenderer: vi.fn(),
 		appendEntry: vi.fn((customType: string, data: unknown) => {
 			entries = [...entries, {
 				id: `appended-${pi.appendEntry.mock.calls.length}`,
@@ -93,6 +94,23 @@ beforeEach(() => {
 });
 
 describe("Contemplator lifecycle", () => {
+	it("registers purple renderers for visible contemplator messages", () => {
+		const harness = setup();
+
+		expect(harness.pi.registerMessageRenderer).toHaveBeenCalledTimes(2);
+		expect(harness.pi.registerMessageRenderer).toHaveBeenCalledWith("om.contemplator.suggestion", expect.any(Function));
+		expect(harness.pi.registerMessageRenderer).toHaveBeenCalledWith("om.review.proposal", expect.any(Function));
+
+		const probeRenderer = harness.pi.registerMessageRenderer.mock.calls.find(([type]) => type === "om.contemplator.suggestion")?.[1];
+		const theme = {
+			fg: vi.fn((_color: string, text: string) => text),
+			bg: vi.fn((_color: string, text: string) => text),
+			bold: vi.fn((text: string) => text),
+		};
+		probeRenderer?.({ content: "Background contemplator probe (advisory):\nQuestion?" }, { expanded: false }, theme);
+		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("◆ CONTEMPLATOR PROBE\nQuestion?"));
+	});
+
 	it("does not requeue a probe whose custom message is already on the branch", () => {
 		const entries = [
 			{
@@ -130,6 +148,23 @@ describe("Contemplator lifecycle", () => {
 
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+	});
+
+	it("shows or hides newly queued probes according to configuration", () => {
+		const visible = setup();
+		(visible.contemplator as any).queueProbe(visible.ctx, "Visible?", "send_probe", "probe-visible");
+		expect(visible.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			customType: "om.contemplator.suggestion",
+			display: true,
+		}), { deliverAs: "steer", triggerTurn: false });
+
+		const hidden = setup();
+		hidden.runtime.config = { ...hidden.runtime.config, showContemplatorMessages: false };
+		(hidden.contemplator as any).queueProbe(hidden.ctx, "Hidden?", "send_probe", "probe-hidden");
+		expect(hidden.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			customType: "om.contemplator.suggestion",
+			display: false,
+		}), { deliverAs: "steer", triggerTurn: false });
 	});
 
 	it("does not requeue an undelivered steer preserved across extension reload", () => {

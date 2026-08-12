@@ -35,7 +35,7 @@ export type SessionSettings = Partial<Pick<Config,
 	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
-	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "reviewerEnabled"
+	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
 	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
@@ -108,7 +108,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (!source || typeof source !== "object") return;
 		const data = source as Record<string, unknown>;
 		const booleanKeys = [
-			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "reviewerEnabled", "debugLog",
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
