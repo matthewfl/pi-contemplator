@@ -463,7 +463,15 @@ export class Contemplator {
 			debugLog("contemplator.flush_skipped", { reason: this.running ? "already_running" : "no_pending_update" });
 			return;
 		}
+		// Checkpoint a live main-agent interval before taking the activity snapshot.
+		// persistAgentActivity restarts the running clock at Date.now(), so a later
+		// turn/agent checkpoint records only the remainder.
+		this.persistAgentActivity(ctx);
 		const update = this.pending;
+		const branchEntriesAtStart = ctx.sessionManager.getBranch() as Entry[];
+		update.mainAgentOutputTokens = assistantOutputTokens(branchEntriesAtStart);
+		update.mainAgentToolCalls = assistantToolCallCount(branchEntriesAtStart);
+		update.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntriesAtStart);
 		this.pending = undefined;
 		const turnsBeforeRun = this.turnsSinceRun;
 		const sessionGeneration = this.sessionGeneration;

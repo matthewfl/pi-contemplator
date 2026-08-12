@@ -293,6 +293,58 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
 
+	it("checkpoints the live interval when contemplation runs mid-turn", async () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const raw = textCustomMessage("raw-live", "long-running work");
+		const memory = observationsRecordedEntry("obs-live", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-live"] })],
+			coversUpToId: "raw-live",
+		});
+		const completedActivity = { id: "activity-complete", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 600_000 } } as TestEntry;
+		const harness = setup([raw, memory, completedActivity]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 0 };
+
+		harness.fire("agent_start");
+		time = 1_201_000; // 20 live minutes, with no turn_end checkpoint.
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		now.mockRestore();
+
+		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
+		expect(prompt.content[0].text).toContain("CUMULATIVE ACTIVITY: 0 generated tokens; 0 tool calls; about 30 minutes active.");
+		const activities = harness.getEntries().filter((entry) => entry.customType === "om.agent.activity");
+		expect(activities).toHaveLength(2);
+		expect((activities[1].data as { durationMs: number }).durationMs).toBe(1_200_000);
+	});
+
+	it("does not double-count live activity after a turn checkpoint", async () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const raw = textCustomMessage("raw-checkpoint", "work");
+		const memory = observationsRecordedEntry("obs-checkpoint", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-checkpoint"] })],
+			coversUpToId: "raw-checkpoint",
+		});
+		const harness = setup([raw, memory]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+
+		harness.fire("agent_start");
+		time = 601_000;
+		harness.fire("turn_end"); // Persists 10 minutes; contemplation still waits.
+		time = 901_000;
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any); // Adds only 5 live minutes.
+		time = 1_201_000;
+		harness.fire("turn_end");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		now.mockRestore();
+
+		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
+		expect(prompt.content[0].text).toContain("about 20 minutes active");
+	});
+
 	it("refreshes cumulative activity while a pending update waits for its turn threshold", async () => {
 		const raw = textCustomMessage("raw-a", "branch a");
 		const memory = observationsRecordedEntry("obs-a", {
