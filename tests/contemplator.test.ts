@@ -111,7 +111,7 @@ describe("Contemplator lifecycle", () => {
 		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("◆ CONTEMPLATOR PROBE\nQuestion?"));
 	});
 
-	it("does not requeue a probe whose custom message is already on the branch", () => {
+	it("requeues an unconfirmed probe on fresh startup even when its custom message was persisted", () => {
 		const entries = [
 			{
 				id: "probe-message",
@@ -129,15 +129,18 @@ describe("Contemplator lifecycle", () => {
 		] as TestEntry[];
 		const harness = setup(entries);
 
-		harness.fire("session_start");
+		harness.fire("session_start", { reason: "startup" });
 
-		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
-		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
+		}), { deliverAs: "steer", triggerTurn: false });
 	});
 
-	it("does not requeue a live probe at turn_end before Pi delivers its steer", () => {
+	it("does not requeue a live probe at turn_end before Pi inserts it", () => {
 		const harness = setup();
 		harness.fire("session_start", { reason: "startup" });
+		harness.fire("agent_start");
 		(harness.contemplator as any).queueProbe(harness.ctx, "Question?", "send_probe", "probe-1");
 		harness.setEntries([
 			...harness.getEntries(),
@@ -150,7 +153,7 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
 	});
 
-	it("shows or hides newly queued probes according to configuration", () => {
+	it("keeps visible and hidden probes on the steer delivery path", () => {
 		const visible = setup();
 		(visible.contemplator as any).queueProbe(visible.ctx, "Visible?", "send_probe", "probe-visible");
 		expect(visible.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -165,6 +168,23 @@ describe("Contemplator lifecycle", () => {
 			customType: "om.contemplator.suggestion",
 			display: false,
 		}), { deliverAs: "steer", triggerTurn: false });
+	});
+
+	it("steers an active agent so the probe is inserted at the next model boundary", () => {
+		const harness = setup();
+		harness.fire("agent_start");
+
+		(harness.contemplator as any).queueProbe(harness.ctx, "Active?", "send_probe", "probe-active");
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			details: expect.objectContaining({ probeId: "probe-active" }),
+		}), { deliverAs: "steer", triggerTurn: false });
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-active")).toBe(true);
+
+		harness.fire("message_end", {
+			message: { role: "custom", customType: "om.contemplator.suggestion", details: { probeId: "probe-active" } },
+		});
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-active")).toBe(false);
 	});
 
 	it("does not requeue an undelivered steer preserved across extension reload", () => {
@@ -190,6 +210,31 @@ describe("Contemplator lifecycle", () => {
 		}] as TestEntry[]);
 
 		harness.fire("session_start", { reason: "startup" });
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
+		}), { deliverAs: "steer", triggerTurn: false });
+	});
+
+	it("does not mistake a persisted custom message for a live queue after tree navigation", () => {
+		const harness = setup([
+			{
+				id: "probe-message",
+				type: "custom_message",
+				customType: "om.contemplator.suggestion",
+				content: "Background contemplator probe (advisory):\nQuestion?",
+				details: { probeId: "probe-1", question: "Question?" },
+			},
+			{
+				id: "probe-tracking",
+				type: "custom",
+				customType: "om.contemplator.suggestion",
+				data: { probeId: "probe-1", suggestion: "Question?", delivered: false },
+			},
+		] as TestEntry[]);
+
+		harness.fire("session_tree");
 
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -223,6 +268,8 @@ describe("Contemplator lifecycle", () => {
 			{ role: "custom", customType: "om.contemplator.suggestion", content: "one", details: { probeId: "probe-1", question: "Question one?" } },
 			{ role: "custom", customType: "om.contemplator.suggestion", content: "two", details: { probeId: "probe-2", question: "Question two?" } },
 		];
+		(harness.contemplator as any).queuedProbeIds.add("probe-1");
+		(harness.contemplator as any).queuedProbeIds.add("probe-2");
 
 		harness.fire("context", { messages });
 		harness.fire("context", { messages });
@@ -230,6 +277,8 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).toHaveBeenCalledTimes(2);
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.suggestion", expect.objectContaining({ probeId: "probe-1", delivered: true }));
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.suggestion", expect.objectContaining({ probeId: "probe-2", delivered: true }));
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-1")).toBe(false);
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-2")).toBe(false);
 	});
 
 	it("records active run time without counting idle user waits or parallel tools twice", () => {

@@ -244,11 +244,24 @@ export class Contemplator {
 			}
 			this.persistReviewerStates(ctx);
 		});
+		this.pi.on("message_end", (event: any) => {
+			const message = event?.message;
+			if (message?.role !== "custom" || message.customType !== CONTEMPLATOR_SUGGESTION) return;
+			if (typeof message.details?.probeId !== "string") return;
+			// message_end means Pi has drained the steer into the conversation
+			// stream. It is no longer protected by an in-memory queue, so a later
+			// tree restore must be allowed to requeue it until context acknowledges it.
+			this.queuedProbeIds.delete(message.details.probeId);
+		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const deliveredMessages = event.messages?.filter((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string") ?? [];
 			for (const delivered of deliveredMessages) {
 				if (this.deliveredProbeIds.has(delivered.details.probeId)) continue;
 				this.deliveredProbeIds.add(delivered.details.probeId);
+				// Once Pi includes the probe in a provider context it is no longer in
+				// either in-memory delivery queue. Keeping this id indefinitely caused
+				// later tree restores to suppress a genuinely needed requeue.
+				this.queuedProbeIds.delete(delivered.details.probeId);
 				this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, {
 					version: 1,
 					suggestion: typeof delivered.details.question === "string" ? delivered.details.question : String(delivered.content ?? ""),
@@ -310,12 +323,7 @@ export class Contemplator {
 			this.turnsSinceRun = 0;
 		}
 		const undeliveredSuggestions = new Map<string, string>();
-		const queuedProbeIds = new Set<string>();
 		for (const entry of entries) {
-			if (entry.customType === CONTEMPLATOR_SUGGESTION && entry.type === "custom_message") {
-				const details = entry.details as { probeId?: unknown } | undefined;
-				if (typeof details?.probeId === "string") queuedProbeIds.add(details.probeId);
-			}
 			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
 				const state = entry.data as { history?: unknown };
 				if (Array.isArray(state.history)) this.history = state.history.filter((message): message is AgentMessage => !!message && typeof message === "object");
@@ -380,7 +388,11 @@ export class Contemplator {
 		}
 		this.restoredTipId = tipId;
 		for (const [probeId, question] of undeliveredSuggestions) {
-			if (skipUndeliveredRestore || queuedProbeIds.has(probeId) || this.queuedProbeIds.has(probeId)) continue;
+			// A durable custom_message proves only that Pi inserted the probe at some
+			// point; it does not prove an in-memory queue still owns it, and compaction
+			// may have removed it from active model context. Suppress requeue only for
+			// ids this live extension instance still knows are queued.
+			if (skipUndeliveredRestore || this.queuedProbeIds.has(probeId)) continue;
 			this.queueProbe(ctx, question, "restore", probeId);
 		}
 		if (resetTracking) void this.resumePendingReviews(ctx);
@@ -650,18 +662,22 @@ export class Contemplator {
 
 	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore", existingProbeId?: string): void {
 		const probeId = existingProbeId ?? `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+		// Persist intent before touching Pi's in-memory queue. A crash in between
+		// leaves a recoverable pending probe rather than an invisible lost one.
+		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: false, source, probeId });
+		this.markTipPersisted(ctx);
+		// DELIVERY INVARIANT: probes must always use steer. The contemplator is
+		// designed for agents that run for hours; a probe must be injected after
+		// the current tool-call batch, before the very next model request. Never
+		// change this to nextTurn: that can postpone delivery until a user prompt.
+		// triggerTurn stays false so a probe never starts an extra agent turn.
+		if (this.agentActiveSince !== undefined) this.queuedProbeIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}`,
 			display: this.runtime.config.showContemplatorMessages,
 			details: { version: 1, question, source, probeId },
 		}, { deliverAs: "steer", triggerTurn: false });
-		// sendMessage queues synchronously. Mark every source (not only restore)
-		// before a later turn_end can rebuild state from the still-undelivered
-		// tracking entry and enqueue this probe again.
-		this.queuedProbeIds.add(probeId);
-		this.pi.appendEntry(CONTEMPLATOR_SUGGESTION, { version: 1, suggestion: question, delivered: false, source, probeId });
-		this.markTipPersisted(ctx);
 		debugLog("contemplator.suggestion_queued", {
 			probeId,
 			suggestionLength: question.length,
