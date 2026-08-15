@@ -5,7 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, recallMemorySources, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
@@ -120,37 +120,81 @@ export const RequestReviewSchema = Type.Object({
 type SendProbeArgs = Static<typeof SendProbeSchema>;
 export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
-export function createSendProbeTool(onProbe: (question: string) => boolean): AgentTool<typeof SendProbeSchema> {
+const DELIMITED_MEMORY_ID_RE = /\[([0-9a-f]{7,16})\]|\(([0-9a-f]{7,16})\)/g;
+
+type InterventionWrite = { overwritten: boolean };
+type ReviewWrite = InterventionWrite & { reviewRequestId: string };
+
+/** Extract only citation-shaped ids; unwrapped commit hashes are too ambiguous. */
+export function delimitedMemoryIds(text: string): string[] {
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	for (const match of text.matchAll(DELIMITED_MEMORY_ID_RE)) {
+		const id = match[1] ?? match[2];
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		ids.push(id);
+	}
+	return ids;
+}
+
+function interventionResultText(options: {
+	kind: "probe" | "review";
+	memoryIds: string[];
+	memoryExists: (id: string) => boolean;
+	overwritten: boolean;
+	queuedText: string;
+}): string {
+	const replacementTool = options.kind === "probe" ? "send_probe" : "request_review";
+	const warnings = options.memoryIds
+		.filter((id) => !options.memoryExists(id))
+		.map((id) => `WARNING: memory ${id} not found; use search_memories and recall to find the correct memory, then call ${replacementTool} again to replace the ${options.kind} before it is sent.`);
+	if (options.overwritten) warnings.push("WARNING: overwriting prior probe/review tool call; only one action may be taken per turn.");
+	warnings.push(options.queuedText);
+	return warnings.join("\n");
+}
+
+export function createSendProbeTool(
+	onProbe: (question: string) => InterventionWrite,
+	memoryExists: (id: string) => boolean = () => true,
+): AgentTool<typeof SendProbeSchema> {
 	return {
 		name: "send_probe",
 		label: "Send probe",
-		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review.",
+		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review. A later intervention call in the same turn replaces this one.",
 		parameters: SendProbeSchema,
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
-			if (!onProbe(question)) {
-				return { content: [{ type: "text", text: "No probe was queued because this update already has an intervention. Continue without calling another intervention tool." }], details: { queued: false } };
-			}
-			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length });
-			return { content: [{ type: "text", text: "Probe queued for the primary agent's next context." }], details: { queued: true } };
+			const write = onProbe(question);
+			const memoryIds = delimitedMemoryIds(question);
+			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length, memoryIds, overwritten: write.overwritten });
+			return {
+				content: [{ type: "text", text: interventionResultText({ kind: "probe", memoryIds, memoryExists, overwritten: write.overwritten, queuedText: "Probe will be delivered at the end of your turn." }) }],
+				details: { queued: true, overwritten: write.overwritten, memoryIds },
+			};
 		},
 	};
 }
 
-export function createRequestReviewTool(onReview: (request: RequestReviewArgs) => string | undefined): AgentTool<typeof RequestReviewSchema> {
+export function createRequestReviewTool(
+	onReview: (request: RequestReviewArgs) => ReviewWrite,
+	memoryExists: (id: string) => boolean = () => true,
+): AgentTool<typeof RequestReviewSchema> {
 	return {
 		name: "request_review",
 		label: "Request structural review",
-		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution.",
+		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution. A later intervention call in the same turn replaces this one.",
 		parameters: RequestReviewSchema,
 		execute: async (_toolCallId, params: RequestReviewArgs) => {
 			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
-			const reviewRequestId = onReview(request);
-			if (!reviewRequestId) {
-				return { content: [{ type: "text", text: "No review was queued because this update already has an intervention. Continue without calling another intervention tool." }], details: { queued: false, scope: request.scope } };
-			}
-			debugLog("contemplator.review_requested", { reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length });
-			return { content: [{ type: "text", text: `${request.scope === "workflow" ? "Workflow" : "Software"} review queued as [${reviewRequestId}].` }], details: { queued: true, scope: request.scope, reviewRequestId } };
+			const write = onReview(request);
+			const memoryIds = delimitedMemoryIds([request.evidence, request.concern, request.review_focus, request.constraints].filter((value): value is string => Boolean(value)).join("\n"));
+			debugLog("contemplator.review_requested", { reviewRequestId: write.reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length, memoryIds, overwritten: write.overwritten });
+			const queuedText = `${request.scope === "workflow" ? "Workflow" : "Software"} review [${write.reviewRequestId}] will be started at the end of your turn.`;
+			return {
+				content: [{ type: "text", text: interventionResultText({ kind: "review", memoryIds, memoryExists, overwritten: write.overwritten, queuedText }) }],
+				details: { queued: true, overwritten: write.overwritten, scope: request.scope, reviewRequestId: write.reviewRequestId, memoryIds },
+			};
 		},
 	};
 }
@@ -541,8 +585,8 @@ export class Contemplator {
 			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
 			const interventionInstruction = reviewerEnabled
-				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Use no more than one intervention."
-				: "Use send_probe only when one focused question is materially useful. Use no more than one intervention.";
+				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Queue only one final intervention; if a tool warns about a bad memory citation, use search_memories and recall, then call an intervention tool again to replace it."
+				: "Use send_probe only when one focused question is materially useful. Queue only one final probe; if the tool warns about a bad memory citation, use search_memories and recall, then call send_probe again to replace it.";
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			promptMessage = prompt;
 			this.history.push(prompt);
@@ -551,26 +595,27 @@ export class Contemplator {
 			const getBranch = () => branchEntries;
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
 			const recallTool = createRecallAgentTool(getBranch);
+			const memoryExists = (id: string) => recallMemorySources(branchEntries, id).status === "found";
 			const sendProbe = createSendProbeTool((question) => {
-				if (intervention) return false;
+				const overwritten = intervention !== undefined;
 				intervention = { kind: "probe", question };
-				return true;
-			});
+				return { overwritten };
+			}, memoryExists);
 			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>];
 			if (reviewerEnabled) {
 				const requestReview = createRequestReviewTool((request) => {
-					if (intervention) return undefined;
-					const id = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+					const overwritten = intervention !== undefined;
+					const reviewRequestId = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 					intervention = { kind: "review", request: {
-						id,
+						id: reviewRequestId,
 						scope: request.scope,
 						evidence: request.evidence,
 						concern: request.concern,
 						reviewFocus: request.review_focus,
 						constraints: request.constraints,
 					} };
-					return id;
-				});
+					return { reviewRequestId, overwritten };
+				}, memoryExists);
 				tools.push(requestReview as AgentTool<any>);
 			}
 			const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: this.history.slice(0, -1), tools };
@@ -677,7 +722,7 @@ export class Contemplator {
 		if (this.agentActiveSince !== undefined) this.queuedProbeIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
-			content: `Background contemplator probe (advisory):\n${question}`,
+			content: `Background contemplator probe (advisory):\n${question}\n\nReferenced memories can be reviewed using the recall tool.`,
 			display: this.runtime.config.showContemplatorMessages,
 			details: { version: 1, question, source, probeId },
 		}, { deliverAs: "steer" });

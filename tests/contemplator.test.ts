@@ -158,6 +158,7 @@ describe("Contemplator lifecycle", () => {
 		(visible.contemplator as any).queueProbe(visible.ctx, "Visible?", "send_probe", "probe-visible");
 		expect(visible.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			customType: "om.contemplator.suggestion",
+			content: "Background contemplator probe (advisory):\nVisible?\n\nReferenced memories can be reviewed using the recall tool.",
 			display: true,
 		}), { deliverAs: "steer" });
 

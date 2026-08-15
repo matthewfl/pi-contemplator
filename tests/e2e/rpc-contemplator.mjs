@@ -271,6 +271,13 @@ class MockModelServer {
 		if (role === "contemplator") {
 			if (serializedMessages.includes(PROBE_FEEDBACK_OBSERVATION)) this.feedbackObservationReachedContemplator = true;
 			const phase = this.contemplatorToolPhases.get(scenario);
+			if (scenario === "SCENARIO_PROBE" && phase === "invalid_probe") {
+				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
+				assert(resultText.includes("WARNING: memory deadbeef not found") && resultText.includes("call send_probe again to replace the probe"), "send_probe did not warn that the invalid parenthesized memory citation must be replaced");
+				assert(resultText.includes("Probe will be delivered at the end of your turn"), "Invalid probe was not held as a replaceable end-of-turn intervention");
+				this.contemplatorToolPhases.set(scenario, "searched");
+				return sendSse(res, { tool: { id: "search-probe-memory", name: "search_memories", arguments: { query: "SCENARIO_PROBE independent check", limit: 5 } } });
+			}
 			if (scenario === "SCENARIO_PROBE" && phase === "searched") {
 				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
 				assert(resultText.includes("Found ") && resultText.includes("SCENARIO_PROBE"), "search_memories did not return the persisted probe-scenario memory");
@@ -290,7 +297,11 @@ class MockModelServer {
 				const memoryId = serializedMessages.match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
 				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
-			if (scenario === "SCENARIO_PROBE" && phase === "probe_sent") return sendSse(res, { text: "Memory search, source recall, and intervention are complete." });
+			if (scenario === "SCENARIO_PROBE" && phase === "probe_sent") {
+				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
+				assert(resultText.includes("WARNING: overwriting prior probe/review tool call"), "Corrected send_probe did not report last-write-wins replacement");
+				return sendSse(res, { text: "Memory search, source recall, and intervention replacement are complete." });
+			}
 			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
 			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention is warranted for this update." });
 			// Simulate a realistically slow contemplator. The primary agent must finish
@@ -305,8 +316,8 @@ class MockModelServer {
 			await sleep(scenario === "SCENARIO_SLEEP" ? 1_000 : 2_000);
 			const memoryId = JSON.stringify(body.messages ?? []).match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
 			if (scenario === "SCENARIO_PROBE") {
-				this.contemplatorToolPhases.set(scenario, "searched");
-				return sendSse(res, { tool: { id: "search-probe-memory", name: "search_memories", arguments: { query: "SCENARIO_PROBE independent check", limit: 5 } } });
+				this.contemplatorToolPhases.set(scenario, "invalid_probe");
+				return sendSse(res, { tool: { id: "invalid-probe-memory", name: "send_probe", arguments: { question: `(deadbeef) ${PROBE_TEXT}` } } });
 			}
 			this.interventionsSent.add(scenario);
 			if (scenario === "SCENARIO_SLEEP" || scenario === "SCENARIO_FEEDBACK") {
@@ -661,6 +672,8 @@ async function run() {
 		assert(server.maxConcurrentRequests >= 2, "Expected overlapping primary and background model requests");
 		assert(contemplatorMessages.length >= 6, "Expected persisted contemplator prompts and responses");
 		assert(deliveredProbes.length === 3, `Expected exactly three acknowledged probes, got ${deliveredProbes.length}`);
+		assert(!probeTracking.some((entry) => JSON.stringify(entry.data).includes("deadbeef")), "Superseded invalid probe escaped the contemplator turn");
+		assert(customMessages.filter((entry) => entry.customType === "om.contemplator.suggestion").every((entry) => JSON.stringify(entry).includes("Referenced memories can be reviewed using the recall tool")), "A primary-agent probe omitted recall-tool guidance");
 		assert(server.memorySearchUsed, "Contemplator never completed search_memories against persisted memory");
 		assert(server.memoryRecallUsed && server.recallReturnedSource, "Contemplator never recalled exact source context from a search result");
 		assert(server.requests.some((request) => request.role === "contemplator" && JSON.stringify(request.body.messages ?? []).includes("search-probe-memory")), "Mock server never saw the contemplator's search_memories tool round");

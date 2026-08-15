@@ -185,8 +185,8 @@ A good review request should:
 }
 
 ${reviewerEnabled ?
-`Your interventions are asynchronous. Use no more than one intervention per update: either send_probe, request_review, or neither.` :
-`Your probes are delivered asynchronously. Send no more than one probe per update.`}
+`Your interventions are asynchronous. Queue one final intervention per update: either send_probe, request_review, or neither. If an intervention tool reports an invalid memory citation, correct it and call the appropriate tool again; the later call replaces the earlier one.` :
+`Your probes are delivered asynchronously. Queue one final probe per update. If send_probe reports an invalid memory citation, correct it and call send_probe again; the later call replaces the earlier one.`}
 
 Prioritize:
 
