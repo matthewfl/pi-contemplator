@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRequestReviewTool, createSendProbeTool } from "../src/agents/contemplator/agent.js";
-import { delimitedMemoryIds } from "../src/memory-citations.js";
+import { memoryReferenceIds } from "../src/memory-citations.js";
 import { CONTEMPLATOR_SYSTEM, buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
 describe("contemplator review request tool", () => {
@@ -22,10 +22,13 @@ describe("contemplator review request tool", () => {
 		expect(disabled.toLowerCase()).not.toContain("reviewer");
 	});
 
-	it("extracts bracketed and parenthesized memory-like ids without treating bare hashes as citations", () => {
-		expect(delimitedMemoryIds("[abcdef0] (1234567890abcdef) {cccccccccccc} [aaaaaaaaaaaa] bare bbbbbbbbbbbb [abcdef0]"))
-			.toEqual(["abcdef0", "1234567890abcdef", "cccccccccccc", "aaaaaaaaaaaa"]);
-		expect(delimitedMemoryIds("[abcdef] [1234567890abcdef0] (ABCDEF123456) [not-a-hash]"))
+	it("extracts delimited lists and bare hash-like memory ids", () => {
+		expect(memoryReferenceIds("[abcdef0, aacc4455] (1234567890abcdef, bbbb1234) {cccccccccccc} bare aa11bb22 [abcdef0]"))
+			.toEqual(["abcdef0", "aacc4455", "1234567890abcdef", "bbbb1234", "cccccccccccc", "aa11bb22"]);
+	});
+
+	it("does not mistake ordinary bare hex words, numbers, uppercase text, or embedded hex fragments for references", () => {
+		expect(memoryReferenceIds("bare deadbeef and 12345678; ABCDEF123456 [abcdef] [1234567890abcdef0] xyz-aabb123g"))
 			.toEqual([]);
 	});
 
@@ -35,17 +38,19 @@ describe("contemplator review request tool", () => {
 			(id) => id === "aaaaaaaaaaaa",
 		);
 		const result = await tool.execute("probe-call", {
-			question: "Compare [aaaaaaaaaaaa], (bbbbbbbbbbbb), and [abcdef0]. What changed?",
+			question: "Compare [aaaaaaaaaaaa, bbbb1234], (bbbbbbbbbbbb), [abcdef0], and bare cc22dd33. What changed?",
 		});
 		const text = (result.content[0] as { text: string }).text;
 
 		expect(text).not.toContain("memory aaaaaaaaaaaa not found");
+		expect(text).toContain("WARNING: memory bbbb1234 not found");
 		expect(text).toContain("WARNING: memory bbbbbbbbbbbb not found");
 		expect(text).toContain("WARNING: memory abcdef0 not found");
+		expect(text).toContain("WARNING: memory cc22dd33 not found");
 		expect(text).toContain("use search_memories and recall");
 		expect(text).toContain("call send_probe again to replace the probe");
 		expect(text).toContain("Probe will be delivered at the end of your turn.");
-		expect(result.details).toMatchObject({ queued: true, overwritten: false, memoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "abcdef0"] });
+		expect(result.details).toMatchObject({ queued: true, overwritten: false, memoryIds: ["aaaaaaaaaaaa", "bbbb1234", "bbbbbbbbbbbb", "abcdef0", "cc22dd33"] });
 	});
 
 	it("reports last-write-wins replacement across intervention tool calls", async () => {

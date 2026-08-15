@@ -13,7 +13,7 @@ import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
-import { delimitedMemoryIds } from "../../memory-citations.js";
+import { memoryReferenceIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
 
@@ -152,7 +152,7 @@ export function createSendProbeTool(
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
 			const write = onProbe(question);
-			const memoryIds = delimitedMemoryIds(question);
+			const memoryIds = memoryReferenceIds(question);
 			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length, memoryIds, overwritten: write.overwritten });
 			return {
 				content: [{ type: "text", text: interventionResultText({ kind: "probe", memoryIds, memoryExists, overwritten: write.overwritten, queuedText: "Probe will be delivered at the end of your turn." }) }],
@@ -174,7 +174,7 @@ export function createRequestReviewTool(
 		execute: async (_toolCallId, params: RequestReviewArgs) => {
 			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
 			const write = onReview(request);
-			const memoryIds = delimitedMemoryIds([request.evidence, request.concern, request.review_focus, request.constraints].filter((value): value is string => Boolean(value)).join("\n"));
+			const memoryIds = memoryReferenceIds([request.evidence, request.concern, request.review_focus, request.constraints].filter((value): value is string => Boolean(value)).join("\n"));
 			debugLog("contemplator.review_requested", { reviewRequestId: write.reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length, memoryIds, overwritten: write.overwritten });
 			const queuedText = `${request.scope === "workflow" ? "Workflow" : "Software"} review [${write.reviewRequestId}] will be started at the end of your turn.`;
 			return {
