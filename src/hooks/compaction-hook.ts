@@ -29,10 +29,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
 		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
+		const omWillResume = initiatedByOm && (runtime.compactOrigin === "agent-requested" || runtime.compactOrigin === "length-stop");
 		if (ctx.hasUI) {
 			let pending = "";
 			if (event.willRetry) pending = ", retry pending";
-			else if (initiatedByOm) pending = ", resume pending";
+			else if (omWillResume) pending = ", resume pending";
 			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${pending})`);
 			if (!initiatedByOm) {
 				const continuation = event.willRetry ? "; the interrupted agent run will resume automatically" : "";
@@ -88,12 +89,13 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 	pi.on("session_compact", (event: any, ctx: any) => {
 		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
 		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
+		const omWillResume = initiatedByOm && (runtime.compactOrigin === "agent-requested" || runtime.compactOrigin === "length-stop");
 		if (event.willRetry) watchForNativeCompactionResume(pi, runtime, ctx);
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 		let continuation = "";
 		if (event.willRetry) continuation = "; resuming the interrupted agent run";
-		else if (initiatedByOm) continuation = "; resuming the agent run";
+		else if (omWillResume) continuation = "; resuming the agent run";
 		ctx.ui.notify(`Observational memory: compaction complete (${reason})${continuation}`, "info");
 	});
 }

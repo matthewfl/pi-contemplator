@@ -147,7 +147,7 @@ export class Runtime {
 	compactRequested = false;
 	/** Agent-authored instructions to deliver after an explicit compact_context request. */
 	compactContinuationPrompt: string | undefined;
-	compactOrigin: "proactive" | "agent-requested" | undefined;
+	compactOrigin: "proactive" | "agent-requested" | "length-stop" | undefined;
 	compactHookInFlight = false;
 	compactionResumePending = false;
 	compactionResumeGeneration = 0;

@@ -15,7 +15,6 @@ const MANUAL = "SCENARIO_MANUAL_COMPACTION";
 const AUTOMATIC = "SCENARIO_AUTOMATIC_COMPACTION";
 const MANUAL_PROBE = "Before continuing, verify that the compaction retained the manual scenario and its next action.";
 const MANUAL_CONTINUATION = "After compaction, verify the queued contemplator probe and report MANUAL_COMPACTION_RESUMED.";
-const AUTO_CONTINUATION = "Continue the current task from the compacted context without waiting for another user message.";
 const startedAt = Date.now();
 
 function progress(message) {
@@ -82,7 +81,7 @@ class CompactionServer {
 	interventionsSent = new Set();
 	manualSawProbe = false;
 	manualSawContinuation = false;
-	automaticSawContinuation = false;
+	automaticUnexpectedRestart = false;
 
 	async start() {
 		this.server.listen(0, "127.0.0.1");
@@ -113,7 +112,7 @@ class CompactionServer {
 		const serialized = JSON.stringify(body.messages ?? []);
 		const scenario = serialized.includes(MANUAL) || serialized.includes(MANUAL_CONTINUATION) || serialized.includes(MANUAL_PROBE)
 			? MANUAL
-			: serialized.includes(AUTOMATIC) || serialized.includes(AUTO_CONTINUATION)
+			: serialized.includes(AUTOMATIC)
 				? AUTOMATIC
 				: undefined;
 		const role = tools.has("record_observations") ? "observer" : tools.has("send_probe") ? "contemplator" : "main";
@@ -179,8 +178,8 @@ class CompactionServer {
 			tool: { id: "automatic-bash", name: "bash", arguments: { command: `printf '${AUTOMATIC}:checkpoint\\n'` } },
 		});
 		if (count === 2) return sendSse(res, { text: "AUTOMATIC_PRECOMPACTION_COMPLETE", outputTokens: 200 });
-		this.automaticSawContinuation ||= serialized.includes(AUTO_CONTINUATION);
-		return sendSse(res, { text: "AUTOMATIC_COMPACTION_RESUMED" });
+		this.automaticUnexpectedRestart = true;
+		return sendSse(res, { text: "UNEXPECTED_PROACTIVE_RESTART" });
 	}
 }
 
@@ -278,7 +277,7 @@ async function stopPi(instance) {
 }
 
 async function run() {
-	console.log("RPC compaction E2E test plan:\n  1. Main agent calls compact_context with an authored continuation\n  2. Contemplator queues a steer immediately before manual compaction\n  3. Manual compaction preserves the probe and resumes with the authored instruction\n  4. Proactive automatic compaction runs at its configured ledger threshold\n  5. Automatic compaction resumes without another user prompt\n");
+	console.log("RPC compaction E2E test plan:\n  1. Main agent calls compact_context with an authored continuation\n  2. Contemplator queues a steer immediately before manual compaction\n  3. Manual compaction preserves the probe and resumes with the authored instruction\n  4. Proactive automatic compaction runs after a normally completed agent turn\n  5. Proactive maintenance does not restart the settled agent\n");
 	const workspace = await mkdtemp(join(tmpdir(), "pi-contemplator-compaction-e2e-"));
 	const server = new CompactionServer();
 	let instance;
@@ -316,7 +315,7 @@ async function run() {
 		await stopPi(instance);
 		instance = undefined;
 
-		progress("TEST 2/2: proactive automatic compaction and hidden continuation");
+		progress("TEST 2/2: proactive compaction after normal completion does not restart work");
 		const autoBase = join(workspace, "automatic");
 		instance = await launchPi({
 			workspace,
@@ -330,18 +329,22 @@ async function run() {
 		const autoEventStart = instance.rpc.events.length;
 		await instance.rpc.command({ type: "prompt", message: `${AUTOMATIC}: perform enough work to cross the proactive compaction threshold.` });
 		await waitFor(() => instance.rpc.events.slice(autoEventStart).some((event) => event.type === "compaction_end" && event.reason === "manual" && event.result), "successful proactive compaction event");
-		await waitFor(() => server.automaticSawContinuation, "automatic hidden post-compaction continuation at mock server");
-		await waitFor(async () => (await instance.rpc.entries()).some((entry) => entry.type === "message" && entry.message?.role === "assistant" && messageText(entry.message).includes("AUTOMATIC_COMPACTION_RESUMED")), "automatic resumed assistant response");
+		// This delay is deliberately longer than the old immediate continuation and
+		// retry windows. The pre-fix implementation sends a hidden followUp here,
+		// producing a third provider request and failing this regression assertion.
+		await sleep(1_500);
 		const autoEntries = await instance.rpc.entries();
 		const autoCompactions = autoEntries.filter((entry) => entry.type === "compaction");
 		assert(autoCompactions.length >= 1, "Expected at least one proactive compaction");
 		assert(autoCompactions.every((entry) => entry.details?.type === "om.folded"), "Proactive compaction did not use the observational-memory hook");
 		assert(!autoEntries.some((entry) => entry.type === "message" && entry.message?.role === "assistant" && entry.message.content?.some?.((part) => part.type === "toolCall" && part.name === "compact_context")), "Automatic scenario unexpectedly depended on compact_context");
+		assert(server.mainCounts.get(AUTOMATIC) === 2 && !server.automaticUnexpectedRestart, "Proactive compaction restarted normally completed agent work");
+		assert(!autoEntries.some((entry) => entry.type === "custom_message" && entry.customType === "om.compaction.resume"), "Proactive compaction queued a hidden resume message");
 		assert(!instance.rpc.events.some((event) => event.type === "extension_error"), "Extension error during proactive compaction");
-		progress("PASS 2/2: proactive threshold compacted and resumed without user input");
+		progress("PASS 2/2: proactive threshold compacted without restarting settled work");
 		await stopPi(instance);
 		instance = undefined;
-		progress("ALL COMPACTION TESTS PASSED: manual tool call, queued-probe race, automatic threshold, and both continuation paths");
+		progress("ALL COMPACTION TESTS PASSED: manual continuation, queued-probe race, proactive threshold, and no settled-work restart");
 	} catch (error) {
 		console.error("Compaction E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));

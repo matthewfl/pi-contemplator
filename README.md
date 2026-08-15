@@ -197,7 +197,7 @@ npm run typecheck
 
 `npm test` runs both the unit and RPC end-to-end suites. Use `test:unit` or `test:e2e` to run either suite independently.
 
-`test:e2e` starts a local OpenAI-compatible model server and launches isolated real Pi CLI processes in RPC mode while mocking only the external model-server boundary. The suites cover observer, reflector, dropper, contemplator, reviewer, primary-agent, memory-tool, and compaction flows. They exercise slow and parallel tools, probe races and feedback, hidden/idle delivery, cumulative activity time, process restore, reviewer transcript resume and budget exhaustion, accepted/rejected reviews, manual/proactive/failed compaction continuations, compaction observer sidecars, malformed memory records, huge-source bounding, id collisions, role-specific model routing, feature flags, session-tree forks, and concurrent session isolation.
+`test:e2e` starts a local OpenAI-compatible model server and launches isolated real Pi CLI processes in RPC mode while mocking only the external model-server boundary. The suites cover observer, reflector, dropper, contemplator, reviewer, primary-agent, memory-tool, and compaction flows. They exercise slow and parallel tools, probe races and feedback, hidden/idle delivery, cumulative activity time, process restore, reviewer transcript resume and budget exhaustion, accepted/rejected reviews, manual/failed compaction continuations and non-restarting proactive compaction, compaction observer sidecars, malformed memory records, huge-source bounding, id collisions, role-specific model routing, feature flags, session-tree forks, and concurrent session isolation.
 
 ## License
 

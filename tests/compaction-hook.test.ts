@@ -228,7 +228,7 @@ describe("V3 compaction hook", () => {
 		clearTimeout(runtime.compactionResumeTimer);
 	});
 
-	it("reports that OM proactive compaction will resume the agent", async () => {
+	it("reports OM proactive compaction without claiming it will resume settled work", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaa")];
 		const { run, finish, runtime, ctx } = setup({ entries });
 		runtime.compactInFlight = true;
@@ -237,13 +237,13 @@ describe("V3 compaction hook", () => {
 
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
 			"observational-memory-compaction",
-			"OM compaction: running (proactive, resume pending)",
+			"OM compaction: running (proactive)",
 		);
 
 		finish();
 
 		expect(ctx.ui.notify).toHaveBeenLastCalledWith(
-			"Observational memory: compaction complete (proactive); resuming the agent run",
+			"Observational memory: compaction complete (proactive)",
 			"info",
 		);
 	});

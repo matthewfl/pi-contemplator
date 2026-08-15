@@ -203,18 +203,17 @@ Reflector no-output and reflector failure skip same-turn dropper. Dropper failur
 
 ## Auto-compaction trigger
 
-The auto-compaction trigger runs on `agent_end`.
+The proactive auto-compaction trigger runs on `agent_settled`, after Pi has finished retries, native compaction, and queued continuations.
 
 It skips when:
 
 - `passive` is true;
 - compaction is already in flight;
-- the agent end event is a retryable error;
 - raw/source tokens since last compaction are below `compactAfterTokens`;
 - Pi is not idle after the deferred check;
 - the threshold is no longer met after the deferred check.
 
-When all checks pass, it calls `ctx.compact()`.
+When all checks pass, it calls `ctx.compact()`. This settled maintenance compaction does not send a continuation or restart the agent. Explicit `compact_context` requests and non-overflow length stops are handled from `agent_end` because they represent interrupted work and must resume. Pi-owned compactions with `willRetry` keep a bounded fallback continuation in case native retry does not start.
 
 This trigger does not wait for observer, reflector, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
 
