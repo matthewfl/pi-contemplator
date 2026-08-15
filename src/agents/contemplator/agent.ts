@@ -13,6 +13,7 @@ import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
+import { delimitedMemoryIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
 
@@ -120,23 +121,8 @@ export const RequestReviewSchema = Type.Object({
 type SendProbeArgs = Static<typeof SendProbeSchema>;
 export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
-const DELIMITED_MEMORY_ID_RE = /\[([0-9a-f]{7,16})\]|\(([0-9a-f]{7,16})\)/g;
-
 type InterventionWrite = { overwritten: boolean };
 type ReviewWrite = InterventionWrite & { reviewRequestId: string };
-
-/** Extract only citation-shaped ids; unwrapped commit hashes are too ambiguous. */
-export function delimitedMemoryIds(text: string): string[] {
-	const ids: string[] = [];
-	const seen = new Set<string>();
-	for (const match of text.matchAll(DELIMITED_MEMORY_ID_RE)) {
-		const id = match[1] ?? match[2];
-		if (!id || seen.has(id)) continue;
-		seen.add(id);
-		ids.push(id);
-	}
-	return ids;
-}
 
 function interventionResultText(options: {
 	kind: "probe" | "review";

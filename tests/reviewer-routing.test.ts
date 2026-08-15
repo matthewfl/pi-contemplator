@@ -83,6 +83,48 @@ describe("scoped structural reviewer routing", () => {
 		expect(result).toMatchObject({ scope: "software", outcome: "no_proposal", reason: "The pattern is isolated." });
 	});
 
+	it("gives a warned terminal outcome one in-turn chance to be replaced", async () => {
+		const toolResults: any[] = [];
+		const validEntry = { id: "aaaaaaaaaaaa", type: "custom", customType: "test", data: {} } as any;
+		const agentLoop = ((_prompts: any, context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				const tool = context.tools.find((candidate: any) => candidate.name === "submit_workflow_proposal");
+				toolResults.push(await tool.execute("warned", {
+					title: "Initial", summary: "Initial", evidence: "{deadbeef} uncertain evidence", inefficiency: "Repeated work", conceptual_design: "Preserve a trace", expected_effect: "Better evidence", uncertainties: "Unknown",
+				}));
+				toolResults.push(await tool.execute("corrected", {
+					title: "Corrected", summary: "Corrected", evidence: "[aaaaaaaaaaaa] verified evidence", inefficiency: "Repeated work", conceptual_design: "Preserve a trace", expected_effect: "Better evidence", uncertainties: "Unknown",
+				}));
+			},
+			result: async () => [],
+		})) as any;
+
+		const result = await runStructuralReview({
+			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [validEntry], agentLoop,
+		});
+
+		expect(toolResults[0]).toMatchObject({ details: { terminal: false, replaceable: true, missingReferenceIds: ["deadbeef"] } });
+		expect(toolResults[0].content[0].text).toContain("call submit_workflow_proposal again to replace this review, or end your turn and it will be delivered as-is");
+		expect(toolResults[1]).toMatchObject({ details: { terminal: true, overwritten: true, missingReferenceIds: [] } });
+		expect(result).toMatchObject({ outcome: "proposal", title: "Corrected", evidence: "[aaaaaaaaaaaa] verified evidence" });
+	});
+
+	it("delivers a warned terminal outcome as-is when the reviewer ends its turn", async () => {
+		let warning: any;
+		const agentLoop = ((_prompts: any, context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				const tool = context.tools.find((candidate: any) => candidate.name === "review_concluded_no_proposal");
+				warning = await tool.execute("warned", { reason: "Insufficient evidence", evidence_reviewed: "(deadbeef) was unavailable" });
+			},
+			result: async () => [assistantText("ending without replacement", 1)],
+		})) as any;
+
+		const result = await runStructuralReview({ request: request("software"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop });
+
+		expect(warning.details.terminal).toBe(false);
+		expect(result).toMatchObject({ outcome: "no_proposal", evidenceReviewed: "(deadbeef) was unavailable" });
+	});
+
 	it("rejects a review with no terminal tool call", async () => {
 		const result = await runStructuralReview({
 			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [],
@@ -156,15 +198,16 @@ describe("reviewer keep-going loop", () => {
 		expect(transcript[2].content[0].text).toBe(REVIEWER_KEEP_GOING_MESSAGE);
 	});
 
-	it("stops the keep-going loop immediately once a terminal tool is recorded", async () => {
+	it("stops immediately when a terminal tool has no citation warnings", async () => {
 		let invocations = 0;
+		let terminalResult: any;
 		const agentLoop = ((_prompts: any, context: any) => {
 			invocations++;
 			return {
 				async *[Symbol.asyncIterator]() {
 					if (invocations === 1) {
 						const tool = context.tools.find((c: any) => c.name === "submit_workflow_proposal");
-						await tool.execute("terminal", workflowArgs);
+						terminalResult = await tool.execute("terminal", workflowArgs);
 					}
 				},
 				result: async () => [assistantText("terminal on first pass", 50)],
@@ -172,8 +215,10 @@ describe("reviewer keep-going loop", () => {
 		}) as any;
 
 		const result = await runStructuralReview({
-			request: request("workflow"), model: {} as any, apiKey: "key", getBranch: () => [], agentLoop,
+			request: request("workflow"), model: {} as any, apiKey: "key",
+			getBranch: () => [{ id: "aaaaaaaaaaaa", type: "custom", customType: "test", data: {} } as any], agentLoop,
 		});
+		expect(terminalResult).toMatchObject({ details: { terminal: true, missingReferenceIds: [] } });
 		expect(result).toMatchObject({ outcome: "proposal", proposalKind: "workflow" });
 		expect(invocations).toBe(1);
 	});

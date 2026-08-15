@@ -4,6 +4,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { hashId } from "../../ids.js";
 import { boundedMaxTokens, REVIEWER_TOTAL_TOKEN_LIMIT } from "../../model-budget.js";
 import type { LlmUsageInput } from "../../runtime.js";
+import { recallMemorySources } from "../../session-ledger/recall.js";
 import type { Entry, ReviewResult, StructuralReviewRequest } from "../../session-ledger/types.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
@@ -94,18 +95,30 @@ function budgetExhaustedResult(request: StructuralReviewRequest): ReviewResult {
 
 export async function runStructuralReview(args: RunStructuralReviewArgs): Promise<ReviewResult | undefined> {
 	let terminal: ReviewTerminalResult | undefined;
-	const acceptTerminal = (candidate: ReviewTerminalResult): void => {
+	let warnedTerminal: ReviewTerminalResult | undefined;
+	const acceptTerminal = (candidate: ReviewTerminalResult, missingReferenceIds: string[]) => {
 		if (terminal) throw new Error("A structural reviewer may make only one terminal tool call.");
+		const overwritten = warnedTerminal !== undefined;
+		if (missingReferenceIds.length > 0) {
+			warnedTerminal = candidate;
+			return { terminal: false, overwritten };
+		}
 		terminal = candidate;
+		warnedTerminal = undefined;
+		return { terminal: true, overwritten };
+	};
+	const referenceExists = (id: string): boolean => {
+		const branch = args.getBranch();
+		return branch.some((entry) => entry.id === id) || recallMemorySources(branch, id).status === "found";
 	};
 	const searchMemories = createSearchMemoriesAgentTool(args.getBranch);
 	const recall = createRecallAgentTool(args.getBranch);
 	const searchChatHistory = createSearchChatHistoryAgentTool(args.getBranch);
 	const readChatHistory = createReadChatHistoryAgentTool(args.getBranch);
 	const scopeTool = args.request.scope === "workflow"
-		? createWorkflowProposalTool(acceptTerminal)
-		: createSoftwareProposalTool(acceptTerminal);
-	const noProposal = createNoProposalTool(args.request.scope, acceptTerminal);
+		? createWorkflowProposalTool(acceptTerminal, referenceExists)
+		: createSoftwareProposalTool(acceptTerminal, referenceExists);
+	const noProposal = createNoProposalTool(args.request.scope, acceptTerminal, referenceExists);
 	const tools = [
 		searchMemories as AgentTool<any>,
 		recall as AgentTool<any>,
@@ -179,6 +192,13 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		// assistant usage that the real stream wrapper did not already account for.
 		const reportedOutputTokens = assistantOutputTokens(assistants);
 		totalOutputTokens += Math.max(0, reportedOutputTokens - streamedOutputTokens);
+		// A warned terminal call deliberately leaves shouldStopAfterTurn false so
+		// the reviewer can search/recall and replace it. If the reviewer instead
+		// ends its turn, honor the staged outcome exactly as the warning promised.
+		if (!terminal && warnedTerminal) {
+			terminal = warnedTerminal;
+			warnedTerminal = undefined;
+		}
 		return totalOutputTokens - iterationStartTokens;
 	};
 

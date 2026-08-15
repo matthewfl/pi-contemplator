@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createRequestReviewTool, createSendProbeTool, delimitedMemoryIds } from "../src/agents/contemplator/agent.js";
+import { createRequestReviewTool, createSendProbeTool } from "../src/agents/contemplator/agent.js";
+import { delimitedMemoryIds } from "../src/memory-citations.js";
 import { CONTEMPLATOR_SYSTEM, buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
 describe("contemplator review request tool", () => {
@@ -22,8 +23,8 @@ describe("contemplator review request tool", () => {
 	});
 
 	it("extracts bracketed and parenthesized memory-like ids without treating bare hashes as citations", () => {
-		expect(delimitedMemoryIds("[abcdef0] (1234567890abcdef) [aaaaaaaaaaaa] bare bbbbbbbbbbbb [abcdef0]"))
-			.toEqual(["abcdef0", "1234567890abcdef", "aaaaaaaaaaaa"]);
+		expect(delimitedMemoryIds("[abcdef0] (1234567890abcdef) {cccccccccccc} [aaaaaaaaaaaa] bare bbbbbbbbbbbb [abcdef0]"))
+			.toEqual(["abcdef0", "1234567890abcdef", "cccccccccccc", "aaaaaaaaaaaa"]);
 		expect(delimitedMemoryIds("[abcdef] [1234567890abcdef0] (ABCDEF123456) [not-a-hash]"))
 			.toEqual([]);
 	});

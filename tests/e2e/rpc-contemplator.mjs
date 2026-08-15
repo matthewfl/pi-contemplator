@@ -151,6 +151,7 @@ class MockModelServer {
 	backgroundWhileMainHeld = new Set();
 	sleepToolIssued = new Set();
 	contemplatorToolPhases = new Map();
+	reviewerToolPhases = new Map();
 	memorySearchUsed = false;
 	memoryRecallUsed = false;
 	recallReturnedSource = false;
@@ -339,24 +340,40 @@ class MockModelServer {
 		}
 
 		if (role === "reviewer") {
-			if (hasToolResult) return sendSse(res, { text: "Terminal review complete.", delayMs: 300 });
-			if (scenario === "SCENARIO_PROPOSAL") {
+			const reviewerPhase = this.reviewerToolPhases.get(scenario);
+			if (scenario === "SCENARIO_PROPOSAL" && reviewerPhase === "invalid_terminal") {
+				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
+				assert(resultText.includes("WARNING: memory or primary-chat entry deadbeef not found"), "Reviewer terminal tool did not warn about an invalid curly-braced citation");
+				assert(resultText.includes("call submit_workflow_proposal again to replace this review, or end your turn and it will be delivered as-is"), "Reviewer warning did not explain both correction and as-is delivery choices");
+				const memoryId = serializedMessages.match(/\[([a-f0-9]{12})\]/)?.[1];
+				assert(memoryId, "Reviewer correction context lacked a valid cited memory id");
+				this.reviewerToolPhases.set(scenario, "corrected_terminal");
 				return sendSse(res, {
-					delayMs: 1_200,
 					tool: {
-						id: "proposal-terminal",
+						id: "proposal-terminal-corrected",
 						name: "submit_workflow_proposal",
 						arguments: {
 							title: "Reusable evidence checkpoint",
 							summary: "Preserve a reusable checkpoint that tests the recurring assumption before repeated work continues.",
-							evidence: "The cited memories show repeated reconstruction around the same uncertainty.",
+							evidence: `[${memoryId}] The cited memory shows repeated reconstruction around the same uncertainty.`,
 							inefficiency: "The primary agent repeatedly spends work without obtaining distinguishing evidence.",
 							conceptual_design: "Maintain a reusable evidence checkpoint that records the question, direct test, and result for later rounds.",
-							inputs: "The active assumption and available direct evidence.",
-							outputs: "A durable result that later reasoning can reuse.",
-							integration: "Consult and refresh the checkpoint when the same uncertainty recurs.",
-							expected_effect: "Reduce repeated investigation and improve reviewability.",
-							uncertainties: "The primary agent must decide which checks are stable enough to preserve.",
+							inputs: "The active assumption and available direct evidence.", outputs: "A durable result that later reasoning can reuse.", integration: "Consult and refresh the checkpoint when the same uncertainty recurs.", expected_effect: "Reduce repeated investigation and improve reviewability.", uncertainties: "The primary agent must decide which checks are stable enough to preserve.",
+						},
+					},
+				});
+			}
+			if (hasToolResult) return sendSse(res, { text: "Terminal review complete.", delayMs: 300 });
+			if (scenario === "SCENARIO_PROPOSAL") {
+				this.reviewerToolPhases.set(scenario, "invalid_terminal");
+				return sendSse(res, {
+					delayMs: 1_200,
+					tool: {
+						id: "proposal-terminal-invalid",
+						name: "submit_workflow_proposal",
+						arguments: {
+							title: "Unverified checkpoint",
+							summary: "Initial outcome with a bad citation.", evidence: "{deadbeef} repeated reconstruction", inefficiency: "Repeated reconstruction", conceptual_design: "Maintain a checkpoint.", expected_effect: "Improve reviewability.", uncertainties: "Evidence must be corrected.",
 						},
 					},
 				});
@@ -683,6 +700,8 @@ async function run() {
 		assert(reviewResultEntries.length === 2, `Expected exactly two review results, got ${reviewResultEntries.length}`);
 		assert(reviewResults.includes("proposal"), "Expected a reviewer proposal result");
 		assert(reviewResults.includes("no_proposal"), "Expected a reviewer no-proposal result");
+		assert(server.reviewerToolPhases.get("SCENARIO_PROPOSAL") === "corrected_terminal", "Reviewer did not receive an in-turn correction chance after its warning");
+		assert(reviewResultEntries.some((entry) => entry.data?.result?.title === "Reusable evidence checkpoint" && !JSON.stringify(entry.data?.result).includes("deadbeef")), "Corrected reviewer outcome did not replace the warned candidate");
 		assert(reviewerMessages.length >= 2, "Expected durable reviewer transcripts");
 		assert(reviewerNotices.length === 1, `Only the accepted proposal should queue a main-agent notice; got ${reviewerNotices.length}`);
 		assert(customMessages.some((entry) => entry.customType === "om.contemplator.suggestion"), "Expected probe insertion in the main conversation stream");
