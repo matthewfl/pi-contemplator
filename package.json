@@ -1,6 +1,6 @@
 {
   "name": "@matthewfl/pi-contemplator",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "A Pi extension that keeps long-running agentic sessions on track with background memory, contemplation, and structural review.",
   "type": "module",
   "license": "MIT",
@@ -39,7 +39,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "node tests/e2e/rpc-contemplator.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -48,10 +49,10 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.81.0",
-    "@earendil-works/pi-ai": "^0.81.0",
-    "@earendil-works/pi-coding-agent": "^0.81.0",
-    "@earendil-works/pi-tui": "^0.81.0",
+    "@earendil-works/pi-agent-core": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2",
     "@types/node": "^22.0.0",
     "typebox": "^1.1.38",
     "typescript": "^5.6.0",
