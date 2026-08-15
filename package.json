@@ -39,7 +39,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "vitest run",
     "test:e2e": "node tests/e2e/rpc-contemplator.mjs"
   },
   "peerDependencies": {

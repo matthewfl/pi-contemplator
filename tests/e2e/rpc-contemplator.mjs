@@ -12,7 +12,32 @@ const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "../..");
 const PI = join(ROOT, "node_modules/.bin/pi");
 const EXTENSION = join(ROOT, "src/index.ts");
 const PROBE_TEXT = "Memory evidence shows repeated assumptions; what direct check would distinguish the current approach from the alternative?";
-const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
+const PROBE_RESPONSE_TEXT = "PROBE_RESPONSE_WITH_DIRECT_CHECK_RECORDED_BY_MAIN_AGENT";
+const PROBE_FEEDBACK_OBSERVATION = "The contemplator probe reached the primary agent, which responded with a concrete direct-check acknowledgement.";
+const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_FEEDBACK", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
+const SCENARIO_NAMES = {
+	SCENARIO_PROBE: "Probe delivery during a long-running primary-agent run",
+	SCENARIO_FEEDBACK: "Observer feedback loop from delivered probe and response back to contemplator",
+	SCENARIO_PROPOSAL: "Accepted workflow review and same-run proposal delivery",
+	SCENARIO_REJECT: "Rejected software review with no primary-agent notice",
+};
+const TEST_PLAN = [
+	"Launch an isolated real Pi RPC session with only the provider and contemplator extensions",
+	"Run three real bash tool/model rounds per scenario and preserve every result in later contexts",
+	"Run observer memory generation concurrently with the primary agent",
+	"Delay the contemplator for two seconds while a primary provider request remains open",
+	"Deliver and acknowledge a probe as an immediate same-run steer",
+	"Observe a delivered probe together with its primary-agent response and return that memory to the contemplator",
+	"Produce, persist, and deliver an accepted workflow-review proposal",
+	"Persist a software review's no-proposal outcome without emitting a proposal notice",
+	"Verify durable observer, contemplator, and reviewer transcripts with no extension errors",
+];
+const e2eStartedAt = Date.now();
+
+function progress(message) {
+	const elapsed = ((Date.now() - e2eStartedAt) / 1000).toFixed(1).padStart(5);
+	console.log(`[e2e +${elapsed}s] ${message}`);
+}
 
 function assert(condition, message) {
 	if (!condition) throw new Error(message);
@@ -78,7 +103,8 @@ function usage(outputTokens = 1) {
 	return { prompt_tokens: 20, completion_tokens: outputTokens, total_tokens: 20 + outputTokens };
 }
 
-function sendSse(res, { text, tool, outputTokens = 1 }) {
+async function sendSse(res, { text, tool, outputTokens = 1, delayMs = 0 }) {
+	if (delayMs > 0) await sleep(delayMs);
 	res.writeHead(200, {
 		"content-type": "text/event-stream",
 		"cache-control": "no-cache",
@@ -98,14 +124,24 @@ function sendSse(res, { text, tool, outputTokens = 1 }) {
 }
 
 class MockModelServer {
-	server = createServer((req, res) => void this.handle(req, res).catch((error) => {
-		res.writeHead(500, { "content-type": "application/json" });
-		res.end(JSON.stringify({ error: { message: String(error) } }));
-	}));
+	server = createServer((req, res) => {
+		this.activeRequests++;
+		this.maxConcurrentRequests = Math.max(this.maxConcurrentRequests, this.activeRequests);
+		void this.handle(req, res)
+			.catch((error) => {
+				res.writeHead(500, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: { message: String(error) } }));
+			})
+			.finally(() => { this.activeRequests--; });
+	});
 	requests = [];
 	mainCounts = new Map();
 	heldMain = new Map();
 	interventionsSent = new Set();
+	feedbackObserverSawProbeAndResponse = false;
+	feedbackObservationReachedContemplator = false;
+	activeRequests = 0;
+	maxConcurrentRequests = 0;
 
 	async start() {
 		this.server.listen(0, "127.0.0.1");
@@ -118,11 +154,11 @@ class MockModelServer {
 		await once(this.server, "close");
 	}
 
-	releaseMain(scenario) {
+	async releaseMain(scenario) {
 		const held = this.heldMain.get(scenario);
 		assert(held, `No held main request for ${scenario}`);
 		this.heldMain.delete(scenario);
-		sendSse(held, { text: `Background work for ${scenario} can now be incorporated.` });
+		await sendSse(held, { text: `Background work for ${scenario} can now be incorporated.`, delayMs: 500 });
 	}
 
 	async handle(req, res) {
@@ -138,23 +174,37 @@ class MockModelServer {
 				: tools.has("submit_workflow_proposal") || tools.has("submit_software_proposal") || tools.has("review_concluded_no_proposal")
 					? "reviewer"
 					: "main";
-		this.requests.push({ role, scenario, body });
+		this.requests.push({ role, scenario, body, startedAt: Date.now() });
 
 		const hasToolResult = (body.messages ?? []).some((message) => message.role === "tool");
+		const serializedMessages = JSON.stringify(body.messages ?? []);
 		if (role === "observer") {
-			if (hasToolResult) return sendSse(res, { text: "Observation coverage complete." });
-			const sourceId = JSON.stringify(body.messages ?? []).match(/Source entry id:\s*([a-zA-Z0-9_-]+)/)?.[1];
-			assert(sourceId, "Observer request did not contain a source entry id");
+			if (hasToolResult) return sendSse(res, { text: "Observation coverage complete.", delayMs: 250 });
+			const sourceIds = [...serializedMessages.matchAll(/Source entry id:\s*([a-zA-Z0-9_-]+)/g)].map((match) => match[1]);
+			assert(sourceIds.length > 0, "Observer request did not contain a source entry id");
+			const seesProbe = serializedMessages.includes(PROBE_TEXT);
+			const seesProbeResponse = serializedMessages.includes(PROBE_RESPONSE_TEXT);
+			if (scenario === "SCENARIO_FEEDBACK" && seesProbe && !seesProbeResponse) {
+				// Do not advance observation coverage for the probe alone. The mock main
+				// response is intentionally delayed until this run finishes, ensuring the
+				// next real observer run receives both sides of the exchange together.
+				return sendSse(res, { text: "Waiting for the primary agent's response before recording this exchange.", delayMs: 250 });
+			}
+			const isProbeFeedback = scenario === "SCENARIO_FEEDBACK" && seesProbe && seesProbeResponse;
+			if (isProbeFeedback) this.feedbackObserverSawProbeAndResponse = true;
 			return sendSse(res, {
+				delayMs: 250,
 				tool: {
-					id: `observe-${scenario}`,
+					id: `observe-${scenario}-${this.requests.length}`,
 					name: "record_observations",
 					arguments: {
 						observations: [{
 							timestamp: "2026-08-15 00:00",
-							content: `${scenario}: the primary agent repeatedly depends on an assumption that needs an independent check.`,
+							content: isProbeFeedback
+								? PROBE_FEEDBACK_OBSERVATION
+								: `${scenario}: the primary agent repeatedly depends on an assumption that needs an independent check.`,
 							relevance: "high",
-							sourceEntryIds: [sourceId],
+							sourceEntryIds: isProbeFeedback ? sourceIds : [sourceIds[0]],
 						}],
 					},
 				},
@@ -163,11 +213,19 @@ class MockModelServer {
 
 		if (role === "contemplator") {
 			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
+			if (serializedMessages.includes(PROBE_FEEDBACK_OBSERVATION)) this.feedbackObservationReachedContemplator = true;
 			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention is warranted for this update." });
+			// Simulate a realistically slow contemplator. The primary agent must finish
+			// three independent model/tool rounds and enter another provider request
+			// before this background response is allowed to produce an intervention.
+			await waitFor(() => this.heldMain.has(scenario), `${scenario} active fourth main request before contemplator response`);
+			// Keep both requests open long enough to exercise real asynchronous races
+			// between the primary run and the background contemplator.
+			await sleep(2_000);
 			this.interventionsSent.add(scenario);
 			const memoryId = JSON.stringify(body.messages ?? []).match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
-			if (scenario === "SCENARIO_PROBE") {
-				return sendSse(res, { tool: { id: "probe-call", name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
+			if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
+				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
 			return sendSse(res, {
 				tool: {
@@ -185,9 +243,10 @@ class MockModelServer {
 		}
 
 		if (role === "reviewer") {
-			if (hasToolResult) return sendSse(res, { text: "Terminal review complete." });
+			if (hasToolResult) return sendSse(res, { text: "Terminal review complete.", delayMs: 300 });
 			if (scenario === "SCENARIO_PROPOSAL") {
 				return sendSse(res, {
+					delayMs: 1_200,
 					tool: {
 						id: "proposal-terminal",
 						name: "submit_workflow_proposal",
@@ -207,6 +266,7 @@ class MockModelServer {
 				});
 			}
 			return sendSse(res, {
+				delayMs: 1_200,
 				tool: {
 					id: "reject-terminal",
 					name: "review_concluded_no_proposal",
@@ -222,21 +282,35 @@ class MockModelServer {
 		assert(scenario, "Main request did not contain a scenario marker");
 		const count = (this.mainCounts.get(scenario) ?? 0) + 1;
 		this.mainCounts.set(scenario, count);
-		const serialized = JSON.stringify(body.messages ?? []);
-		if (count === 1) {
+		const serialized = serializedMessages;
+		const bashRounds = [
+			`printf 'round-one:${scenario}:%s\\n' "$PI_MODEL"`,
+			`printf 'round-two:${scenario}\\n'; pwd`,
+			`printf 'round-three:${scenario}:'; test -f fixture.txt && wc -c < fixture.txt`,
+		];
+		if (count <= bashRounds.length) {
 			return sendSse(res, {
-				outputTokens: 200,
-				tool: { id: `read-${scenario}`, name: "read", arguments: { path: "./fixture.txt" } },
+				delayMs: 600,
+				outputTokens: count === 1 ? 200 : 1,
+				tool: { id: `bash-${scenario}-${count}`, name: "bash", arguments: { command: bashRounds[count - 1] } },
 			});
 		}
-		if (count === 2) {
+		if (count === 4) {
+			for (const round of ["round-one", "round-two", "round-three"]) {
+				assert(serialized.includes(`${round}:${scenario}`), `${scenario} fourth request did not contain ${round} bash output`);
+			}
 			assert(!this.heldMain.has(scenario), `Main request already held for ${scenario}`);
 			this.heldMain.set(scenario, res);
 			return;
 		}
-		if (scenario === "SCENARIO_PROBE") {
+		if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
 			assert(serialized.includes(PROBE_TEXT), "Probe was absent from the next main-agent provider request");
-			return sendSse(res, { text: "PROBE_RECEIVED_BY_MAIN_AGENT" });
+			return sendSse(res, {
+				text: scenario === "SCENARIO_FEEDBACK" ? PROBE_RESPONSE_TEXT : "PROBE_RECEIVED_BY_MAIN_AGENT",
+				// Let the probe-only observer run finish without advancing coverage;
+				// turn_end then launches another observer over the complete exchange.
+				delayMs: scenario === "SCENARIO_FEEDBACK" ? 1_000 : 0,
+			});
 		}
 		if (scenario === "SCENARIO_PROPOSAL") {
 			assert(serialized.includes("BACKGROUND WORKFLOW REVIEW PROPOSAL"), "Review proposal notice was absent from the next main-agent request");
@@ -301,6 +375,10 @@ class RpcClient {
 }
 
 async function run() {
+	console.log("RPC contemplator E2E test plan:");
+	TEST_PLAN.forEach((test, index) => console.log(`  ${index + 1}. ${test}`));
+	console.log("");
+	progress("Creating isolated project, agent configuration, and session directories");
 	const workspace = await mkdtemp(join(tmpdir(), "pi-contemplator-e2e-"));
 	const project = join(workspace, "project");
 	const agentDir = join(workspace, "agent");
@@ -336,8 +414,10 @@ async function run() {
 		}, null, 2));
 
 		const port = await server.start();
+		progress(`Mock OpenAI-compatible streaming server listening on 127.0.0.1:${port}`);
 		await writeFile(providerExtension, `export default function (pi) {\n  pi.registerProvider("e2e", {\n    name: "E2E Mock",\n    baseUrl: "http://127.0.0.1:${port}/v1",\n    apiKey: "e2e-test-key",\n    api: "openai-completions",\n    models: [{ id: "mock-model", name: "Mock Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }]\n  });\n}\n`);
 
+		progress("Launching real pi --mode rpc subprocess with normal plugins disabled");
 		child = spawn(PI, [
 			"--mode", "rpc",
 			"--provider", "e2e",
@@ -365,30 +445,66 @@ async function run() {
 				return false;
 			}
 		}, "RPC startup with mock model");
+		progress("Pi RPC session is ready and connected to e2e/mock-model");
 
-		for (const scenario of SCENARIOS) {
+		for (let scenarioIndex = 0; scenarioIndex < SCENARIOS.length; scenarioIndex++) {
+			const scenario = SCENARIOS[scenarioIndex];
+			console.log("");
+			progress(`TEST ${scenarioIndex + 1}/${SCENARIOS.length}: ${SCENARIO_NAMES[scenario]}`);
 			const eventStart = rpc.events.length;
+			const probeIdsBeforeScenario = new Set((await rpc.entries())
+				.filter((entry) => entry.customType === "om.contemplator.suggestion" && typeof entry.data?.probeId === "string")
+				.map((entry) => entry.data.probeId));
 			await rpc.command({ type: "prompt", message: `${scenario}: perform a multi-round task and keep working through tool results.` });
-			await waitFor(() => server.heldMain.has(scenario), `${scenario} second main request`);
+			await waitFor(() => server.heldMain.has(scenario), `${scenario} active fourth main request`);
+			progress(`${scenario}: three bash rounds completed; fourth primary-model request is held open`);
+			const heldState = await rpc.command({ type: "get_state" });
+			assert(heldState.isStreaming === true, `${scenario} primary agent was not streaming while background work ran`);
+			await waitFor(() => server.activeRequests >= 2, `${scenario} concurrent primary/background model requests`);
+			progress(`${scenario}: primary and background model requests are concurrently active`);
 
-			if (scenario === "SCENARIO_PROBE") {
-				await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false), "pending contemplator probe");
+			if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
+				await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false && typeof entry.data?.probeId === "string" && !probeIdsBeforeScenario.has(entry.data.probeId) && JSON.stringify(entry.data).includes(PROBE_TEXT)), "new pending contemplator probe");
+				const beforeDrain = await rpc.entries();
+				assert(!beforeDrain.some((entry) => entry.type === "custom_message" && entry.customType === "om.contemplator.suggestion" && typeof entry.message?.details?.probeId === "string" && !probeIdsBeforeScenario.has(entry.message.details.probeId)), "Probe was persisted/displayed before Pi drained the steer");
+				progress(`${scenario}: delayed contemplator queued a probe without prematurely displaying it`);
 			} else {
 				const expectedOutcome = scenario === "SCENARIO_PROPOSAL" ? "proposal" : "no_proposal";
 				await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.review.result" && entry.data?.result?.outcome === expectedOutcome), `${expectedOutcome} review result`, 20_000);
 				if (scenario === "SCENARIO_PROPOSAL") {
 					await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.reviewer.notice"), "queued reviewer proposal notice");
+					const beforeDrain = await rpc.entries();
+					assert(!beforeDrain.some((entry) => entry.type === "custom_message" && entry.customType === "om.review.proposal"), "Proposal notice was persisted/displayed before Pi drained the steer");
+					progress(`${scenario}: reviewer accepted the proposal and queued its notice without premature display`);
+				} else {
+					progress(`${scenario}: reviewer persisted no_proposal and correctly queued no notice`);
 				}
 			}
 
-			server.releaseMain(scenario);
+			progress(`${scenario}: releasing the held primary-model response to test steer draining`);
+			await server.releaseMain(scenario);
 			await rpc.waitSettled(eventStart);
+			const expectedMainRequests = scenario === "SCENARIO_REJECT" ? 4 : 5;
+			assert(
+				server.mainCounts.get(scenario) === expectedMainRequests,
+				`${scenario} made ${server.mainCounts.get(scenario)} main requests; expected ${expectedMainRequests}. ` +
+				"The probe/proposal must steer the current run, not wait for a later user prompt.",
+			);
+			if (scenario === "SCENARIO_FEEDBACK") {
+				await waitFor(() => server.feedbackObserverSawProbeAndResponse, "observer request containing both the delivered probe and its primary-agent response");
+				progress(`${scenario}: observer received the delivered probe and primary-agent response together`);
+				await waitFor(() => server.feedbackObservationReachedContemplator, "probe-response observation delivered back to contemplator");
+				progress(`${scenario}: resulting observation reached a subsequent contemplator update`);
+			}
 			// agent_settled covers the primary run, not fire-and-forget memory workers.
 			// Do not begin the next scenario while a prior consolidation still owns
 			// Runtime.consolidationPromise or its turn-end trigger can be skipped.
 			await waitForBackgroundQuiet(rpc, server);
+			progress(`PASS ${scenarioIndex + 1}/${SCENARIOS.length}: ${SCENARIO_NAMES[scenario]}`);
 		}
 
+		console.log("");
+		progress("Running aggregate ledger, transcript, acknowledgement, concurrency, and error assertions");
 		const entries = await rpc.entries();
 		const observations = entries.filter((entry) => entry.customType === "om.observations.recorded");
 		const probeTracking = entries.filter((entry) => entry.customType === "om.contemplator.suggestion" && typeof entry.data?.probeId === "string");
@@ -400,10 +516,20 @@ async function run() {
 		const contemplatorMessages = entries.filter((entry) => entry.customType === "om.contemplator.message");
 		const reviewerNotices = entries.filter((entry) => entry.customType === "om.reviewer.notice");
 		const customMessages = entries.filter((entry) => entry.type === "custom_message");
+		const bashResults = entries.filter((entry) => entry.type === "message" && entry.message?.role === "toolResult" && entry.message?.toolName === "bash");
 		const latestProbeState = new Map(probeTracking.map((entry) => [entry.data.probeId, entry.data.delivered === true]));
-		assert(observations.length >= 3, `Expected observer memories for all scenarios, got ${observations.length}`);
+		assert(observations.length >= 5, `Expected initial memories for every scenario plus probe feedback, got ${observations.length}`);
+		assert(observations.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Probe/response feedback observation was not persisted");
+		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Persisted contemplator transcript did not receive the probe/response feedback observation");
+		assert(bashResults.length === 12, `Expected twelve real bash tool rounds, got ${bashResults.length}`);
+		for (const scenario of SCENARIOS) {
+			for (const round of ["round-one", "round-two", "round-three"]) {
+				assert(bashResults.some((entry) => JSON.stringify(entry.message.content).includes(`${round}:${scenario}`)), `Missing persisted ${round} bash result for ${scenario}`);
+			}
+		}
+		assert(server.maxConcurrentRequests >= 2, "Expected overlapping primary and background model requests");
 		assert(contemplatorMessages.length >= 6, "Expected persisted contemplator prompts and responses");
-		assert(deliveredProbes.length === 1, `Expected exactly one acknowledged probe, got ${deliveredProbes.length}`);
+		assert(deliveredProbes.length === 2, `Expected exactly two acknowledged probes, got ${deliveredProbes.length}`);
 		assert([...latestProbeState.values()].every(Boolean), "Every queued probe must finish acknowledged");
 		assert(reviewRequests.length === 2, `Expected exactly two review requests, got ${reviewRequests.length}`);
 		assert(reviewResultEntries.length === 2, `Expected exactly two review results, got ${reviewResultEntries.length}`);
@@ -421,7 +547,7 @@ async function run() {
 		child.kill("SIGTERM");
 		const result = await exited;
 		assert(result.code === 0 || result.code === 143 || result.signal === "SIGTERM", `Pi exited unexpectedly: ${JSON.stringify(result)}\n${rpc.stderr}`);
-		console.log(`RPC E2E passed: ${observations.length} observation batches, ${deliveredProbes.length} delivered probe, proposal + no-proposal reviewer outcomes.`);
+		progress(`ALL TESTS PASSED: ${observations.length} observation batches, 12 bash rounds, ${deliveredProbes.length} delivered probes, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
 	} catch (error) {
 		console.error("E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));

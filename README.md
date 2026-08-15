@@ -190,11 +190,14 @@ Model selection, trigger thresholds, passive mode (which stops all background wo
 ```bash
 npm install
 npm test
+npm run test:unit
 npm run test:e2e
 npm run typecheck
 ```
 
-`test:e2e` starts a local OpenAI-compatible model server, launches the real Pi CLI in RPC mode, and drives deterministic observer → contemplator → primary-agent and contemplator → reviewer flows. It exercises probe delivery, accepted proposal notices, rejected/no-proposal reviews, durable transcripts, and acknowledgements while mocking only the external model-server boundary.
+`npm test` runs both the unit and RPC end-to-end suites. Use `test:unit` or `test:e2e` to run either suite independently.
+
+`test:e2e` starts a local OpenAI-compatible model server, launches the real Pi CLI in RPC mode, and drives deterministic observer → contemplator → primary-agent and contemplator → reviewer flows. Each scenario runs three real bash tool/model rounds; the fake contemplator then waits two seconds while a later primary-model request remains open, exercising overlapping background/primary requests and steer timing. The suite covers probe delivery, accepted proposal notices, rejected/no-proposal reviews, durable transcripts, acknowledgements, and premature-display/persistence guards while mocking only the external model-server boundary.
 
 ## License
 
