@@ -205,7 +205,6 @@ export function isReflectionsRecordedData(value: unknown): value is ReflectionsR
 	if (!isPlainRecord(value)) return false;
 	return (
 		Array.isArray(value.reflections) &&
-		value.reflections.length > 0 &&
 		value.reflections.every(isReflection) &&
 		isNonEmptyString(value.coversUpToId)
 	);
@@ -318,7 +317,10 @@ export function buildReflectionsRecordedData(
 	reflections: Reflection[],
 	coversUpToId: string,
 ): ReflectionsRecordedEntryData | undefined {
-	if (reflections.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
+	if (!isNonEmptyString(coversUpToId)) return undefined;
+	// An empty list is a durable successful-pass checkpoint. Without it, a
+	// reflector that correctly finds nothing new retries the same raw range on
+	// every trigger and the over-target dropper never gets a maintenance pass.
 	return { reflections, coversUpToId };
 }
 

@@ -150,7 +150,7 @@ Running extra agents in the background can be worrying — what if they take ove
 |---|---|---|
 | **Observer** | Extracts concrete, timestamped observations from the primary session, citing source entries. | In the background after turns, once enough new source text accumulates. |
 | **Reflector** | Distills durable conclusions (user intent, decisions, constraints) from observations, citing supporting observations. | Periodically, after the observer is up to date. |
-| **Dropper** | Prunes observations that are obsolete, redundant, or safely represented elsewhere, keeping the active memory pool bounded. | Only after a successful reflection, when the memory pool is over target. |
+| **Dropper** | Prunes observations that are obsolete, redundant, or safely represented elsewhere, moving the active memory pool toward its target. | After a successful reflector pass, when the memory pool is over target. |
 | **Contemplator** | Watches accumulated memories for reasoning gaps, contradictions, overlooked alternatives, and recurring structural concerns; can send a focused probe or request a review. | Asynchronously after enough new memories accumulate. |
 | **Reviewer** | Performs a deep, scoped (workflow or software) structural investigation and records a durable proposal or a no-proposal conclusion. | Only when the contemplator commissions a review, and only one at a time. |
 

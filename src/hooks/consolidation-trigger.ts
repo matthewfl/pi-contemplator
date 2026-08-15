@@ -47,6 +47,8 @@ type StageOutcome = "continue" | "abort";
 
 type ReflectorStageResult = {
 	outcome: StageOutcome;
+	/** True after the model successfully reviewed the due observation range, even if it found nothing new. */
+	passCompleted: boolean;
 	sameRunReflections: Reflection[];
 	effectiveReflectionCoverageId?: string;
 };
@@ -221,7 +223,7 @@ export async function runConsolidationPipeline(
 
 	runtime.consolidationPhase = "dropper";
 	try {
-		const dropperOutcome = await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, contextGeneration);
+		const dropperOutcome = await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.passCompleted, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, contextGeneration);
 		if (dropperOutcome === "abort") return;
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
@@ -361,20 +363,20 @@ async function runReflectorStage(
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const reflectionTokens = rawTokensSinceReflectionCoverage(entries);
-	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
+	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
+	if (!observationCoverageId) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
 		"info",
 	);
 	const resolved = await resolveModel("reflector");
-	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
+	if (!resolved) return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
 	if (contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", sameRunReflections: [] };
+		return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
 	}
 
 	const folded = foldLedger(entries);
@@ -390,16 +392,19 @@ async function runReflectorStage(
 	});
 	if (contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", sameRunReflections: [] };
+		return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
 	}
-	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
-	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-	if (!data) return { outcome: "continue", sameRunReflections: [] };
+	// Persist successful empty passes too. This advances the reflection clock and
+	// lets over-target observation maintenance run without inventing a reflection.
+	const sameRunReflections = reflections ?? [];
+	const data = buildReflectionsRecordedData(sameRunReflections, observationCoverageId);
+	if (!data) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
 	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
 	return {
 		outcome: "continue",
-		sameRunReflections: reflections,
+		passCompleted: true,
+		sameRunReflections,
 		effectiveReflectionCoverageId: data.coversUpToId,
 	};
 }
@@ -409,12 +414,13 @@ async function runDropperStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
+	reflectorPassCompleted: boolean,
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
 	contextGeneration: number,
 ): Promise<StageOutcome> {
-	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
-		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
+	if (!reflectorPassCompleted || !sameRunReflectionCoverageId) {
+		debugLog("dropper.waiting_for_reflection_pass", { reflectorPassCompleted, sameRunReflections: sameRunReflections.length });
 		return "continue";
 	}
 
@@ -449,7 +455,7 @@ async function runDropperStage(
 	});
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: dropper running after reflection — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
+		`Observational memory: dropper running after reflection pass — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
 		"info",
 	);
 	const resolved = await resolveModel("dropper");

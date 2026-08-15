@@ -657,6 +657,8 @@ async function run() {
 		const entries = await rpc.entries();
 		const observations = entries.filter((entry) => entry.customType === "om.observations.recorded");
 		const reflections = entries.filter((entry) => entry.customType === "om.reflections.recorded");
+		const nonEmptyReflections = reflections.filter((entry) => (entry.data?.reflections?.length ?? 0) > 0);
+		const emptyReflectionCheckpoints = reflections.filter((entry) => Array.isArray(entry.data?.reflections) && entry.data.reflections.length === 0);
 		const droppedObservations = entries.filter((entry) => entry.customType === "om.observations.dropped");
 		const probeTracking = entries.filter((entry) => entry.customType === "om.contemplator.suggestion" && typeof entry.data?.probeId === "string");
 		const deliveredProbes = probeTracking.filter((entry) => entry.data?.delivered === true);
@@ -670,9 +672,10 @@ async function run() {
 		const bashResults = entries.filter((entry) => entry.type === "message" && entry.message?.role === "toolResult" && entry.message?.toolName === "bash");
 		const latestProbeState = new Map(probeTracking.map((entry) => [entry.data.probeId, entry.data.delivered === true]));
 		assert(observations.length >= 5, `Expected initial memories for every scenario plus probe feedback, got ${observations.length}`);
-		assert(reflections.length > 0, "Expected durable reflections from the real reflector agent");
+		assert(nonEmptyReflections.length > 0, "Expected durable reflections from the real reflector agent");
+		assert(emptyReflectionCheckpoints.length > 0, "Expected a durable successful-pass checkpoint when the reflector emitted nothing new");
 		assert(droppedObservations.length > 0, "Expected durable dropped-observation entries from the real dropper agent");
-		assert(reflections.every((entry) => JSON.stringify(entry.data).includes(PIPELINE_REFLECTION_PREFIX)), "A persisted E2E reflection did not come from the mock reflector response");
+		assert(nonEmptyReflections.every((entry) => JSON.stringify(entry.data).includes(PIPELINE_REFLECTION_PREFIX)), "A persisted non-empty E2E reflection did not come from the mock reflector response");
 		const recordedObservationIds = new Set(observations.flatMap((entry) => entry.data?.observations ?? []).map((observation) => observation.id));
 		const persistedDroppedIds = droppedObservations.flatMap((entry) => entry.data?.observationIds ?? []);
 		assert(persistedDroppedIds.length > 0, "Dropper ledger entries contained no dropped ids");
@@ -716,7 +719,7 @@ async function run() {
 		child.kill("SIGTERM");
 		const result = await exited;
 		assert(result.code === 0 || result.code === 143 || result.signal === "SIGTERM", `Pi exited unexpectedly: ${JSON.stringify(result)}\n${rpc.stderr}`);
-		progress(`ALL TESTS PASSED: ${observations.length} observation batches, ${reflections.length} reflection batches, ${droppedObservations.length} drop batches, 16 bash rounds including sleep race, ${deliveredProbes.length} delivered probes, search + recall, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
+		progress(`ALL TESTS PASSED: ${observations.length} observation batches, ${nonEmptyReflections.length} reflection batches + ${emptyReflectionCheckpoints.length} empty checkpoints, ${droppedObservations.length} drop batches, 16 bash rounds including sleep race, ${deliveredProbes.length} delivered probes, search + recall, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
 	} catch (error) {
 		console.error("E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));

@@ -111,6 +111,17 @@ describe("session-ledger V3 progress helpers", () => {
 		expect(rawTokensSinceDropCoverage(entries)).toBe(7); // covers ledger entry om-eeeeeeeeeeee, raw after it
 	});
 
+	it("advances reflection progress with a successful empty checkpoint", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-empty-reflections", { reflections: [], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+
+		expect(latestCoverageMarkerId(entries, V3_REFLECTIONS_RECORDED)).toBe("raw-1");
+		expect(rawTokensSinceReflectionCoverage(entries)).toBe(2);
+	});
+
 	it("lets coversUpToId point to a memory ledger entry", () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),

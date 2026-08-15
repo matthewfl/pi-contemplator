@@ -82,7 +82,7 @@ It reads active observations and current reflections, then appends durable new r
 
 ### Dropper
 
-The dropper runs only as post-reflection maintenance: after the reflector records non-empty same-turn reflections, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
+The dropper runs only as post-reflector maintenance: after a successful reflector pass, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. A pass that finds nothing new persists an empty progress checkpoint and still permits maintenance; the dropper can also see any same-turn new reflections before deciding what to prune.
 
 The dropper can only drop active observation ids. It cannot rewrite or merge observations. Relevance is treated as importance/resistance rather than an absolute lock: `critical` observations are the highest-resistance candidates, but they can be dropped when the model judges that age, reflection coverage, supersession, redundancy, and semantic safety make removal from active memory safe. Its maximum drop count is computed from tokens over target converted to an approximate observation count, and the model may drop fewer or none.
 

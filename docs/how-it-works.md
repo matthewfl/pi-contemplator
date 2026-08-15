@@ -11,7 +11,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | Surface | Purpose |
 | --- | --- |
 | `turn_end` observer trigger | Maybe run the observer in the background. |
-| `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
+| `turn_end` reflect/drop trigger | Maybe run the due reflector, persist its progress, then run over-target dropper maintenance after the successful pass. |
 | `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
@@ -194,12 +194,12 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 6. Resolve the model only for stages that are ready to run.
 7. Fold current ledger state.
 8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
-9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity.
-10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
-11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
-12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
+9. Append `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity. When the reflector correctly emits nothing new, append an empty batch as a successful-pass coverage checkpoint.
+10. After that successful reflector-pass checkpoint, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
+11. If over target, run the dropper with same-turn reflections (if any) and existing reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
+12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection-pass coverage.
 
-Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.
+Reflector failure skips same-turn dropper; successful no-output does not. Dropper failure does not roll back the already-appended reflection checkpoint.
 
 ## Auto-compaction trigger
 
@@ -288,7 +288,7 @@ Shows:
 - next observation/reflection/compaction token progress and drop coverage since the last successful drop;
 - visible observation pool pressure against `observationsPoolMaxTokens` from the current compaction projection;
 - active observation pool pressure against `observationsPoolTargetTokens` from folded active observations;
-- dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
+- dropper state explaining whether the active pool is under target or waiting for the next successful reflector pass;
 - reflection pool token total;
 - passive mode;
 - worker in-flight flags;

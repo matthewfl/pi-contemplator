@@ -67,7 +67,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | Setting | Type | Default | What it controls |
 | --- | ---: | ---: | --- |
 | `observeAfterTokens` | positive integer | `10000` | Raw/source token threshold for observer runs. |
-| `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; successful reflection creates dropper maintenance opportunities. |
+| `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; each successful reflector pass creates a dropper maintenance opportunity, even when it records no new reflections. |
 | `observerChunkMaxTokens` | positive integer | derived; minimum `256` | Maximum estimated tokens sent to one observer run. Unset: 20% of the resolved memory model's context window, or `60000` when unknown. |
 | `compactAfterTokens` | positive integer | `81000` | Raw/source token threshold for proactive auto-compaction. |
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
@@ -118,7 +118,7 @@ Default: `20000`.
 
 The reflector uses this raw/source-token threshold. Reflector progress is counted after the latest `om.reflections.recorded.data.coversUpToId` marker.
 
-The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dropper work is gated by successful reflection: after the reflector records non-empty reflections in a consolidation pass, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. It can see same-turn new reflections before deciding what to prune.
+The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dropper work is gated by a successful reflector pass: after the reflector reviews the due range, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. It can see same-turn new reflections before deciding what to prune. A successful pass with no new reflections persists an empty coverage checkpoint, advances the reflection clock, and still permits over-target maintenance.
 
 Lower values distill reflections more often and therefore create more opportunities for post-reflection dropper maintenance. Higher values reduce reflector model calls but leave more observations between reflection and dropper opportunities.
 
@@ -144,7 +144,7 @@ This is not the active observation dropper target and not a scheduling threshold
 
 Default: half of `observationsPoolMaxTokens`.
 
-This controls the folded active observation target used by the dropper. If folded active observation tokens are at or below this target, the dropper has no maintenance work. If they are over target, the dropper can run only after the reflector records non-empty reflections in the same consolidation pass.
+This controls the folded active observation target used by the dropper. If folded active observation tokens are at or below this target, the dropper has no maintenance work. If they are over target, the dropper can run after a successful reflector pass, including a pass that correctly records no new reflections.
 
 With the defaults, `observationsPoolMaxTokens` is `20000` and `observationsPoolTargetTokens` is `10000`. If the active observation pool reaches about `20000` tokens, the dropper computes a maximum count intended to move it back toward about `10000` tokens, but the model may drop fewer or none.
 
