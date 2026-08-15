@@ -41,7 +41,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
-    "test:e2e": "node tests/e2e/rpc-contemplator.mjs"
+    "test:e2e": "node tests/e2e/rpc-contemplator.mjs && node tests/e2e/rpc-compaction.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

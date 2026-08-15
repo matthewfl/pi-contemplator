@@ -15,9 +15,11 @@ const PROBE_TEXT = "Memory evidence shows repeated assumptions; what direct chec
 const PROBE_RESPONSE_TEXT = "PROBE_RESPONSE_WITH_DIRECT_CHECK_RECORDED_BY_MAIN_AGENT";
 const PROBE_FEEDBACK_OBSERVATION = "The contemplator probe reached the primary agent, which responded with a concrete direct-check acknowledgement.";
 const PIPELINE_REFLECTION_PREFIX = "E2E_REFLECTOR_CRYSTALLIZED";
-const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_FEEDBACK", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
+const SLEEP_OUTPUT = "sleep-tool-finished:SCENARIO_SLEEP";
+const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_SLEEP", "SCENARIO_FEEDBACK", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
 const SCENARIO_NAMES = {
 	SCENARIO_PROBE: "Probe delivery during a long-running primary-agent run",
+	SCENARIO_SLEEP: "Probe queued during a sleeping bash call and drained immediately afterward",
 	SCENARIO_FEEDBACK: "Observer feedback loop from delivered probe and response back to contemplator",
 	SCENARIO_PROPOSAL: "Accepted workflow review and same-run proposal delivery",
 	SCENARIO_REJECT: "Rejected software review with no primary-agent notice",
@@ -31,6 +33,8 @@ const TEST_PLAN = [
 	"Deliver the resulting reflection memory to the contemplator",
 	"Delay the contemplator for two seconds while a primary provider request remains open",
 	"Deliver and acknowledge a probe as an immediate same-run steer",
+	"Queue a contemplator probe during a real sleeping bash call and deliver it after the tool finishes",
+	"Exercise contemplator search_memories and recall calls against real persisted observer memory",
 	"Observe a delivered probe together with its primary-agent response and return that memory to the contemplator",
 	"Produce, persist, and deliver an accepted workflow-review proposal",
 	"Persist a software review's no-proposal outcome without emitting a proposal notice",
@@ -145,6 +149,11 @@ class MockModelServer {
 	feedbackObserverSawProbeAndResponse = false;
 	feedbackObservationReachedContemplator = false;
 	backgroundWhileMainHeld = new Set();
+	sleepToolIssued = new Set();
+	contemplatorToolPhases = new Map();
+	memorySearchUsed = false;
+	memoryRecallUsed = false;
+	recallReturnedSource = false;
 	activeRequests = 0;
 	maxConcurrentRequests = 0;
 
@@ -260,19 +269,47 @@ class MockModelServer {
 		}
 
 		if (role === "contemplator") {
-			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
 			if (serializedMessages.includes(PROBE_FEEDBACK_OBSERVATION)) this.feedbackObservationReachedContemplator = true;
+			const phase = this.contemplatorToolPhases.get(scenario);
+			if (scenario === "SCENARIO_PROBE" && phase === "searched") {
+				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
+				assert(resultText.includes("Found ") && resultText.includes("SCENARIO_PROBE"), "search_memories did not return the persisted probe-scenario memory");
+				const memoryId = resultText.match(/\[([a-f0-9]{12})\]/)?.[1];
+				assert(memoryId, "search_memories result did not expose a recallable memory id");
+				this.memorySearchUsed = true;
+				this.contemplatorToolPhases.set(scenario, "recalled");
+				return sendSse(res, { tool: { id: "recall-probe-memory", name: "recall", arguments: { id: memoryId } } });
+			}
+			if (scenario === "SCENARIO_PROBE" && phase === "recalled") {
+				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
+				assert(resultText.includes("SCENARIO_PROBE") && /Source|User|Assistant|Tool result/.test(resultText), "recall did not return exact source context for the searched memory");
+				this.memoryRecallUsed = true;
+				this.recallReturnedSource = true;
+				this.interventionsSent.add(scenario);
+				this.contemplatorToolPhases.set(scenario, "probe_sent");
+				const memoryId = serializedMessages.match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
+				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
+			}
+			if (scenario === "SCENARIO_PROBE" && phase === "probe_sent") return sendSse(res, { text: "Memory search, source recall, and intervention are complete." });
+			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
 			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention is warranted for this update." });
 			// Simulate a realistically slow contemplator. The primary agent must finish
-			// three independent model/tool rounds and enter another provider request
-			// before this background response is allowed to produce an intervention.
-			await waitFor(() => this.heldMain.has(scenario), `${scenario} active fourth main request before contemplator response`);
+			// three independent model/tool rounds and either enter another provider
+			// request or begin the long-running sleep tool before intervention.
+			await waitFor(
+				() => scenario === "SCENARIO_SLEEP" ? this.sleepToolIssued.has(scenario) : this.heldMain.has(scenario),
+				`${scenario} active primary work before contemplator response`,
+			);
 			// Keep both requests open long enough to exercise real asynchronous races
 			// between the primary run and the background contemplator.
-			await sleep(2_000);
-			this.interventionsSent.add(scenario);
+			await sleep(scenario === "SCENARIO_SLEEP" ? 1_000 : 2_000);
 			const memoryId = JSON.stringify(body.messages ?? []).match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
-			if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
+			if (scenario === "SCENARIO_PROBE") {
+				this.contemplatorToolPhases.set(scenario, "searched");
+				return sendSse(res, { tool: { id: "search-probe-memory", name: "search_memories", arguments: { query: "SCENARIO_PROBE independent check", limit: 5 } } });
+			}
+			this.interventionsSent.add(scenario);
+			if (scenario === "SCENARIO_SLEEP" || scenario === "SCENARIO_FEEDBACK") {
 				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
 			return sendSse(res, {
@@ -347,9 +384,20 @@ class MockModelServer {
 			for (const round of ["round-one", "round-two", "round-three"]) {
 				assert(serialized.includes(`${round}:${scenario}`), `${scenario} fourth request did not contain ${round} bash output`);
 			}
+			if (scenario === "SCENARIO_SLEEP") {
+				this.sleepToolIssued.add(scenario);
+				return sendSse(res, {
+					tool: { id: "bash-sleep-probe-race", name: "bash", arguments: { command: `sleep 3; printf '${SLEEP_OUTPUT}\\n'` } },
+				});
+			}
 			assert(!this.heldMain.has(scenario), `Main request already held for ${scenario}`);
 			this.heldMain.set(scenario, res);
 			return;
+		}
+		if (scenario === "SCENARIO_SLEEP") {
+			assert(serialized.includes(SLEEP_OUTPUT), "Next provider request arrived without the completed sleep-tool output");
+			assert(serialized.includes(PROBE_TEXT), "Probe queued during sleep was absent from the first post-tool provider request");
+			return sendSse(res, { text: "SLEEP_TOOL_PROBE_RECEIVED_BY_MAIN_AGENT" });
 		}
 		if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
 			assert(serialized.includes(PROBE_TEXT), "Probe was absent from the next main-agent provider request");
@@ -506,18 +554,33 @@ async function run() {
 				.filter((entry) => entry.customType === "om.contemplator.suggestion" && typeof entry.data?.probeId === "string")
 				.map((entry) => entry.data.probeId));
 			await rpc.command({ type: "prompt", message: `${scenario}: perform a multi-round task and keep working through tool results.` });
-			await waitFor(() => server.heldMain.has(scenario), `${scenario} active fourth main request`);
-			progress(`${scenario}: three bash rounds completed; fourth primary-model request is held open`);
+			if (scenario === "SCENARIO_SLEEP") {
+				await waitFor(() => server.sleepToolIssued.has(scenario), `${scenario} sleeping bash tool call issued`);
+				progress(`${scenario}: three bash rounds completed; fourth bash call is sleeping for three seconds`);
+			} else {
+				await waitFor(() => server.heldMain.has(scenario), `${scenario} active fourth main request`);
+				progress(`${scenario}: three bash rounds completed; fourth primary-model request is held open`);
+			}
 			const heldState = await rpc.command({ type: "get_state" });
 			assert(heldState.isStreaming === true, `${scenario} primary agent was not streaming while background work ran`);
-			await waitFor(() => server.backgroundWhileMainHeld.has(scenario), `${scenario} background model request while the primary request is held open`);
-			progress(`${scenario}: primary and background model requests are concurrently active`);
+			if (scenario === "SCENARIO_SLEEP") {
+				await waitFor(() => rpc.events.slice(eventStart).some((event) => event.type === "tool_execution_start" && event.toolName === "bash" && event.toolCallId === "bash-sleep-probe-race"), "sleeping bash execution start");
+				progress(`${scenario}: real bash sleep is running while the contemplator works`);
+			} else {
+				await waitFor(() => server.backgroundWhileMainHeld.has(scenario), `${scenario} background model request while the primary request is held open`);
+				progress(`${scenario}: primary and background model requests are concurrently active`);
+			}
 
-			if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_FEEDBACK") {
+			if (scenario === "SCENARIO_PROBE" || scenario === "SCENARIO_SLEEP" || scenario === "SCENARIO_FEEDBACK") {
 				await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false && typeof entry.data?.probeId === "string" && !probeIdsBeforeScenario.has(entry.data.probeId) && JSON.stringify(entry.data).includes(PROBE_TEXT)), "new pending contemplator probe");
 				const beforeDrain = await rpc.entries();
 				assert(!beforeDrain.some((entry) => entry.type === "custom_message" && entry.customType === "om.contemplator.suggestion" && typeof entry.message?.details?.probeId === "string" && !probeIdsBeforeScenario.has(entry.message.details.probeId)), "Probe was persisted/displayed before Pi drained the steer");
 				progress(`${scenario}: delayed contemplator queued a probe without prematurely displaying it`);
+				if (scenario === "SCENARIO_SLEEP") {
+					assert(!rpc.events.slice(eventStart).some((event) => event.type === "tool_execution_end" && event.toolCallId === "bash-sleep-probe-race"), "Sleeping bash call ended before the contemplator probe was queued");
+					assert(server.mainCounts.get(scenario) === 4, "Main provider was called again before the sleeping tool completed");
+					progress(`${scenario}: probe is pending while bash is still asleep; no premature provider request occurred`);
+				}
 			} else {
 				const expectedOutcome = scenario === "SCENARIO_PROPOSAL" ? "proposal" : "no_proposal";
 				await waitFor(async () => (await rpc.entries()).some((entry) => entry.customType === "om.review.result" && entry.data?.result?.outcome === expectedOutcome), `${expectedOutcome} review result`, 20_000);
@@ -531,9 +594,17 @@ async function run() {
 				}
 			}
 
-			progress(`${scenario}: releasing the held primary-model response to test steer draining`);
-			await server.releaseMain(scenario);
+			if (scenario === "SCENARIO_SLEEP") {
+				progress(`${scenario}: waiting for bash completion and automatic steer draining`);
+			} else {
+				progress(`${scenario}: releasing the held primary-model response to test steer draining`);
+				await server.releaseMain(scenario);
+			}
 			await rpc.waitSettled(eventStart);
+			if (scenario === "SCENARIO_SLEEP") {
+				assert(rpc.events.slice(eventStart).some((event) => event.type === "tool_execution_end" && event.toolCallId === "bash-sleep-probe-race"), "Sleeping bash call never completed");
+				progress(`${scenario}: bash completed and the very next provider request contained its output plus the queued probe`);
+			}
 			const expectedMainRequests = scenario === "SCENARIO_REJECT" ? 4 : 5;
 			assert(
 				server.mainCounts.get(scenario) === expectedMainRequests,
@@ -581,7 +652,7 @@ async function run() {
 		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PIPELINE_REFLECTION_PREFIX)), "Reflector output was not delivered to the contemplator");
 		assert(observations.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Probe/response feedback observation was not persisted");
 		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Persisted contemplator transcript did not receive the probe/response feedback observation through the reflector");
-		assert(bashResults.length === 12, `Expected twelve real bash tool rounds, got ${bashResults.length}`);
+		assert(bashResults.length === 16, `Expected sixteen real bash tool rounds, got ${bashResults.length}`);
 		for (const scenario of SCENARIOS) {
 			for (const round of ["round-one", "round-two", "round-three"]) {
 				assert(bashResults.some((entry) => JSON.stringify(entry.message.content).includes(`${round}:${scenario}`)), `Missing persisted ${round} bash result for ${scenario}`);
@@ -589,7 +660,11 @@ async function run() {
 		}
 		assert(server.maxConcurrentRequests >= 2, "Expected overlapping primary and background model requests");
 		assert(contemplatorMessages.length >= 6, "Expected persisted contemplator prompts and responses");
-		assert(deliveredProbes.length === 2, `Expected exactly two acknowledged probes, got ${deliveredProbes.length}`);
+		assert(deliveredProbes.length === 3, `Expected exactly three acknowledged probes, got ${deliveredProbes.length}`);
+		assert(server.memorySearchUsed, "Contemplator never completed search_memories against persisted memory");
+		assert(server.memoryRecallUsed && server.recallReturnedSource, "Contemplator never recalled exact source context from a search result");
+		assert(server.requests.some((request) => request.role === "contemplator" && JSON.stringify(request.body.messages ?? []).includes("search-probe-memory")), "Mock server never saw the contemplator's search_memories tool round");
+		assert(server.requests.some((request) => request.role === "contemplator" && JSON.stringify(request.body.messages ?? []).includes("recall-probe-memory")), "Mock server never saw the contemplator's recall tool round");
 		assert([...latestProbeState.values()].every(Boolean), "Every queued probe must finish acknowledged");
 		assert(reviewRequests.length === 2, `Expected exactly two review requests, got ${reviewRequests.length}`);
 		assert(reviewResultEntries.length === 2, `Expected exactly two review results, got ${reviewResultEntries.length}`);
@@ -609,7 +684,7 @@ async function run() {
 		child.kill("SIGTERM");
 		const result = await exited;
 		assert(result.code === 0 || result.code === 143 || result.signal === "SIGTERM", `Pi exited unexpectedly: ${JSON.stringify(result)}\n${rpc.stderr}`);
-		progress(`ALL TESTS PASSED: ${observations.length} observation batches, ${reflections.length} reflection batches, ${droppedObservations.length} drop batches, 12 bash rounds, ${deliveredProbes.length} delivered probes, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
+		progress(`ALL TESTS PASSED: ${observations.length} observation batches, ${reflections.length} reflection batches, ${droppedObservations.length} drop batches, 16 bash rounds including sleep race, ${deliveredProbes.length} delivered probes, search + recall, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
 	} catch (error) {
 		console.error("E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));
