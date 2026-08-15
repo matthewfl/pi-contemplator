@@ -134,7 +134,7 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 	});
 
 	it("does not requeue a live probe at turn_end before Pi inserts it", () => {
@@ -159,7 +159,7 @@ describe("Contemplator lifecycle", () => {
 		expect(visible.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			customType: "om.contemplator.suggestion",
 			display: true,
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 
 		const hidden = setup();
 		hidden.runtime.config = { ...hidden.runtime.config, showContemplatorMessages: false };
@@ -167,10 +167,10 @@ describe("Contemplator lifecycle", () => {
 		expect(hidden.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			customType: "om.contemplator.suggestion",
 			display: false,
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 	});
 
-	it("steers an active agent so the probe is inserted at the next model boundary", () => {
+	it("omits triggerTurn so Pi queues an active steer at the next model boundary", () => {
 		const harness = setup();
 		harness.fire("agent_start");
 
@@ -178,7 +178,7 @@ describe("Contemplator lifecycle", () => {
 
 		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			details: expect.objectContaining({ probeId: "probe-active" }),
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 		expect((harness.contemplator as any).queuedProbeIds.has("probe-active")).toBe(true);
 
 		harness.fire("message_end", {
@@ -214,7 +214,7 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 	});
 
 	it("does not mistake a persisted custom message for a live queue after tree navigation", () => {
@@ -239,7 +239,7 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
 			details: expect.objectContaining({ probeId: "probe-1", source: "restore" }),
-		}), { deliverAs: "steer", triggerTurn: false });
+		}), { deliverAs: "steer" });
 	});
 
 	it("resets branch-local tracking and pending work on tree navigation", () => {

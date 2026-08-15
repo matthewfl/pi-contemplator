@@ -670,20 +670,23 @@ export class Contemplator {
 		// designed for agents that run for hours; a probe must be injected after
 		// the current tool-call batch, before the very next model request. Never
 		// change this to nextTurn: that can postpone delivery until a user prompt.
-		// triggerTurn stays false so a probe never starts an extra agent turn.
+		// IMPORTANT: omit triggerTurn entirely. Pi 0.84+ interprets an explicit
+		// triggerTurn:false as "do not queue while streaming" and inserts directly
+		// into agent.state, outside the active run's context snapshot. Omitting it
+		// still does not start a turn while idle, but allows steer to work in-run.
 		if (this.agentActiveSince !== undefined) this.queuedProbeIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}`,
 			display: this.runtime.config.showContemplatorMessages,
 			details: { version: 1, question, source, probeId },
-		}, { deliverAs: "steer", triggerTurn: false });
+		}, { deliverAs: "steer" });
 		debugLog("contemplator.suggestion_queued", {
 			probeId,
 			suggestionLength: question.length,
 			delivery: "pi.sendMessage",
 			deliverAs: "steer",
-			triggerTurn: false,
+			triggerTurn: "omitted",
 			source,
 		});
 	}
@@ -751,7 +754,9 @@ export class Contemplator {
 				debugLog(result.outcome === "proposal" ? "reviewer.proposal_created" : "reviewer.no_proposal", { reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope });
 				if (result.outcome === "proposal") {
 					const notice = `BACKGROUND ${result.scope.toUpperCase()} REVIEW PROPOSAL [${result.id}]\n\n${result.summary}\n\nRecall memory [${result.id}] to read the full conceptual proposal when it is relevant.\n\nThis is advisory. Evaluate it against the actual environment and current work.`;
-					this.pi.sendMessage({ customType: REVIEW_PROPOSAL_MESSAGE, content: notice, display: this.runtime.config.showContemplatorMessages, details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope } }, { deliverAs: "steer", triggerTurn: false });
+					// As with probes, triggerTurn must be omitted or Pi 0.84+ bypasses
+					// the streaming steer queue and the active run never sees this message.
+					this.pi.sendMessage({ customType: REVIEW_PROPOSAL_MESSAGE, content: notice, display: this.runtime.config.showContemplatorMessages, details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope } }, { deliverAs: "steer" });
 					this.pi.appendEntry(OM_REVIEWER_NOTICE, { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope, content: notice });
 					this.markTipPersisted(ctx);
 					debugLog("reviewer.primary_notice_queued", { reviewRequestId: request.id, reviewMemoryId: result.id });
