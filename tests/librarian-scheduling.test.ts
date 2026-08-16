@@ -69,6 +69,79 @@ describe("librarian scheduling", () => {
 		expect(newMemoryIdsSinceLibrarianCoverage(entries)).toEqual(new Set());
 	});
 
+	it("uses the retained librarian commit when compaction removed its covered batch", () => {
+		const entries = [
+			{
+				type: "custom", id: "retained-old-batch", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-old", observations: [{ id: "aaaaaaaaaaaa" }] },
+			},
+			{
+				type: "custom", id: "commit", customType: OM_LIBRARIAN_COMMIT,
+				data: { version: 1, reflections: [], actions: [], coversUpToId: "folded-away-batch", summary: "Reviewed.", createdAt: 1 },
+			},
+			{
+				type: "custom", id: "new-batch", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-new", observations: [{ id: "bbbbbbbbbbbb" }] },
+			},
+		] as Entry[];
+
+		expect(newMemoryIdsSinceLibrarianCoverage(entries)).toEqual(new Set(["bbbbbbbbbbbb"]));
+	});
+
+	it("deduplicates retries of observations known only through a compaction archive", () => {
+		const archived = { id: "aaaaaaaaaaaa", content: "Archived memory.", timestamp: "2026-01-01 10:00", relevance: "medium", retention: "contextual", sourceEntryIds: ["raw-old"], tokenCount: 10 };
+		const entries = [
+			{
+				type: "compaction", id: "compaction", details: {
+					type: "om.folded", version: 1, fullFold: false,
+					observations: [archived], reflections: [],
+					archive: { observations: [archived], reflections: [], lifecycle: [] },
+				},
+			},
+			{
+				type: "custom", id: "covered-batch", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-covered", observations: [{ id: "bbbbbbbbbbbb" }] },
+			},
+			{
+				type: "custom", id: "commit", customType: OM_LIBRARIAN_COMMIT,
+				data: { version: 1, reflections: [], actions: [], coversUpToId: "covered-batch", summary: "Reviewed.", createdAt: 1 },
+			},
+			{
+				type: "custom", id: "retry-and-new", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-new", observations: [{ id: "aaaaaaaaaaaa" }, { id: "cccccccccccc" }] },
+			},
+		] as Entry[];
+
+		expect(newMemoryIdsSinceLibrarianCoverage(entries)).toEqual(new Set(["cccccccccccc"]));
+	});
+
+	it("does not let a post-coverage archive hide genuinely unreviewed memory", () => {
+		const unreviewed = { id: "cccccccccccc", content: "New after prior pass.", timestamp: "2026-01-03 10:00", relevance: "high", retention: "durable", sourceEntryIds: ["raw-new"], tokenCount: 10 };
+		const entries = [
+			{
+				type: "custom", id: "covered-batch", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-covered", observations: [{ id: "bbbbbbbbbbbb" }] },
+			},
+			{
+				type: "custom", id: "commit", customType: OM_LIBRARIAN_COMMIT,
+				data: { version: 1, reflections: [], actions: [], coversUpToId: "covered-batch", summary: "Reviewed.", createdAt: 1 },
+			},
+			{
+				type: "compaction", id: "later-compaction", details: {
+					type: "om.folded", version: 1, fullFold: false,
+					observations: [unreviewed], reflections: [],
+					archive: { observations: [unreviewed], reflections: [], lifecycle: [] },
+				},
+			},
+			{
+				type: "custom", id: "retry", customType: "om.observations.recorded",
+				data: { coversUpToId: "raw-newer", observations: [{ id: "cccccccccccc" }] },
+			},
+		] as Entry[];
+
+		expect(newMemoryIdsSinceLibrarianCoverage(entries)).toEqual(new Set(["cccccccccccc"]));
+	});
+
 	it("coalesces below-threshold observer work until maximum delay", () => {
 		const r = runtime();
 		r.markLibrarianDirty(2, 1_000, 1_000);

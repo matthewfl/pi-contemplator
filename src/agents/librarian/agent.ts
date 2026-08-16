@@ -10,6 +10,7 @@ import type { LlmUsageInput } from "../../runtime.js";
 import { truncateRecordContent } from "../../serialize.js";
 import {
 	foldLedger,
+	isMemoryDetails,
 	observationRetention,
 	OM_LIBRARIAN_COMMIT,
 	OM_OBSERVATIONS_RECORDED,
@@ -111,19 +112,36 @@ function latestObservationBatchEntryId(entries: Entry[]): string | undefined {
 
 function latestLibrarianCoverageIndex(entries: Entry[]): number {
 	const indexes = new Map(entries.map((entry, index) => [entry.id, index]));
-	let latest = -1;
-	for (const entry of entries) {
+	// The newest successful pass supersedes older checkpoints. Its explicit
+	// observation-batch boundary is preferred while that entry remains present.
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
 		if (entry.type !== "custom" || entry.customType !== OM_LIBRARIAN_COMMIT || !entry.data || typeof entry.data !== "object") continue;
 		const covered = (entry.data as { coversUpToId?: unknown }).coversUpToId;
 		if (typeof covered !== "string") continue;
-		latest = Math.max(latest, indexes.get(covered) ?? -1);
+		const coveredIndex = indexes.get(covered);
+		if (coveredIndex !== undefined) return coveredIndex;
+		// Pi compaction can fold the referenced batch out while retaining this
+		// commit. Falling back to the commit is less exact for observations appended
+		// concurrently with that historical run, but avoids treating every retained
+		// pre-commit batch as new forever after the boundary disappears.
+		return i;
 	}
-	return latest;
+	return -1;
 }
 
 export function newMemoryIdsSinceLibrarianCoverage(entries: Entry[]): Set<string> {
 	const after = latestLibrarianCoverageIndex(entries);
 	const previouslySeen = new Set<string>();
+	// Compaction archives at or before the coverage boundary are authoritative
+	// previously reviewed memory. Seed deduplication from them so an observer
+	// retry is not considered new merely because its original custom record was
+	// folded off the branch. Later archives may contain genuinely unreviewed work.
+	for (let i = 0; i <= after; i++) {
+		const entry = entries[i];
+		if (!entry || entry.type !== "compaction" || !isMemoryDetails(entry.details)) continue;
+		for (const observation of entry.details.archive?.observations ?? entry.details.observations) previouslySeen.add(observation.id);
+	}
 	const ids = new Set<string>();
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i];
