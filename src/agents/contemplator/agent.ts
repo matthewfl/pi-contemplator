@@ -211,7 +211,12 @@ export class Contemplator {
 
 	register(): void {
 		this.pi.registerMessageRenderer(CONTEMPLATOR_SUGGESTION, (message, _options, theme) => {
-			const content = customMessageText(message.content).replace(/^Background contemplator probe \(advisory\):\n?/, "");
+			const details = message.details as { question?: unknown } | undefined;
+			const content = typeof details?.question === "string"
+				? details.question
+				: customMessageText(message.content)
+					.replace(/^Background contemplator probe \(advisory\):\n?/, "")
+					.replace(/\n\nReferenced memories can be reviewed using the recall tool\.\s*$/, "");
 			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 			box.addChild(new Text(theme.fg("thinkingHigh", `${theme.bold("◆ CONTEMPLATOR PROBE")}\n${content}`), 0, 0));
 			return box;
@@ -274,14 +279,23 @@ export class Contemplator {
 			}
 			this.persistReviewerStates(ctx);
 		});
-		this.pi.on("message_end", (event: any) => {
+		this.pi.on("message_end", (event: any, ctx: ExtensionContext) => {
 			const message = event?.message;
+			// Long-running agents may spend many minutes generating and executing tools
+			// before turn_end. Checkpoint activity at each completed assistant response
+			// so active-time consumers (including librarian scheduling) can advance.
+			if (message?.role === "assistant") this.persistAgentActivity(ctx);
 			if (message?.role !== "custom" || message.customType !== CONTEMPLATOR_SUGGESTION) return;
 			if (typeof message.details?.probeId !== "string") return;
 			// message_end means Pi has drained the steer into the conversation
 			// stream. It is no longer protected by an in-memory queue, so a later
 			// tree restore must be allowed to requeue it until context acknowledges it.
 			this.queuedProbeIds.delete(message.details.probeId);
+		});
+		this.pi.on("tool_execution_end", (_event: unknown, ctx: ExtensionContext) => {
+			// This records one wall-clock interval regardless of how many tools were
+			// running concurrently; persistAgentActivity restarts the shared clock.
+			this.persistAgentActivity(ctx);
 		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const deliveredMessages = event.messages?.filter((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string") ?? [];
@@ -317,6 +331,9 @@ export class Contemplator {
 		const durationMs = Math.max(0, endedAt - startedAt);
 		if (durationMs === 0) return;
 		this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
+		// Notify only after appendEntry so active-time schedulers always observe the
+		// checkpoint, regardless of Pi's ordering between independent event handlers.
+		this.runtime.notifyAgentActivity(ctx);
 		debugLog("agent.activity_recorded", { durationMs });
 	}
 
@@ -716,7 +733,11 @@ export class Contemplator {
 		// triggerTurn:false as "do not queue while streaming" and inserts directly
 		// into agent.state, outside the active run's context snapshot. Omitting it
 		// still does not start a turn while idle, but allows steer to work in-run.
-		if (this.agentActiveSince !== undefined) this.queuedProbeIds.add(probeId);
+		// Whether Pi is currently running or idle, sendMessage owns this probe in an
+		// in-memory steer queue until message_end drains it. Track both cases so an
+		// unrelated observer update or compaction callback cannot restore and enqueue
+		// a duplicate while the original idle steer is still pending.
+		this.queuedProbeIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}\n\nReferenced memories can be reviewed using the recall tool.`,

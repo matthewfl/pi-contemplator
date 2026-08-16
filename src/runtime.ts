@@ -166,6 +166,7 @@ export class Runtime {
 	librarianPendingCount = 0;
 	librarianFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
+	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
@@ -289,6 +290,14 @@ export class Runtime {
 
 	notifyMemoryUpdate(ctx: MemoryUpdateCtx): void {
 		this.memoryUpdateListener?.(ctx);
+	}
+
+	setAgentActivityListener(listener: (ctx: MemoryUpdateCtx) => void): void {
+		this.agentActivityListener = listener;
+	}
+
+	notifyAgentActivity(ctx: MemoryUpdateCtx): void {
+		this.agentActivityListener?.(ctx);
 	}
 
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {

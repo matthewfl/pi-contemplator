@@ -7,7 +7,7 @@ vi.mock("../src/agents/librarian/agent.js", async (importOriginal) => {
 });
 
 import { newMemoryIdsSinceLibrarianCoverage } from "../src/agents/librarian/agent.js";
-import { librarianScheduleDelayMs, scheduleLibrarian } from "../src/hooks/consolidation-trigger.js";
+import { librarianDirtySinceAgentTime, librarianScheduleDelayMs, scheduleLibrarian } from "../src/hooks/consolidation-trigger.js";
 import { Runtime } from "../src/runtime.js";
 import { OM_LIBRARIAN_COMMIT, type Entry } from "../src/session-ledger/index.js";
 
@@ -140,6 +140,22 @@ describe("librarian scheduling", () => {
 		] as Entry[];
 
 		expect(newMemoryIdsSinceLibrarianCoverage(entries)).toEqual(new Set(["cccccccccccc"]));
+	});
+
+	it("reconstructs pending-memory age from durable agent time after reload", () => {
+		const entries = [
+			{ type: "custom", id: "activity-before", customType: "om.agent.activity", data: { version: 1, durationMs: 60_000 } },
+			...observationBranch(),
+			{ type: "custom", id: "activity-after-1", customType: "om.agent.activity", data: { version: 1, durationMs: 5 * 60_000 } },
+			{ type: "custom", id: "activity-after-2", customType: "om.agent.activity", data: { version: 1, durationMs: 4 * 60_000 } },
+		] as Entry[];
+		const newIds = new Set(["aaaaaaaaaaaa"]);
+
+		expect(librarianDirtySinceAgentTime(entries, newIds)).toBe(60_000);
+		const r = runtime();
+		r.config = { ...r.config, librarianMaxDelayMinutes: 8 };
+		r.markLibrarianDirty(1, 100, librarianDirtySinceAgentTime(entries, newIds));
+		expect(librarianScheduleDelayMs(r, 100, 10 * 60_000)).toBe(0);
 	});
 
 	it("coalesces below-threshold observer work until maximum delay", () => {

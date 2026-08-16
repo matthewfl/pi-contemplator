@@ -63,6 +63,7 @@ function setup(args: {
 		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
 		markLibrarianDirty: vi.fn(),
+		setAgentActivityListener: vi.fn(),
 		ensureConfig: vi.fn(),
 		getContextGeneration: vi.fn(() => contextGeneration),
 		advanceContextGeneration: vi.fn(() => {
@@ -110,12 +111,13 @@ function setup(args: {
 describe("V3 consolidation trigger", () => {
 	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
 
-	it("registers agent_start and turn_end consolidation entrypoints", () => {
+	it("registers per-turn consolidation and a durable activity listener", () => {
 		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { pi } = setup({ entries });
+		const { pi, runtime } = setup({ entries });
 
 		expect(pi.on).toHaveBeenCalledWith("agent_start", expect.any(Function));
 		expect(pi.on).toHaveBeenCalledWith("turn_end", expect.any(Function));
+		expect(runtime.setAgentActivityListener).toHaveBeenCalledWith(expect.any(Function));
 	});
 
 	it("does not launch below all thresholds from either entrypoint", () => {

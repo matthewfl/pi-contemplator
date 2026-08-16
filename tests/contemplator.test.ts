@@ -107,8 +107,12 @@ describe("Contemplator lifecycle", () => {
 			bg: vi.fn((_color: string, text: string) => text),
 			bold: vi.fn((text: string) => text),
 		};
-		probeRenderer?.({ content: "Background contemplator probe (advisory):\nQuestion?" }, { expanded: false }, theme);
-		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("◆ CONTEMPLATOR PROBE\nQuestion?"));
+		probeRenderer?.({
+			content: "Background contemplator probe (advisory):\nQuestion?\n\nReferenced memories can be reviewed using the recall tool.",
+			details: { question: "Question?" },
+		}, { expanded: false }, theme);
+		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", "◆ CONTEMPLATOR PROBE\nQuestion?");
+		expect(theme.fg).not.toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("Referenced memories"));
 	});
 
 	it("shows contemplator lifecycle notifications when worker notifications are enabled", async () => {
@@ -175,6 +179,20 @@ describe("Contemplator lifecycle", () => {
 
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+	});
+
+	it("does not duplicate an idle queued probe when a memory update restores the ledger", () => {
+		const harness = setup();
+		harness.fire("session_start", { reason: "startup" });
+		(harness.contemplator as any).queueProbe(harness.ctx, "Question?", "send_probe", "probe-idle");
+
+		// A background observer completion changes the branch tip and invokes the
+		// contemplator while Pi still owns the original idle steer.
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-idle")).toBe(true);
 	});
 
 	it("keeps visible and hidden probes on the steer delivery path", () => {
@@ -333,6 +351,38 @@ describe("Contemplator lifecycle", () => {
 			.map((entry) => (entry.data as { durationMs: number }).durationMs);
 		expect(durations).toEqual([5_000, 1_000, 2_000]);
 		expect(durations.reduce((sum, duration) => sum + duration, 0)).toBe(8_000);
+	});
+
+	it("checkpoints active time during assistant and tool progress without waiting for agent_end", () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const harness = setup();
+		harness.runtime.config = { ...harness.runtime.config, contemplatorEnabled: false };
+		const checkpointTotals: number[] = [];
+		harness.runtime.setAgentActivityListener(() => checkpointTotals.push(harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.reduce((sum, entry) => sum + (entry.data as { durationMs: number }).durationMs, 0)));
+
+		harness.fire("agent_start");
+		time = 6_000;
+		harness.fire("message_end", { message: { role: "assistant", content: [] } });
+		time = 9_000;
+		harness.fire("tool_execution_end", { toolCallId: "long-tool" });
+
+		const beforeAgentEnd = harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.map((entry) => (entry.data as { durationMs: number }).durationMs);
+		expect(beforeAgentEnd).toEqual([5_000, 3_000]);
+		expect(checkpointTotals).toEqual([5_000, 8_000]);
+
+		time = 10_000;
+		harness.fire("agent_end");
+		now.mockRestore();
+		expect(harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.map((entry) => (entry.data as { durationMs: number }).durationMs))
+			.toEqual([5_000, 3_000, 1_000]);
 	});
 
 	it("rechecks turn throttling before processing updates queued during a run", async () => {

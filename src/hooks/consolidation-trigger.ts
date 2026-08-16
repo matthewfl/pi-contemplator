@@ -87,6 +87,13 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 		launch(event, ctx);
 		syncAndScheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
 	});
+	runtime.setAgentActivityListener((ctx) => {
+		runtime.ensureConfig(ctx.cwd);
+		// Contemplator calls this only after the elapsed interval is durable, avoiding
+		// any dependence on ordering between Pi event handlers. Do not perform a full
+		// new-memory scan at every checkpoint; observer completion marks dirty work.
+		scheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+	});
 }
 
 function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sessionFile?: string } {
@@ -216,6 +223,18 @@ export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number,
 	return Math.max(0, Math.max(minimumAt, desiredAt) - agentTimeMs);
 }
 
+export function librarianDirtySinceAgentTime(entries: Entry[], newIds: ReadonlySet<string>): number {
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		if (entry.type !== "custom" || entry.customType !== OM_OBSERVATIONS_RECORDED || !entry.data || typeof entry.data !== "object") continue;
+		const observations = (entry.data as { observations?: Array<{ id?: unknown }> }).observations;
+		if (observations?.some((observation) => typeof observation.id === "string" && newIds.has(observation.id))) {
+			return agentActiveTimeMs(entries.slice(0, i + 1));
+		}
+	}
+	return agentActiveTimeMs(entries);
+}
+
 function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive || !runtime.config.librarianEnabled) return;
@@ -226,7 +245,10 @@ function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 			const folded = foldLedger(entries);
 			let tokens = 0;
 			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? folded.reflectionsById.get(id)?.tokenCount ?? 0;
-			runtime.markLibrarianDirty(newIds.size, tokens, agentActiveTimeMs(entries));
+			// Reconstruct the active-time age of pending work after reload/session
+			// restore. Starting the clock at restore time would postpone an already-old
+			// backlog by a full maximum delay on every extension launch.
+			runtime.markLibrarianDirty(newIds.size, tokens, librarianDirtySinceAgentTime(entries, newIds));
 		}
 	}
 	scheduleLibrarian(pi, runtime, ctx);
