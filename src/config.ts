@@ -66,7 +66,11 @@ export interface Config {
 	librarianMinIntervalMinutes: number;
 	librarianMaxDelayMinutes: number;
 	librarianMinNewMemoryTokens: number;
+	/** Pending new-memory tokens that bypass the minimum run interval. */
+	librarianMaxPendingMemoryTokens: number;
 	librarianPressureTriggerRatio: number;
+	/** Fraction of librarian context available to memory input before sampling. */
+	librarianSamplingThresholdRatio: number;
 	debugLog: boolean;
 }
 
@@ -89,10 +93,12 @@ export const DEFAULTS: Config = {
 	contemplatorMinNewReflections: 1,
 	contemplatorMinTurns: 10,
 	librarianEnabled: true,
-	librarianMinIntervalMinutes: 30,
+	librarianMinIntervalMinutes: 10,
 	librarianMaxDelayMinutes: 180,
 	librarianMinNewMemoryTokens: 5_000,
+	librarianMaxPendingMemoryTokens: 20_000,
 	librarianPressureTriggerRatio: 1,
+	librarianSamplingThresholdRatio: 0.5,
 	debugLog: false,
 };
 
@@ -228,6 +234,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"contemplatorMinNewReflections",
 		"contemplatorMinTurns",
 		"librarianMinNewMemoryTokens",
+		"librarianMaxPendingMemoryTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -250,6 +257,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
 	if (typeof value.librarianEnabled === "boolean") normalized.librarianEnabled = value.librarianEnabled;
 	if (typeof value.librarianPressureTriggerRatio === "number" && Number.isFinite(value.librarianPressureTriggerRatio) && value.librarianPressureTriggerRatio > 0) normalized.librarianPressureTriggerRatio = value.librarianPressureTriggerRatio;
+	const librarianSamplingRatio = validRatioOrUndefined(value.librarianSamplingThresholdRatio);
+	if (librarianSamplingRatio !== undefined) normalized.librarianSamplingThresholdRatio = librarianSamplingRatio;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;

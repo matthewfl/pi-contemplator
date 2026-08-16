@@ -9,7 +9,7 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "librarianEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
@@ -29,7 +29,7 @@ function hasOverride(settings: SessionSettings, key: string): boolean {
 	return  Object.hasOwn(settings, key);
 }
 
-function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio"): string {
+function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio" | "librarianSamplingThresholdRatio"): string {
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
@@ -124,11 +124,13 @@ async function chooseModel(ctx: ExtensionContext, current: ConfiguredModel | und
 }
 
 async function editNumber(ctx: ExtensionContext, runtime: Runtime, key: NumberSetting, title: string): Promise<number | undefined> {
-	const value = await ctx.ui.input(`${title} (current: ${scalarLabel(runtime, key)})`, "positive integer; blank cancels");
+	const permitsZero = key === "librarianMinIntervalMinutes" || key === "librarianMaxDelayMinutes";
+	const requirement = permitsZero ? "non-negative integer" : "positive integer";
+	const value = await ctx.ui.input(`${title} (current: ${scalarLabel(runtime, key)})`, `${requirement}; blank cancels`);
 	if (value === undefined || value.trim() === "") return undefined;
 	const parsed = Number(value.trim());
-	if (!Number.isInteger(parsed) || parsed <= 0) {
-		ctx.ui.notify("Value must be a positive integer.", "warning");
+	if (!Number.isInteger(parsed) || (permitsZero ? parsed < 0 : parsed <= 0)) {
+		ctx.ui.notify(`Value must be a ${requirement}.`, "warning");
 		return undefined;
 	}
 	return parsed;
@@ -197,10 +199,12 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
 				`Contemplator messages visible: ${scalarLabel(runtime, "showContemplatorMessages")}`,
 				`Librarian enabled: ${scalarLabel(runtime, "librarianEnabled")}`,
-				`Librarian minimum interval: ${scalarLabel(runtime, "librarianMinIntervalMinutes")}`,
-				`Librarian maximum delay: ${scalarLabel(runtime, "librarianMaxDelayMinutes")}`,
-				`Librarian new-memory trigger: ${scalarLabel(runtime, "librarianMinNewMemoryTokens")}`,
+				`Librarian minimum interval (minutes): ${scalarLabel(runtime, "librarianMinIntervalMinutes")}`,
+				`Librarian maximum delay (minutes): ${scalarLabel(runtime, "librarianMaxDelayMinutes")}`,
+				`Librarian new-memory trigger (tokens): ${scalarLabel(runtime, "librarianMinNewMemoryTokens")}`,
+				`Librarian urgent backlog trigger (tokens): ${scalarLabel(runtime, "librarianMaxPendingMemoryTokens")}`,
 				`Librarian pressure trigger: ${scalarLabel(runtime, "librarianPressureTriggerRatio")}`,
+				`Librarian sampling threshold: ${scalarLabel(runtime, "librarianSamplingThresholdRatio")}`,
 				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
@@ -247,6 +251,11 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				const ratio = value === undefined ? undefined : Number(value.trim());
 				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { librarianPressureTriggerRatio: ratio });
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
+			} else if (choice.startsWith("Librarian sampling threshold:")) {
+				const value = await ctx.ui.input(`Librarian sampling threshold ratio (current: ${scalarLabel(runtime, "librarianSamplingThresholdRatio")})`, "context fraction between 0 and 1, e.g. 0.5");
+				const ratio = value === undefined ? undefined : Number(value.trim());
+				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0 && ratio < 1) appendSettings(pi, runtime, { librarianSamplingThresholdRatio: ratio });
+				else if (value !== undefined) ctx.ui.notify("Ratio must be a number between 0 and 1.", "warning");
 			} else if (choice.startsWith("Compaction ratio:")) {
 				const value = await ctx.ui.input(`Compaction ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
@@ -263,9 +272,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Contemplation observation trigger:", "contemplatorMinNewObservations", "Contemplation observation trigger"],
 					["Contemplation reflection trigger:", "contemplatorMinNewReflections", "Contemplation reflection trigger"],
 					["Contemplation turn interval:", "contemplatorMinTurns", "Contemplation turn interval"],
-					["Librarian minimum interval:", "librarianMinIntervalMinutes", "Librarian minimum interval (minutes)"],
-					["Librarian maximum delay:", "librarianMaxDelayMinutes", "Librarian maximum delay (minutes)"],
-					["Librarian new-memory trigger:", "librarianMinNewMemoryTokens", "Librarian new-memory token trigger"],
+					["Librarian minimum interval (minutes):", "librarianMinIntervalMinutes", "Librarian minimum interval (minutes)"],
+					["Librarian maximum delay (minutes):", "librarianMaxDelayMinutes", "Librarian maximum delay (minutes)"],
+					["Librarian new-memory trigger (tokens):", "librarianMinNewMemoryTokens", "Librarian new-memory token trigger"],
+					["Librarian urgent backlog trigger (tokens):", "librarianMaxPendingMemoryTokens", "Librarian urgent backlog token trigger"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {

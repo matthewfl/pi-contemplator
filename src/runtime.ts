@@ -37,7 +37,7 @@ export type SessionSettings = Partial<Pick<Config,
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
 	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns"
-	| "librarianEnabled" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianPressureTriggerRatio"
+	| "librarianEnabled" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens" | "librarianPressureTriggerRatio" | "librarianSamplingThresholdRatio"
 	| "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
@@ -116,13 +116,17 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
 			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
-			"librarianMinIntervalMinutes", "librarianMaxDelayMinutes", "librarianMinNewMemoryTokens",
+			"librarianMinIntervalMinutes", "librarianMaxDelayMinutes", "librarianMinNewMemoryTokens", "librarianMaxPendingMemoryTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
 		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
+		for (const key of ["librarianMinIntervalMinutes", "librarianMaxDelayMinutes"] as const) {
+			if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] >= 0) restored[key] = data[key];
+		}
 		if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
 		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
 		if (typeof data.librarianPressureTriggerRatio === "number" && Number.isFinite(data.librarianPressureTriggerRatio) && data.librarianPressureTriggerRatio > 0) restored.librarianPressureTriggerRatio = data.librarianPressureTriggerRatio;
+		if (typeof data.librarianSamplingThresholdRatio === "number" && data.librarianSamplingThresholdRatio > 0 && data.librarianSamplingThresholdRatio < 1) restored.librarianSamplingThresholdRatio = data.librarianSamplingThresholdRatio;
 		if (data.model === null) restored.model = null;
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;

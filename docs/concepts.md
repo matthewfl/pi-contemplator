@@ -51,7 +51,7 @@ If the librarian does not call `done`, staged work is discarded and its dirty ba
 
 ## Sampling and pressure
 
-When all eligible librarian input fits within half of the librarian model's context window, the complete set is provided. Sampling begins only above that boundary. The sampling ratio adapts to the excess; recent/new memories are strongly favored, while every eligible item keeps nonzero probability. Fairness bookkeeping is runtime-only.
+When all eligible librarian input fits within the configured `librarianSamplingThresholdRatio` of the librarian model's context window (50% by default), the complete set is provided. Sampling begins only above that boundary. The sampling ratio adapts to the excess; recent/new memories are strongly favored, while every eligible item keeps nonzero probability. Fairness bookkeeping is runtime-only.
 
 The librarian sees active token usage, the configured target, and an advisory estimate of how much curation could return the pool toward target. This is guidance, not a hard quota.
 

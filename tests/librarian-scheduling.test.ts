@@ -29,6 +29,7 @@ function runtime(): Runtime {
 		librarianMinIntervalMinutes: 30,
 		librarianMaxDelayMinutes: 180,
 		librarianMinNewMemoryTokens: 5_000,
+		librarianMaxPendingMemoryTokens: 20_000,
 		librarianPressureTriggerRatio: 1,
 		observationsPoolTargetTokens: 10_000,
 		showWorkerNotifications: false,
@@ -76,11 +77,18 @@ describe("librarian scheduling", () => {
 		expect(librarianScheduleDelayMs(r, 2_000, 2_000)).toBe(0);
 	});
 
-	it("respects the minimum interval even under pressure", () => {
+	it("respects the minimum interval under normal token and pool pressure", () => {
 		const r = runtime();
 		r.librarianLastStartedAt = 1_000;
 		r.markLibrarianDirty(1, 10_000, 2_000);
 		expect(librarianScheduleDelayMs(r, 20_000, 2_000)).toBe(30 * 60_000 - 1_000);
+	});
+
+	it("bypasses the minimum interval at the urgent pending-token threshold", () => {
+		const r = runtime();
+		r.librarianLastStartedAt = 1_000;
+		r.markLibrarianDirty(20, 20_000, 2_000);
+		expect(librarianScheduleDelayMs(r, 2_000, 2_000)).toBe(0);
 	});
 
 	it("launches one pass, appends its atomic commit, and clears captured dirty work", async () => {

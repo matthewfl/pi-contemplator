@@ -15,10 +15,12 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "agentMaxTurns": 16,
 
     "librarianEnabled": true,
-    "librarianMinIntervalMinutes": 30,
+    "librarianMinIntervalMinutes": 10,
     "librarianMaxDelayMinutes": 180,
     "librarianMinNewMemoryTokens": 5000,
+    "librarianMaxPendingMemoryTokens": 20000,
     "librarianPressureTriggerRatio": 1,
+    "librarianSamplingThresholdRatio": 0.5,
 
     "contemplatorEnabled": true,
     "showContemplatorMessages": true,
@@ -49,10 +51,12 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and librarian runs. |
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and librarian. |
 | `librarianEnabled` | `true` | Enables stateless memory curation. |
-| `librarianMinIntervalMinutes` | `30` | Minimum time between librarian starts. Zero is valid. |
+| `librarianMinIntervalMinutes` | `10` | Normal minimum time between librarian starts. Zero is valid. |
 | `librarianMaxDelayMinutes` | `180` | Maximum coalescing delay after new memory. Zero is valid. |
-| `librarianMinNewMemoryTokens` | `5000` | Pending new-memory tokens that make a pass ready before max delay. |
+| `librarianMinNewMemoryTokens` | `5000` | Pending new-memory tokens that make a pass ready before max delay, while still respecting the normal minimum interval. |
+| `librarianMaxPendingMemoryTokens` | `20000` | Urgent pending-memory threshold. At or above this value, the librarian bypasses the minimum interval and starts as soon as its single-flight slot is available. |
 | `librarianPressureTriggerRatio` | `1` | Active-token ratio against `observationsPoolTargetTokens` that makes a pass ready. |
+| `librarianSamplingThresholdRatio` | `0.5` | Fraction of the librarian model context available to rendered memory input. Sampling starts only when eligible input exceeds this fraction and samples back down to this budget. |
 | `contemplatorEnabled` | `true` | Enables contemplator updates. |
 | `contemplatorModel` | current model | Optional model override for the contemplator. |
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
@@ -92,7 +96,9 @@ Responsive curation for a high-volume session:
     "librarianMinIntervalMinutes": 10,
     "librarianMaxDelayMinutes": 60,
     "librarianMinNewMemoryTokens": 2500,
-    "librarianPressureTriggerRatio": 0.9
+    "librarianMaxPendingMemoryTokens": 20000,
+    "librarianPressureTriggerRatio": 0.9,
+    "librarianSamplingThresholdRatio": 0.5
   }
 }
 ```

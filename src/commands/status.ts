@@ -96,10 +96,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			const librarianPendingCount = runtime.librarianPendingCount ?? 0;
 			const librarianPendingTokens = runtime.librarianPendingTokens ?? 0;
-			const librarianMinInterval = runtime.config.librarianMinIntervalMinutes ?? 30;
+			const librarianMinInterval = runtime.config.librarianMinIntervalMinutes ?? 10;
 			const librarianMaxDelay = runtime.config.librarianMaxDelayMinutes ?? 180;
 			const librarianNewTokenTrigger = runtime.config.librarianMinNewMemoryTokens ?? 5_000;
+			const librarianUrgentTokenTrigger = runtime.config.librarianMaxPendingMemoryTokens ?? 20_000;
 			const librarianPressureRatio = runtime.config.librarianPressureTriggerRatio ?? 1;
+			const librarianSamplingRatio = runtime.config.librarianSamplingThresholdRatio ?? 0.5;
 			const lines = [
 				...passiveLines,
 				"── Memory ──",
@@ -113,7 +115,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} visible tokens`,
-				`Librarian:               ${runtime.config.librarianEnabled === false ? "disabled" : "enabled"}; min ${librarianMinInterval}m / max ${librarianMaxDelay}m / new-token trigger ${librarianNewTokenTrigger.toLocaleString()} / pressure ${librarianPressureRatio}×`,
+				`Librarian:               ${runtime.config.librarianEnabled === false ? "disabled" : "enabled"}; min ${librarianMinInterval}m / max ${librarianMaxDelay}m / new-token trigger ${librarianNewTokenTrigger.toLocaleString()} / urgent ${librarianUrgentTokenTrigger.toLocaleString()} / pressure ${librarianPressureRatio}× / sample above ${Math.round(librarianSamplingRatio * 100)}% context`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,

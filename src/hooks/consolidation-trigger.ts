@@ -202,6 +202,10 @@ function activeMemoryTokens(entries: Entry[]): number {
 export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number, now = Date.now()): number | undefined {
 	if (!runtime.config.librarianEnabled || runtime.librarianDirtySince === undefined) return undefined;
 	const minute = 60_000;
+	// A very fast session can fill the active pool long before a wall-clock
+	// interval expires. The emergency pending-token threshold therefore bypasses
+	// the normal minimum interval and schedules the next available pass now.
+	if (runtime.librarianPendingTokens >= runtime.config.librarianMaxPendingMemoryTokens) return 0;
 	const minimumAt = (runtime.librarianLastStartedAt ?? Number.NEGATIVE_INFINITY) + runtime.config.librarianMinIntervalMinutes * minute;
 	const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.librarianPressureTriggerRatio;
 	const thresholdReady = runtime.librarianPendingTokens >= runtime.config.librarianMinNewMemoryTokens || activeTokens >= pressureThreshold;
@@ -268,6 +272,7 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 				headers: resolved.headers,
 				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
 				targetTokens: runtime.config.observationsPoolTargetTokens,
+				samplingThresholdRatio: runtime.config.librarianSamplingThresholdRatio,
 				fairness: runtime.librarianFairness,
 				maxTurns: runtime.config.agentMaxTurns,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",

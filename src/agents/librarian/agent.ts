@@ -42,6 +42,7 @@ export type RunLibrarianArgs = {
 	headers?: Record<string, string>;
 	getBranch: () => Entry[];
 	targetTokens: number;
+	samplingThresholdRatio?: number;
 	fairness?: Map<string, SamplingFairness>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
@@ -192,7 +193,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	const inactiveCohorts = buildInactiveCohorts(allMemories, recallIfById);
 	const contextWindow = typeof args.model.contextWindow === "number" && args.model.contextWindow > 0 ? args.model.contextWindow : 128_000;
 	const newMemoryIds = newMemoryIdsSinceLibrarianCoverage(snapshot);
-	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, contextWindow, newMemoryIds, fairness: args.fairness, random: args.random, now: args.now });
+	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, contextWindow, samplingThresholdRatio: args.samplingThresholdRatio, newMemoryIds, fairness: args.fairness, random: args.random, now: args.now });
 	const inspected = new Set(sample.activeMemories.map((item) => item.memory.id));
 	const memoryById = new Map<string, Observation | Reflection>([
 		...folded.observations.map((item) => [item.id, item] as const),
