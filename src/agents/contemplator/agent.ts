@@ -521,6 +521,7 @@ export class Contemplator {
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
 		let failed = false;
+		let workerNotified = false;
 		let promptPersisted = false;
 		let promptMessage: Message | undefined;
 		debugLog("contemplator.start", {
@@ -564,6 +565,10 @@ export class Contemplator {
 				modelId: selectedModel.id,
 				contextWindow: selectedModel.contextWindow,
 			});
+			if (this.runtime.config.showWorkerNotifications && ctx.hasUI) {
+				ctx.ui?.notify("Observational memory: contemplator running", "info");
+				workerNotified = true;
+			}
 			const reviewerEnabled = this.runtime.config.reviewerEnabled;
 			const updateSections: string[] = [];
 			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
@@ -687,6 +692,12 @@ export class Contemplator {
 				historyMessageCount: this.history.length,
 				pendingUpdate: this.pending !== undefined,
 			});
+			if (workerNotified && sessionGeneration === this.sessionGeneration) {
+				ctx.ui?.notify(
+					failed ? "Observational memory: contemplator failed" : "Observational memory: contemplator completed",
+					failed ? "warning" : "info",
+				);
+			}
 			if (!failed && sessionGeneration === this.sessionGeneration && this.pending) this.observeTurn(ctx);
 		}
 	}

@@ -18,7 +18,7 @@ import {
 const COPY_SUCCESS = "Copied /om:view output to clipboard.";
 const COPY_FAILURE = "Warning: failed to copy /om:view output to clipboard.";
 
-function setup(entries: TestEntry[], clipboardResult = true) {
+function setup(entries: TestEntry[], clipboardResult = true, runtimeOverrides: Record<string, unknown> = {}) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -26,7 +26,7 @@ function setup(entries: TestEntry[], clipboardResult = true) {
 			handler = command.handler;
 		}),
 	};
-	const runtime = { ensureConfig: vi.fn() };
+	const runtime = { ensureConfig: vi.fn(), ...runtimeOverrides };
 	const copyToClipboard = vi.fn(async () => clipboardResult);
 	registerViewCommand(pi as any, runtime as any, { copyToClipboard });
 	if (!handler) throw new Error("view handler not registered");
@@ -124,6 +124,32 @@ describe("V3 /om:view", () => {
 		expect(clipboardText).toContain("CONTEMPLATOR · 1 messages");
 		expect(clipboardText).toContain("Probe-worthy context");
 		expect(output).toContain("Copied /om:view contemplator output to clipboard.");
+	});
+
+	it("renders the latest launch-local librarian transcript", async () => {
+		const { clipboardText, output } = await setup([], true, {
+			lastLibrarianRun: {
+				startedAt: Date.parse("2026-08-16T12:00:00.000Z"),
+				status: "completed",
+				messages: [
+					{ role: "user", content: [{ type: "text", text: "Curate these memories." }] },
+					{ role: "assistant", content: [{ type: "toolCall", name: "done", arguments: { summary: "Kept durable facts." } }] },
+					{ role: "toolResult", content: [{ type: "text", text: "Librarian plan committed." }] },
+				],
+				summary: "Kept durable facts.",
+			},
+		}).run(["librarian"]);
+
+		expect(clipboardText).toContain("LIBRARIAN · completed · 3 messages");
+		expect(clipboardText).toContain("Curate these memories.");
+		expect(clipboardText).toContain("[tool call: done");
+		expect(clipboardText).toContain("Completion summary");
+		expect(output).toContain("Copied /om:view librarian output to clipboard.");
+	});
+
+	it("explains when the librarian has not run during this launch", async () => {
+		const { clipboardText } = await setup([]).run(["librarian"]);
+		expect(clipboardText).toContain("Librarian has not run yet during this launch.");
 	});
 
 	it("shows the latest delivery state once per contemplator probe", async () => {
@@ -241,6 +267,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [visible|full|memory <id>|contemplator|reviewer|reviews]");
+		expect(output).toBe("Usage: /om:view [visible|full|memory <id>|contemplator|librarian|reviewer|reviews]");
 	});
 });

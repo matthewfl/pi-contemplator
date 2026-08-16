@@ -263,6 +263,8 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 			}
 			if (generation !== runtime.getContextGeneration()) return;
 			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: librarian running", "info");
+			const startedAt = Date.now();
+			runtime.lastLibrarianRun = { startedAt, status: "running", messages: [] };
 			const result = await runLibrarian({
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
@@ -274,14 +276,32 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 				maxTurns: runtime.config.agentMaxTurns,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
+				onMessages: (messages) => {
+					if (generation === runtime.getContextGeneration()) {
+						runtime.lastLibrarianRun = { startedAt, status: "running", messages: messages.slice() };
+					}
+				},
 			});
 			if (generation !== runtime.getContextGeneration()) return;
-			if (!result.completed || !result.commit) return;
+			if (!result.completed || !result.commit) {
+				runtime.lastLibrarianRun = { ...runtime.lastLibrarianRun!, status: "incomplete" };
+				return;
+			}
 			pi.appendEntry(OM_LIBRARIAN_COMMIT, result.commit);
 			completed = true;
+			runtime.lastLibrarianRun = { ...runtime.lastLibrarianRun!, status: "completed", summary: result.commit.summary };
 			debugLog("librarian.appended", { reflections: result.commit.reflections.length, actions: result.commit.actions.length, sampled: result.sample?.sampled ?? false });
 			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: librarian completed — ${result.commit.reflections.length} reflection${result.commit.reflections.length === 1 ? "" : "s"}, ${result.commit.actions.length} lifecycle action${result.commit.actions.length === 1 ? "" : "s"}`, "info");
 			runtime.notifyMemoryUpdate(ctx);
+		} catch (error) {
+			if (generation === runtime.getContextGeneration() && runtime.lastLibrarianRun) {
+				runtime.lastLibrarianRun = {
+					...runtime.lastLibrarianRun,
+					status: "failed",
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+			throw error;
 		} finally {
 			if (!completed && generation === runtime.getContextGeneration()) {
 				const currentEntries = ctx.sessionManager.getBranch() as Entry[];

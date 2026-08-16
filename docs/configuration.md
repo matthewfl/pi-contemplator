@@ -121,7 +121,7 @@ Agent model overrides use:
 - `/om:settings librarian on|off` toggles librarian runs.
 - `/om:settings messages on|off` controls visibility, not delivery, of contemplator cards.
 - `/om:status` reports active/inactive/deleted counts, active memory tokens, librarian backlog/timing, and worker state.
-- `/om:view`, `/om:view full`, `/om:view contemplator`, and `/om:view reviewer` inspect memory and private transcripts.
+- `/om:view`, `/om:view full`, `/om:view contemplator`, `/om:view librarian`, and `/om:view reviewer` inspect memory and private transcripts. The librarian view is launch-local because librarian transcripts are not persisted to the ledger.
 
 ## Environment
 

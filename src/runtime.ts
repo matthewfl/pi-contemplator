@@ -65,6 +65,14 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 	sessionManager: { getBranch(): readonly unknown[] };
 }
 
+export interface LibrarianRunView {
+	startedAt: number;
+	status: "running" | "completed" | "incomplete" | "failed";
+	messages: readonly unknown[];
+	summary?: string;
+	error?: string;
+}
+
 export interface LlmUsageTotals {
 	input: number;
 	output: number;
@@ -172,6 +180,8 @@ export class Runtime {
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastLibrarianError: string | undefined;
+	/** Most recent librarian transcript in this extension launch/session context. */
+	lastLibrarianRun: LibrarianRunView | undefined;
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
 	/** Accumulate usage from one background LLM call. */
@@ -241,6 +251,7 @@ export class Runtime {
 		this.librarianPendingTokens = 0;
 		this.librarianPendingCount = 0;
 		this.librarianFairness.clear();
+		this.lastLibrarianRun = undefined;
 	}
 
 	getContextGeneration(): number {

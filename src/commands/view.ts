@@ -3,6 +3,7 @@ import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import { renderContemplator, stripAnsi } from "./contemplator-view.js";
 import { renderReviewer } from "./reviewer-view.js";
+import { renderLibrarian } from "./librarian-view.js";
 import { executeRecall, formatRecallResultForTui } from "../tools/recall-observation.js";
 import {
 	fullProjection,
@@ -74,7 +75,7 @@ export function registerViewCommand(
 
 	pi.registerCommand("om:view", {
 		description:
-			"Print and copy observational memory content (visible, full, memory, contemplator, reviewer, or reviews)",
+			"Print and copy observational memory content (visible, full, memory, contemplator, librarian, reviewer, or reviews)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -114,6 +115,16 @@ export function registerViewCommand(
 				return;
 			}
 
+			if (mode === "librarian") {
+				const output = renderLibrarian(runtime.lastLibrarianRun);
+				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
+				ctx.ui.notify(
+					`${output}\n\n${copied ? "Copied /om:view librarian output to clipboard." : "Warning: failed to copy /om:view librarian output to clipboard."}`,
+					"info",
+				);
+				return;
+			}
+
 			if (mode === "reviewer") {
 				const output = renderReviewer(entries);
 				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
@@ -142,7 +153,7 @@ export function registerViewCommand(
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [visible|full|memory <id>|contemplator|reviewer|reviews]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full|memory <id>|contemplator|librarian|reviewer|reviews]", "info");
 				return;
 			}
 

@@ -111,6 +111,30 @@ describe("Contemplator lifecycle", () => {
 		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("◆ CONTEMPLATOR PROBE\nQuestion?"));
 	});
 
+	it("shows contemplator lifecycle notifications when worker notifications are enabled", async () => {
+		const raw = textCustomMessage("raw-notify", "work to remember");
+		const memory = observationsRecordedEntry("obs-notify", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-notify"] })],
+			coversUpToId: "raw-notify",
+		});
+		const harness = setup([]);
+		const notify = vi.fn();
+		harness.ctx.hasUI = true;
+		(harness.ctx as any).ui = { notify };
+		harness.runtime.config = { ...harness.runtime.config, showWorkerNotifications: true };
+
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("Observational memory: contemplator completed", "info"));
+		expect(notify).toHaveBeenCalledWith("Observational memory: contemplator running", "info");
+		expect(notify.mock.calls.map(([message]) => message)).toEqual([
+			"Observational memory: contemplator running",
+			"Observational memory: contemplator completed",
+		]);
+	});
+
 	it("requeues an unconfirmed probe on fresh startup even when its custom message was persisted", () => {
 		const entries = [
 			{

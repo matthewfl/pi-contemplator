@@ -71,13 +71,21 @@ describe("librarian agent", () => {
 	it("completes an explicit no-action pass and emits pressure guidance", async () => {
 		let prompt = "";
 		let configSeen: any;
+		const transcriptSnapshots: Array<readonly unknown[]> = [];
 		const loop = fakeAgentLoop(async (_invocation, prompts, context, config) => {
 			prompt = prompts[0].content[0].text;
 			configSeen = config;
 			await tool(context, "done").execute("done-1", { summary: "No safe changes." });
 		});
-		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+		const result = await runLibrarian({
+			...base,
+			getBranch: () => entries(),
+			agentLoop: loop,
+			onMessages: (messages) => transcriptSnapshots.push(messages),
+		});
 		expect(result.completed).toBe(true);
+		expect(transcriptSnapshots.length).toBeGreaterThanOrEqual(2);
+		expect(transcriptSnapshots[0]?.[0]).toMatchObject({ role: "user" });
 		expect(result.commit).toMatchObject({ coversUpToId: "obs-entry", reflections: [], actions: [], summary: "No safe changes." });
 		expect(prompt).toContain("complete eligible set; sampling not used");
 		expect(prompt).toContain("MEMORY PRESSURE ADVISORY");

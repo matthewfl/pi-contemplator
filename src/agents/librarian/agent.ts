@@ -49,6 +49,8 @@ export type RunLibrarianArgs = {
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
 	recordUsage?: (usage: LlmUsageInput) => void;
+	/** Launch-local transcript snapshots for diagnostics such as /om:view librarian. */
+	onMessages?: (messages: readonly AgentMessage[]) => void;
 	random?: () => number;
 	now?: number;
 };
@@ -425,10 +427,12 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		};
 		history.push(prompt as AgentMessage);
+		args.onMessages?.(history.slice());
 		const stream = loop([prompt], context, config, args.signal, streamSimple);
 		for await (const event of stream) logAgentStreamError("librarian", event);
 		const messages = await stream.result();
 		history.push(...messages);
+		args.onMessages?.(history.slice());
 		if (args.recordUsage) for (const message of messages) if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
 	};
 
