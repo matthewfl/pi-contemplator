@@ -196,7 +196,7 @@ describe("V3 consolidation trigger", () => {
 			thinkingLevel: "minimal",
 		}));
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
-		expect(runtime.markLibrarianDirty).toHaveBeenCalledWith(1, 4);
+		expect(runtime.markLibrarianDirty).toHaveBeenCalledWith(1, 4, 0);
 	});
 
 	it("uses existing observation coverage and retries larger ranges after no-output", async () => {

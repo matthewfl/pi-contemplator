@@ -115,7 +115,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} visible tokens`,
-				`Librarian:               ${runtime.config.librarianEnabled === false ? "disabled" : "enabled"}; min ${librarianMinInterval}m / max ${librarianMaxDelay}m / new-token trigger ${librarianNewTokenTrigger.toLocaleString()} / urgent ${librarianUrgentTokenTrigger.toLocaleString()} / pressure ${librarianPressureRatio}× / sample above ${Math.round(librarianSamplingRatio * 100)}% context`,
+				`Librarian:               ${runtime.config.librarianEnabled === false ? "disabled" : "enabled"}; min ${librarianMinInterval} active-m / max ${librarianMaxDelay} active-m / new-token trigger ${librarianNewTokenTrigger.toLocaleString()} / urgent ${librarianUrgentTokenTrigger.toLocaleString()} / pressure ${librarianPressureRatio}× / sample above ${Math.round(librarianSamplingRatio * 100)}% context`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,

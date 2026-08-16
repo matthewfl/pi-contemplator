@@ -150,11 +150,12 @@ export class Runtime {
 	reviewPromise: Promise<void> | null = null;
 	librarianInFlight = false;
 	librarianPromise: Promise<void> | null = null;
+	/** Cumulative main-agent active time when the current backlog first became dirty. */
 	librarianDirtySince: number | undefined;
+	/** Cumulative main-agent active time when the previous librarian pass started. */
 	librarianLastStartedAt: number | undefined;
 	librarianPendingTokens = 0;
 	librarianPendingCount = 0;
-	librarianTimer: ReturnType<typeof setTimeout> | undefined;
 	librarianFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private contextGeneration = 0;
@@ -235,9 +236,8 @@ export class Runtime {
 		this.compactionResumeGeneration += 1;
 		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
 		this.compactionResumeTimer = undefined;
-		if (this.librarianTimer !== undefined) clearTimeout(this.librarianTimer);
-		this.librarianTimer = undefined;
 		this.librarianDirtySince = undefined;
+		this.librarianLastStartedAt = undefined;
 		this.librarianPendingTokens = 0;
 		this.librarianPendingCount = 0;
 		this.librarianFairness.clear();
@@ -293,8 +293,8 @@ export class Runtime {
 		return promise;
 	}
 
-	markLibrarianDirty(memoryCount: number, memoryTokens: number, now = Date.now()): void {
-		if (this.librarianDirtySince === undefined) this.librarianDirtySince = now;
+	markLibrarianDirty(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
+		if (this.librarianDirtySince === undefined) this.librarianDirtySince = agentActiveTimeMs;
 		this.librarianPendingCount += Math.max(0, memoryCount);
 		this.librarianPendingTokens += Math.max(0, memoryTokens);
 	}
@@ -305,10 +305,10 @@ export class Runtime {
 		this.librarianPendingTokens = 0;
 	}
 
-	launchLibrarianTask(ctx: LaunchCtx, work: () => Promise<void>, now = Date.now()): Promise<void> | undefined {
+	launchLibrarianTask(ctx: LaunchCtx, work: () => Promise<void>, agentActiveTimeMs: number): Promise<void> | undefined {
 		if (this.librarianInFlight) return undefined;
 		this.librarianInFlight = true;
-		this.librarianLastStartedAt = now;
+		this.librarianLastStartedAt = agentActiveTimeMs;
 		this.lastLibrarianError = undefined;
 		const promise = this.launchTrackedTask(ctx, "librarian", work, (error) => {
 			this.librarianInFlight = false;

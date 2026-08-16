@@ -8,6 +8,7 @@ import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_LIBRARIAN_COMMIT,
 	OM_OBSERVATIONS_RECORDED,
+	agentActiveTimeMs,
 	buildObservationsRecordedData,
 	foldLedger,
 	fullProjection,
@@ -188,7 +189,8 @@ export async function runConsolidationPipeline(
 	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
 	const added = afterFold.observations.filter((item) => !beforeIds.has(item.id));
 	if (added.length > 0 && typeof (runtime as Runtime & { markLibrarianDirty?: unknown }).markLibrarianDirty === "function") {
-		runtime.markLibrarianDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0));
+		const entries = ctx.sessionManager.getBranch() as Entry[];
+		runtime.markLibrarianDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0), agentActiveTimeMs(entries));
 		scheduleLibrarian(pi, runtime, ctx);
 	}
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
@@ -199,19 +201,19 @@ function activeMemoryTokens(entries: Entry[]): number {
 	return [...folded.activeObservations, ...folded.activeReflections].reduce((sum, item) => sum + item.tokenCount, 0);
 }
 
-export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number, now = Date.now()): number | undefined {
+export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number, agentTimeMs: number): number | undefined {
 	if (!runtime.config.librarianEnabled || runtime.librarianDirtySince === undefined) return undefined;
 	const minute = 60_000;
-	// A very fast session can fill the active pool long before a wall-clock
+	// A very fast session can fill the active pool before the normal active-time
 	// interval expires. The emergency pending-token threshold therefore bypasses
-	// the normal minimum interval and schedules the next available pass now.
+	// the minimum interval and makes the next scheduling checkpoint ready now.
 	if (runtime.librarianPendingTokens >= runtime.config.librarianMaxPendingMemoryTokens) return 0;
 	const minimumAt = (runtime.librarianLastStartedAt ?? Number.NEGATIVE_INFINITY) + runtime.config.librarianMinIntervalMinutes * minute;
 	const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.librarianPressureTriggerRatio;
 	const thresholdReady = runtime.librarianPendingTokens >= runtime.config.librarianMinNewMemoryTokens || activeTokens >= pressureThreshold;
 	const maximumAt = runtime.librarianDirtySince + runtime.config.librarianMaxDelayMinutes * minute;
-	const desiredAt = thresholdReady ? now : maximumAt;
-	return Math.max(0, Math.max(minimumAt, desiredAt) - now);
+	const desiredAt = thresholdReady ? agentTimeMs : maximumAt;
+	return Math.max(0, Math.max(minimumAt, desiredAt) - agentTimeMs);
 }
 
 function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
@@ -224,28 +226,23 @@ function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 			const folded = foldLedger(entries);
 			let tokens = 0;
 			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? folded.reflectionsById.get(id)?.tokenCount ?? 0;
-			runtime.markLibrarianDirty(newIds.size, tokens);
+			runtime.markLibrarianDirty(newIds.size, tokens, agentActiveTimeMs(entries));
 		}
 	}
 	scheduleLibrarian(pi, runtime, ctx);
 }
 
-export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, now = Date.now()): void {
+export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, agentTimeOverride?: number): void {
 	if (runtime.config.passive || !runtime.config.librarianEnabled || runtime.librarianInFlight || runtime.librarianDirtySince === undefined) return;
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const delay = librarianScheduleDelayMs(runtime, activeMemoryTokens(entries), now);
-	if (delay === undefined) return;
-	if (runtime.librarianTimer !== undefined) clearTimeout(runtime.librarianTimer);
+	const agentTime = agentTimeOverride ?? agentActiveTimeMs(entries);
+	const remainingActiveTime = librarianScheduleDelayMs(runtime, activeMemoryTokens(entries), agentTime);
+	if (remainingActiveTime === undefined || remainingActiveTime > 0) return;
+	// Deliberately do not use a wall-clock timer here. Scheduling is revisited at
+	// main-agent activity checkpoints, so time spent waiting for the user cannot
+	// make a normal librarian pass eligible. The urgent token trigger above still
+	// launches immediately when observer output creates a dangerous backlog.
 	const generation = runtime.getContextGeneration();
-	if (delay > 0) {
-		runtime.librarianTimer = setTimeout(() => {
-			runtime.librarianTimer = undefined;
-			if (generation !== runtime.getContextGeneration()) return;
-			scheduleLibrarian(pi, runtime, ctx);
-		}, delay);
-		return;
-	}
-
 	const capturedCount = runtime.librarianPendingCount;
 	const capturedTokens = runtime.librarianPendingTokens;
 	runtime.clearLibrarianDirty();
@@ -286,12 +283,15 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: librarian completed — ${result.commit.reflections.length} reflection${result.commit.reflections.length === 1 ? "" : "s"}, ${result.commit.actions.length} lifecycle action${result.commit.actions.length === 1 ? "" : "s"}`, "info");
 			runtime.notifyMemoryUpdate(ctx);
 		} finally {
-			if (!completed && generation === runtime.getContextGeneration()) runtime.markLibrarianDirty(capturedCount, capturedTokens);
+			if (!completed && generation === runtime.getContextGeneration()) {
+				const currentEntries = ctx.sessionManager.getBranch() as Entry[];
+				runtime.markLibrarianDirty(capturedCount, capturedTokens, agentActiveTimeMs(currentEntries));
+			}
 			setTimeout(() => {
 				if (generation === runtime.getContextGeneration()) scheduleLibrarian(pi, runtime, ctx);
 			}, 0);
 		}
-	}));
+	}), agentTime);
 }
 
 async function runObserverStage(

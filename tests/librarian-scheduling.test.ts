@@ -77,7 +77,33 @@ describe("librarian scheduling", () => {
 		expect(librarianScheduleDelayMs(r, 2_000, 2_000)).toBe(0);
 	});
 
-	it("respects the minimum interval under normal token and pool pressure", () => {
+	it("does not advance a below-threshold maximum delay while the agent is idle", async () => {
+		vi.useFakeTimers();
+		try {
+			const r = runtime();
+			const entries = observationBranch();
+			const pi = { appendEntry: vi.fn() };
+			mocks.runLibrarian.mockResolvedValue({
+				completed: true,
+				commit: { version: 1, reflections: [], actions: [], coversUpToId: "obs-entry", summary: "No changes.", createdAt: 1 },
+				sample: { sampled: false },
+			});
+			r.markLibrarianDirty(1, 1_000, 0);
+			scheduleLibrarian(pi as any, r, context(entries) as any, 0);
+
+			await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+			expect(mocks.runLibrarian).not.toHaveBeenCalled();
+			expect(r.librarianDirtySince).toBe(0);
+
+			scheduleLibrarian(pi as any, r, context(entries) as any, 180 * 60_000);
+			await r.librarianPromise;
+			expect(mocks.runLibrarian).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("respects the minimum active-agent interval under normal token and pool pressure", () => {
 		const r = runtime();
 		r.librarianLastStartedAt = 1_000;
 		r.markLibrarianDirty(1, 10_000, 2_000);

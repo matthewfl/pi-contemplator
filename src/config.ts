@@ -63,7 +63,9 @@ export interface Config {
 	contemplatorMinTurns: number;
 	/** Delayed stateless memory curator replacing reflector/dropper workers. */
 	librarianEnabled: boolean;
+	/** Minimum cumulative main-agent active minutes between normal passes. */
 	librarianMinIntervalMinutes: number;
+	/** Maximum cumulative main-agent active minutes before pending work is due. */
 	librarianMaxDelayMinutes: number;
 	librarianMinNewMemoryTokens: number;
 	/** Pending new-memory tokens that bypass the minimum run interval. */
