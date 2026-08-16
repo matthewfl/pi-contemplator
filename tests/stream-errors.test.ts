@@ -60,7 +60,7 @@ describe("agent stream error logging", () => {
 
 	it("logs aborted runs and uses the caller's stage name", () => {
 		withDebugLogContext({ enabled: true, sessionId: "session-stream-2" }, () => {
-			logAgentStreamError("reflector", {
+			logAgentStreamError("librarian", {
 				type: "message_end",
 				message: { role: "assistant", content: [], stopReason: "aborted" } as any,
 			});
@@ -68,7 +68,7 @@ describe("agent stream error logging", () => {
 
 		const events = readLoggedEvents("session-stream-2");
 		expect(events).toHaveLength(1);
-		expect(events[0].event).toBe("reflector.stream_error");
+		expect(events[0].event).toBe("librarian.stream_error");
 		expect(events[0].data).toMatchObject({ stopReason: "aborted" });
 	});
 

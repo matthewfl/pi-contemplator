@@ -38,8 +38,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		compactInFlight: false,
 		compactHookInFlight: false,
 		lastObserverError: undefined,
-		lastReflectorError: undefined,
-		lastDropperError: undefined,
+		lastLibrarianError: undefined,
 		agentUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 },
 		...args.runtime,
 	};
@@ -134,30 +133,28 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Active memory pool:      ~25 / 20 target tokens (125%)");
 	});
 
-	it("shows passive mode, consolidation in flight, compaction in flight, and stage-specific last errors", async () => {
+	it("shows passive mode, observer consolidation, compaction, and current worker errors", async () => {
 		const output = await setup({
 			entries: [],
 			runtime: {
 				config: { observeAfterTokens: 10, reflectAfterTokens: 20, compactAfterTokens: 30, observationsPoolMaxTokens: 40, observationsPoolTargetTokens: 20, passive: true },
 				consolidationInFlight: true,
-				consolidationPhase: "reflector",
+				consolidationPhase: "observer",
 				compactInFlight: true,
 				compactHookInFlight: true,
 				lastObserverError: "observer failed",
-				lastReflectorError: "reflect failed",
-				lastDropperError: "drop failed",
+				lastLibrarianError: "librarian failed",
 			},
 		}).run();
 
 		expect(output).toContain("Passive: automatic memory workers and auto-compaction disabled");
-		expect(output).toContain("Consolidation: running (reflector)");
-		expect(output).not.toContain("Observer: running");
-		expect(output).not.toContain("Reflect/drop: running");
+		expect(output).toContain("Consolidation: running (observer)");
 		expect(output).toContain("Auto-compaction: running");
 		expect(output).toContain("Compaction hook: running");
 		expect(output).toContain("Observer: observer failed");
-		expect(output).toContain("Reflector: reflect failed");
-		expect(output).toContain("Dropper (legacy): drop failed");
+		expect(output).toContain("Librarian: librarian failed");
+		expect(output).not.toContain("Reflector:");
+		expect(output).not.toContain("Dropper:");
 	});
 
 	it("shows consolidation in flight without phase when phase is unavailable", async () => {

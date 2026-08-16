@@ -48,7 +48,7 @@ describe("debug logging", () => {
 			sessionFile: "/tmp/session.jsonl",
 			runId: "run-1",
 		}, () => {
-			debugLog("dropper.result", { reason: "no_tool_call" });
+			debugLog("librarian.result", { reason: "no_tool_call" });
 		});
 
 		const logPath = join(agentDir, "observational-memory", "debug", "session-123.ndjson");
@@ -56,7 +56,7 @@ describe("debug logging", () => {
 		expect(existsSync(join(agentDir, DEBUG_LOG_RELATIVE_PATH))).toBe(false);
 		expect(readJsonLines(logPath)).toMatchObject([
 			{
-				event: "dropper.result",
+				event: "librarian.result",
 				cwd: "/tmp/project",
 				sessionId: "session-123",
 				sessionFile: "/tmp/session.jsonl",
@@ -100,7 +100,7 @@ describe("debug logging", () => {
 	});
 
 	it("does not write logs when disabled", () => {
-		withDebugLogContext({ enabled: false, sessionId: "session-123" }, () => debugLog("dropper.result"));
+		withDebugLogContext({ enabled: false, sessionId: "session-123" }, () => debugLog("librarian.result"));
 
 		expect(existsSync(join(agentDir, "observational-memory"))).toBe(false);
 	});

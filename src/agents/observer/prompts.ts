@@ -58,7 +58,7 @@ Use precise action verbs. Replace vague verbs with ones that clarify the nature 
 Frame state changes as supersession so the old state is explicit.
   BAD:  User prefers React Query now.
   GOOD: User will use React Query (switching from SWR).
-Why this matters: without supersession framing, the reflector may crystallize both the old and the new as equally valid preferences.
+Why this matters: without supersession framing, the librarian may preserve both the old and the new as equally valid preferences.
 
 Mark concrete completions explicitly.
 Use "completed:", "resolved:", "confirmed working", or similar phrasing so future runs know not to redo the work.

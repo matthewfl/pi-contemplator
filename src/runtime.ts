@@ -6,7 +6,7 @@ export type ResolveResult =
 
 type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
-export type ConsolidationPhase = "observer" | "reflector" | "dropper" | "librarian";
+export type ConsolidationPhase = "observer";
 
 export const OM_SETTINGS = "om.settings";
 
@@ -170,12 +170,10 @@ export class Runtime {
 	compactionResumeTimer: ReturnType<typeof setTimeout> | undefined;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
-	lastReflectorError: string | undefined;
-	lastDropperError: string | undefined;
 	lastLibrarianError: string | undefined;
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
-	/** Accumulate usage from one background LLM call (contemplator flush/summary or observer/reflector/dropper run). */
+	/** Accumulate usage from one background LLM call. */
 	recordAgentUsage(usage: LlmUsageInput): void {
 		const totals = this.agentUsage;
 		totals.input += usage.input ?? 0;
@@ -286,8 +284,6 @@ export class Runtime {
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
 		this.lastObserverError = undefined;
-		this.lastReflectorError = undefined;
-		this.lastDropperError = undefined;
 		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
@@ -338,10 +334,7 @@ export class Runtime {
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {
 		const message = error instanceof Error ? error.message : String(error);
-		if (phase === "observer") this.lastObserverError = message;
-		if (phase === "reflector") this.lastReflectorError = message;
-		if (phase === "dropper") this.lastDropperError = message;
-		if (phase === "librarian") this.lastLibrarianError = message;
+		this.lastObserverError = message;
 		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
 		return message;
 	}

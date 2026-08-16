@@ -443,9 +443,8 @@ export function buildReflectionsRecordedData(
 	coversUpToId: string,
 ): ReflectionsRecordedEntryData | undefined {
 	if (!isNonEmptyString(coversUpToId)) return undefined;
-	// An empty list is a durable successful-pass checkpoint. Without it, a
-	// reflector that correctly finds nothing new retries the same raw range on
-	// every trigger and the over-target dropper never gets a maintenance pass.
+	// Legacy reflector entries may contain an empty successful-pass checkpoint.
+	// Keep accepting that shape so existing session ledgers remain readable.
 	return { reflections, coversUpToId };
 }
 

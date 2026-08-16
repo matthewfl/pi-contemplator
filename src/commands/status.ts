@@ -183,11 +183,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}
 
-			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastDropperError || runtime.lastLibrarianError) {
+			if (runtime.lastObserverError || runtime.lastLibrarianError) {
 				lines.push("", "── Last error ──");
 				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
-				if (runtime.lastReflectorError) lines.push(`Reflector: ${runtime.lastReflectorError}`);
-				if (runtime.lastDropperError) lines.push(`Dropper (legacy): ${runtime.lastDropperError}`);
 				if (runtime.lastLibrarianError) lines.push(`Librarian: ${runtime.lastLibrarianError}`);
 			}
 
