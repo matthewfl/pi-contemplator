@@ -27,7 +27,7 @@ async function runCase({ marker, visible }) {
 			state.observer++;
 			if (hasTool) return sendSse(res, { text: "observed" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: `obs-${state.observer}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 00:00", content: `${marker} durable delivery evidence`, relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: `obs-${state.observer}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 00:00", content: `${marker} durable delivery evidence`, relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			state.contemplator++;

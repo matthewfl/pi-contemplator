@@ -41,6 +41,7 @@ export function toolNames(body) {
 export function classify(body) {
 	const tools = toolNames(body);
 	if (tools.has("record_observations")) return "observer";
+	if (tools.has("record_reflection") && tools.has("make_inactive") && tools.has("done")) return "librarian";
 	if (tools.has("record_reflections")) return "reflector";
 	if (tools.has("drop_observations")) return "dropper";
 	if (tools.has("send_probe")) return "contemplator";
@@ -176,7 +177,7 @@ export function omSettings(overrides = {}) {
 		agentMaxTurns: 8, model: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorEnabled: true, contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorMinNewObservations: 1, contemplatorMinNewReflections: 1, contemplatorMinTurns: 1,
-		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true,
+		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true, librarianEnabled: false,
 		reviewerModel: { provider: "e2e", id: "mock-model", thinking: "off" }, compactionObserverEnabled: false,
 		debugLog: true, ...overrides,
 	} };

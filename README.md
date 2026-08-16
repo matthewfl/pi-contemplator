@@ -2,7 +2,7 @@
 
 `pi-contemplator` is a [Pi](https://pi.dev/) plugin for long-running, largely unsupervised agentic sessions. It does two things:
 
-1. **Keeps memory alive across compaction.** A background **observer**, **reflector**, and **dropper** distill the conversation into a durable, branch-local memory ledger. When Pi compacts the context window, the summary is rendered deterministically from that ledger — fast, model-free, and lossless enough that important facts survive.
+1. **Keeps memory alive across compaction.** A background **observer** and **librarian** distill and curate the conversation into a durable, branch-local memory ledger. When Pi compacts the context window, the summary is rendered deterministically from that ledger — fast, model-free, and lossless enough that important facts survive.
 2. **Gives the primary agent a second set of eyes.** A background **contemplator** reads the accumulated memories and watches for reasoning that is going wrong. When it finds a genuine problem, it can inject a focused, memory-cited question. For deeper, recurring structural issues, it can commission a short-lived **reviewer** that produces a durable, advisory design proposal.
 
 The result: a long session is less likely to drift off course, get stuck in an unproductive loop, or silently compound a wrong conclusion — and when it does, it can often catch itself before the mistake poisons the rest of the work.
@@ -14,7 +14,7 @@ The result: a long session is less likely to drift off course, get stuck in an u
 > **Significant token usage:** The plugin runs multiple background agents and will significantly increase model-token consumption and associated API costs, especially during long sessions.
 
 > [!NOTE]
-> This project is a fork of the excellent [pi-observational-memory](https://github.com/elpapi42/pi-observational-memory) plugin by [@elpapi42](https://github.com/elpapi42). It retains that project's observer, reflector, dropper, memory, and compaction foundations while adding contemplation and structural review capabilities.
+> This project is a fork of the excellent [pi-observational-memory](https://github.com/elpapi42/pi-observational-memory) plugin by [@elpapi42](https://github.com/elpapi42). It builds on that project's observational-memory and compaction foundations, replacing separate reflection/pruning workers with a conservative librarian while adding contemplation and structural review capabilities.
 
 ## Why use it?
 
@@ -127,8 +127,8 @@ Proposals are deliberately conceptual — the reviewer cannot write code, specif
 
 The memory system is built to be trustworthy:
 
-- **Every memory has provenance.** Observations cite the exact source entries that support them; reflections cite the observations they're based on. Everything gets a deterministic 12-character id computed in code, not guessed by a model.
-- **Nothing important is silently lost.** The `recall` tool recovers the exact source evidence behind any memory id. The `search_memories` tool finds candidate memories by topic. Even observations the dropper later prunes remain recallable from ledger history.
+- **Every memory has provenance.** Observations cite the exact source entries that support them; librarian reflections retain backpointers to all source memories. Everything gets a deterministic 12-character id computed in code, not guessed by a model.
+- **Nothing important is silently lost.** The `recall` tool recovers exact source evidence and provenance behind any memory id. The `search_memories` tool finds candidate memories by topic. Inactive and logically deleted memories remain searchable and recallable; deleted results include the recorded reason.
 - **Compaction is deterministic and model-free.** The summary the agent sees is folded from the ledger by code, not rewritten by a model. That makes compaction fast and cheap, and it means the same session state always produces the same summary.
 
 ## Why you can trust it in the background
@@ -144,17 +144,16 @@ Running extra agents in the background can be worrying — what if they take ove
 
 ## Background agents
 
-`pi-contemplator` uses five specialized background agents, all enabled by default:
+`pi-contemplator` uses four specialized background agents, all enabled by default:
 
 | Agent | What it does | When it runs |
 |---|---|---|
-| **Observer** | Extracts concrete, timestamped observations from the primary session, citing source entries. | In the background after turns, once enough new source text accumulates. |
-| **Reflector** | Distills durable conclusions (user intent, decisions, constraints) from observations, citing supporting observations. | Periodically, after the observer is up to date. |
-| **Dropper** | Prunes observations that are obsolete, redundant, or safely represented elsewhere, moving the active memory pool toward its target. | After a successful reflector pass, when the memory pool is over target. |
+| **Observer** | Extracts concrete, timestamped observations from the primary session, citing source entries and assigning a simple retention class. | In the background after turns, once enough new source text accumulates. |
+| **Librarian** | Conservatively combines related memories into provenance-linked reflections, makes currently irrelevant cohorts inactive, reactivates them when evidence changes, and logically deletes obsolete detail with a recorded reason. | On a coalesced schedule after new memories arrive, sooner under memory pressure. |
 | **Contemplator** | Watches accumulated memories for reasoning gaps, contradictions, overlooked alternatives, and recurring structural concerns; can send a focused probe or request a review. | Asynchronously after enough new memories accumulate. |
 | **Reviewer** | Performs a deep, scoped (workflow or software) structural investigation and records a durable proposal or a no-proposal conclusion. | Only when the contemplator commissions a review, and only one at a time. |
 
-The observer, reflector, and dropper provide the durable memory substrate. The contemplator reasons over that substrate, while the reviewer is launched only when a concern warrants a deeper structural investigation.
+The observer and librarian provide the durable memory substrate. The contemplator reasons over that substrate, while the reviewer is launched only when a concern warrants a deeper structural investigation.
 
 ## Installation
 
@@ -181,7 +180,7 @@ Useful commands:
 - `/om:view full` — inspect the full memory ledger, including everything not yet folded into a compaction.
 - `/om:view contemplator` — inspect the contemplator's private transcript and probes.
 - `/om:view reviewer` — inspect structural reviewer transcripts and outcomes.
-- `/om:settings` — inspect or change session-level settings (including `messages on|off`, `reviewer on|off`, `compaction on|off`).
+- `/om:settings` — inspect or change session-level settings (including `messages on|off`, `librarian on|off`, `reviewer on|off`, `compaction on|off`).
 
 Model selection, trigger thresholds, passive mode (which stops all background work), compaction behavior, and other tuning are documented in [docs/configuration.md](docs/configuration.md). See [docs/how-it-works.md](docs/how-it-works.md) for the memory lifecycle and [docs/concepts.md](docs/concepts.md) for the mental model.
 
@@ -197,7 +196,7 @@ npm run typecheck
 
 `npm test` runs both the unit and RPC end-to-end suites. Use `test:unit` or `test:e2e` to run either suite independently.
 
-`test:e2e` starts a local OpenAI-compatible model server and launches isolated real Pi CLI processes in RPC mode while mocking only the external model-server boundary. The suites cover observer, reflector, dropper, contemplator, reviewer, primary-agent, memory-tool, and compaction flows. They exercise slow and parallel tools, probe races and feedback, hidden/idle delivery, cumulative activity time, process restore, reviewer transcript resume and budget exhaustion, accepted/rejected reviews, manual/failed compaction continuations and non-restarting proactive compaction, compaction observer sidecars, malformed memory records, huge-source bounding, id collisions, role-specific model routing, feature flags, session-tree forks, and concurrent session isolation.
+`test:e2e` starts a local OpenAI-compatible model server and launches isolated real Pi CLI processes in RPC mode while mocking only the external model-server boundary. The suites cover observer, librarian, contemplator, reviewer, primary-agent, memory-tool, and compaction flows. They exercise slow and parallel tools, probe races and feedback, hidden/idle delivery, cumulative activity time, process restore, reviewer transcript resume and budget exhaustion, accepted/rejected reviews, manual/failed compaction continuations and non-restarting proactive compaction, compaction observer sidecars, malformed memory records, huge-source bounding, id collisions, role-specific model routing, feature flags, session-tree forks, and concurrent session isolation.
 
 ## License
 

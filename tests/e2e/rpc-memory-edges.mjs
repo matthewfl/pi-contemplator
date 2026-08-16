@@ -15,7 +15,7 @@ const server = new ModelServer(async (request, res) => {
 			if (state.invalidAttempted && /invalid|unknown|source|not found|rejected/i.test(result)) {
 				const sourceId = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
 				assert(sourceId, "Observer retry lacked its original valid source id");
-				return sendSse(res, { tool: { id: "valid-retry", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: COLLISION_CONTENT, relevance: "high", sourceEntryIds: [sourceId] }] } } });
+				return sendSse(res, { tool: { id: "valid-retry", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: COLLISION_CONTENT, relevance: "high", retention: "contextual", sourceEntryIds: [sourceId] }] } } });
 			}
 			return sendSse(res, { text: "observer batch complete" });
 		}
@@ -26,26 +26,34 @@ const server = new ModelServer(async (request, res) => {
 		assert(sourceId, "Observer prompt lacked a source id");
 		if (!state.invalidAttempted) {
 			state.invalidAttempted = true;
-			return sendSse(res, { tool: { id: "invalid-source-first", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: "MUST_NOT_PERSIST_INVALID", relevance: "high", sourceEntryIds: ["definitely-missing-entry"] }] } } });
+			return sendSse(res, { tool: { id: "invalid-source-first", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: "MUST_NOT_PERSIST_INVALID", relevance: "high", retention: "contextual", sourceEntryIds: ["definitely-missing-entry"] }] } } });
 		}
-		return sendSse(res, { tool: { id: `valid-${state.observerInitials}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: COLLISION_CONTENT, relevance: "high", sourceEntryIds: [sourceId] }] } } });
+		return sendSse(res, { tool: { id: `valid-${state.observerInitials}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 03:00", content: COLLISION_CONTENT, relevance: "high", retention: "contextual", sourceEntryIds: [sourceId] }] } } });
 	}
 	assert(request.role === "main", `Unexpected role in memory-edge scenario: ${request.role}`);
 	state.main++;
-	const toolText = (request.body.messages ?? []).filter((message) => message.role === "tool").map((message) => JSON.stringify(message)).join("\n");
-	if (state.main === 1) return sendSse(res, { tool: { id: "huge-output", name: "bash", arguments: { command: `node -e "process.stdout.write('${MARKER}\\n' + 'x'.repeat(30000))"` } }, outputTokens: 200 });
-	if (state.main === 2) return sendSse(res, { text: "HUGE_SOURCE_COMPLETE", outputTokens: 100 });
-	if (state.main === 3) return sendSse(res, { tool: { id: "second-source", name: "bash", arguments: { command: "echo second-collision-source" } }, outputTokens: 100 });
-	if (state.main === 4) return sendSse(res, { text: "SECOND_SOURCE_COMPLETE", outputTokens: 100 });
-	if (state.main === 5) return sendSse(res, { tool: { id: "search-collision", name: "search_memories", arguments: { query: COLLISION_CONTENT, limit: 10 } } });
-	if (state.main === 6) {
-		const id = toolText.match(/\[([a-f0-9]{12})\]/)?.[1];
-		assert(id, `Collision search returned no id: ${toolText}`);
-		return sendSse(res, { tool: { id: "recall-collision", name: "recall", arguments: { id } } });
+	const messages = request.body.messages ?? [];
+	const latestUserIndex = messages.findLastIndex((message) => message.role === "user");
+	const mainToolMessages = messages.slice(latestUserIndex + 1).filter((message) => message.role === "tool");
+	const toolText = mainToolMessages.map((message) => JSON.stringify(message)).join("\n");
+	if (request.text.includes("Use search_memories and recall")) {
+		if (mainToolMessages.length === 0) return sendSse(res, { tool: { id: "search-collision", name: "search_memories", arguments: { query: COLLISION_CONTENT, limit: 10 } } });
+		if (mainToolMessages.length === 1) {
+			const id = toolText.match(/\[([a-f0-9]{12})\]/)?.[1];
+			assert(id, `Collision search returned no id: ${toolText}`);
+			return sendSse(res, { tool: { id: "recall-collision", name: "recall", arguments: { id } } });
+		}
+		state.recallCollision = /matched multiple observations|"collision":true/.test(toolText) && toolText.includes(MARKER);
+		if (!state.recallCollision) console.error("Recall tool transcript:", toolText);
+		assert(state.recallCollision, `Recall did not safely return all colliding observation sources: ${toolText}`);
+		return sendSse(res, { text: "MEMORY_EDGE_COMPLETE" });
 	}
-	state.recallCollision = /matched multiple observations|"collision":true/.test(toolText) && toolText.includes(MARKER);
-	assert(state.recallCollision, "Recall did not safely return all colliding observation sources");
-	return sendSse(res, { text: "MEMORY_EDGE_COMPLETE" });
+	if (request.text.includes("Create an independent second source")) {
+		if (mainToolMessages.length === 0) return sendSse(res, { tool: { id: "second-source", name: "bash", arguments: { command: "echo second-collision-source" } }, outputTokens: 100 });
+		return sendSse(res, { text: "SECOND_SOURCE_COMPLETE", outputTokens: 100 });
+	}
+	if (mainToolMessages.length === 0) return sendSse(res, { tool: { id: "huge-output", name: "bash", arguments: { command: `node -e "process.stdout.write('${MARKER}\\n' + 'x'.repeat(30000))"` } }, outputTokens: 200 });
+	return sendSse(res, { text: "HUGE_SOURCE_COMPLETE", outputTokens: 100 });
 });
 
 console.log("RPC memory-edge E2E: huge-source chunking, malformed source rejection/retry, deterministic id collisions, search, and recall");
@@ -77,6 +85,11 @@ try {
 	log("PASS invalid ids were rejected, huge input was bounded, and colliding memories remained searchable/recallable");
 } catch (error) {
 	console.error(`State: ${JSON.stringify(state)}; requests: ${server.requests.map((request) => request.role).join(",")}`);
+	console.error("Main request flow:", server.requests.filter((request) => request.role === "main").map((request) => {
+		const messages = request.body.messages ?? [];
+		const user = [...messages].reverse().find((message) => message.role === "user");
+		return { user: JSON.stringify(user).slice(0, 100), tools: messages.filter((message) => message.role === "tool").length };
+	}));
 	if (pi) console.error(`Recorded observations: ${JSON.stringify((await pi.rpc.entries()).filter((entry) => entry.customType === "om.observations.recorded").map((entry) => entry.data))}`);
 	throw error;
 } finally {

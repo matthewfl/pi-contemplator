@@ -53,6 +53,11 @@ describe("V3 config", () => {
 			contemplatorMinNewObservations: 8,
 			contemplatorMinNewReflections: 1,
 			contemplatorMinTurns: 10,
+			librarianEnabled: true,
+			librarianMinIntervalMinutes: 30,
+			librarianMaxDelayMinutes: 180,
+			librarianMinNewMemoryTokens: 5000,
+			librarianPressureTriggerRatio: 1,
 			debugLog: false,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
@@ -178,6 +183,20 @@ describe("V3 config", () => {
 		});
 
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("allows zero-minute librarian delays for immediate scheduling", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				librarianMinIntervalMinutes: 0,
+				librarianMaxDelayMinutes: 0,
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			librarianMinIntervalMinutes: 0,
+			librarianMaxDelayMinutes: 0,
+		});
 	});
 
 	it("parses passive and compaction observer env overrides", () => {

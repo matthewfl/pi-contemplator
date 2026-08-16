@@ -1,31 +1,22 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runDropper } from "../agents/dropper/agent.js";
-import { observationPoolMetrics } from "../agents/dropper/pool.js";
+import { newMemoryIdsSinceLibrarianCoverage, runLibrarian } from "../agents/librarian/agent.js";
 import { runObserver } from "../agents/observer/agent.js";
-import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
-	OM_OBSERVATIONS_DROPPED,
+	OM_LIBRARIAN_COMMIT,
 	OM_OBSERVATIONS_RECORDED,
-	OM_REFLECTIONS_RECORDED,
-	buildObservationsDroppedData,
 	buildObservationsRecordedData,
-	buildReflectionsRecordedData,
-	earlierCoverageMarkerId,
 	foldLedger,
 	fullProjection,
 	isSourceEntry,
 	latestCoverageIndex,
-	latestCoverageMarkerId,
 	observationToSummaryLine,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
 	type Entry,
-	type Reflection,
 } from "../session-ledger/index.js";
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
@@ -45,14 +36,6 @@ export type ConsolidationCtx = {
 
 type StageOutcome = "continue" | "abort";
 
-type ReflectorStageResult = {
-	outcome: StageOutcome;
-	/** True after the model successfully reviewed the due observation range, even if it found nothing new. */
-	passCompleted: boolean;
-	sameRunReflections: Reflection[];
-	effectiveReflectionCoverageId?: string;
-};
-
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
 }
@@ -61,27 +44,15 @@ function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void 
 	pi.appendEntry(customType, data);
 }
 
-function mergeReflections(existing: Reflection[], additional: Reflection[]): Reflection[] {
-	const seen = new Set(existing.map((reflection) => reflection.id));
-	const merged = [...existing];
-	for (const reflection of additional) {
-		if (seen.has(reflection.id)) continue;
-		seen.add(reflection.id);
-		merged.push(reflection);
-	}
-	return merged;
-}
-
 function anyStageDue(entries: Entry[], runtime: Runtime): boolean {
-	return rawTokensSinceObservationCoverage(entries) >= runtime.config.observeAfterTokens
-		|| rawTokensSinceReflectionCoverage(entries) >= runtime.config.reflectAfterTokens;
+	return rawTokensSinceObservationCoverage(entries) >= runtime.config.observeAfterTokens;
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
 	return runtime.config.showWorkerNotifications && ctx.hasUI;
 }
 
-function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer" | "reflector" | "dropper") => Promise<ResolvedModel | undefined> {
+function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer") => Promise<ResolvedModel | undefined> {
 	let cached: ResolveResult | undefined;
 	return async (stage) => {
 		cached ??= await runtime.resolveModel({
@@ -107,8 +78,14 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	const launch = (_event: unknown, ctx: ConsolidationCtx) => {
 		maybeLaunchConsolidation(pi, runtime, ctx);
 	};
-	pi.on("agent_start", launch);
-	pi.on("turn_end", launch);
+	pi.on("agent_start", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+	});
+	pi.on("turn_end", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+	});
 }
 
 function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sessionFile?: string } {
@@ -194,6 +171,7 @@ export async function runConsolidationPipeline(
 	const resolveModel = makeModelResolver(runtime, ctx);
 	const contextGeneration = runtime.getContextGeneration();
 
+	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
 	try {
 		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
@@ -206,29 +184,109 @@ export async function runConsolidationPipeline(
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
 	}
-	if (options.observerOnly === true) {
-		runtime.notifyMemoryUpdate?.(ctx);
-		return;
-	}
-
-	runtime.consolidationPhase = "reflector";
-	let reflectorResult: ReflectorStageResult;
-	try {
-		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel, contextGeneration);
-		if (reflectorResult.outcome === "abort") return;
-	} catch (error) {
-		debugLog("reflector.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error) });
-		return;
-	}
-
-	runtime.consolidationPhase = "dropper";
-	try {
-		const dropperOutcome = await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.passCompleted, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, contextGeneration);
-		if (dropperOutcome === "abort") return;
-	} catch (error) {
-		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
+	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
+	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
+	const added = afterFold.observations.filter((item) => !beforeIds.has(item.id));
+	if (added.length > 0 && typeof (runtime as Runtime & { markLibrarianDirty?: unknown }).markLibrarianDirty === "function") {
+		runtime.markLibrarianDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0));
+		scheduleLibrarian(pi, runtime, ctx);
 	}
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
+}
+
+function activeMemoryTokens(entries: Entry[]): number {
+	const folded = foldLedger(entries);
+	return [...folded.activeObservations, ...folded.activeReflections].reduce((sum, item) => sum + item.tokenCount, 0);
+}
+
+export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number, now = Date.now()): number | undefined {
+	if (!runtime.config.librarianEnabled || runtime.librarianDirtySince === undefined) return undefined;
+	const minute = 60_000;
+	const minimumAt = (runtime.librarianLastStartedAt ?? Number.NEGATIVE_INFINITY) + runtime.config.librarianMinIntervalMinutes * minute;
+	const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.librarianPressureTriggerRatio;
+	const thresholdReady = runtime.librarianPendingTokens >= runtime.config.librarianMinNewMemoryTokens || activeTokens >= pressureThreshold;
+	const maximumAt = runtime.librarianDirtySince + runtime.config.librarianMaxDelayMinutes * minute;
+	const desiredAt = thresholdReady ? now : maximumAt;
+	return Math.max(0, Math.max(minimumAt, desiredAt) - now);
+}
+
+function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+	runtime.ensureConfig(ctx.cwd);
+	if (runtime.config.passive || !runtime.config.librarianEnabled) return;
+	if (runtime.librarianDirtySince === undefined) {
+		const entries = ctx.sessionManager.getBranch() as Entry[];
+		const newIds = newMemoryIdsSinceLibrarianCoverage(entries);
+		if (newIds.size > 0) {
+			const folded = foldLedger(entries);
+			let tokens = 0;
+			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? folded.reflectionsById.get(id)?.tokenCount ?? 0;
+			runtime.markLibrarianDirty(newIds.size, tokens);
+		}
+	}
+	scheduleLibrarian(pi, runtime, ctx);
+}
+
+export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, now = Date.now()): void {
+	if (runtime.config.passive || !runtime.config.librarianEnabled || runtime.librarianInFlight || runtime.librarianDirtySince === undefined) return;
+	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const delay = librarianScheduleDelayMs(runtime, activeMemoryTokens(entries), now);
+	if (delay === undefined) return;
+	if (runtime.librarianTimer !== undefined) clearTimeout(runtime.librarianTimer);
+	const generation = runtime.getContextGeneration();
+	if (delay > 0) {
+		runtime.librarianTimer = setTimeout(() => {
+			runtime.librarianTimer = undefined;
+			if (generation !== runtime.getContextGeneration()) return;
+			scheduleLibrarian(pi, runtime, ctx);
+		}, delay);
+		return;
+	}
+
+	const capturedCount = runtime.librarianPendingCount;
+	const capturedTokens = runtime.librarianPendingTokens;
+	runtime.clearLibrarianDirty();
+	const runId = `librarian-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+	const sessionMetadata = debugSessionMetadata(ctx);
+	void runtime.launchLibrarianTask(ctx, async () => withDebugLogContext({
+		enabled: runtime.config.debugLog === true,
+		cwd: ctx.cwd,
+		...sessionMetadata,
+		runId,
+	}, async () => {
+		let completed = false;
+		try {
+			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
+			if (!resolved.ok) {
+				debugLog("librarian.model_unavailable", { reason: resolved.reason });
+				return;
+			}
+			if (generation !== runtime.getContextGeneration()) return;
+			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: librarian running", "info");
+			const result = await runLibrarian({
+				model: resolved.model as any,
+				apiKey: resolved.apiKey,
+				headers: resolved.headers,
+				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
+				targetTokens: runtime.config.observationsPoolTargetTokens,
+				fairness: runtime.librarianFairness,
+				maxTurns: runtime.config.agentMaxTurns,
+				thinkingLevel: runtime.config.model?.thinking ?? "low",
+				recordUsage: (usage) => runtime.recordAgentUsage(usage),
+			});
+			if (generation !== runtime.getContextGeneration()) return;
+			if (!result.completed || !result.commit) return;
+			pi.appendEntry(OM_LIBRARIAN_COMMIT, result.commit);
+			completed = true;
+			debugLog("librarian.appended", { reflections: result.commit.reflections.length, actions: result.commit.actions.length, sampled: result.sample?.sampled ?? false });
+			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: librarian completed — ${result.commit.reflections.length} reflection${result.commit.reflections.length === 1 ? "" : "s"}, ${result.commit.actions.length} lifecycle action${result.commit.actions.length === 1 ? "" : "s"}`, "info");
+			runtime.notifyMemoryUpdate(ctx);
+		} finally {
+			if (!completed && generation === runtime.getContextGeneration()) runtime.markLibrarianDirty(capturedCount, capturedTokens);
+			setTimeout(() => {
+				if (generation === runtime.getContextGeneration()) scheduleLibrarian(pi, runtime, ctx);
+			}, 0);
+		}
+	}));
 }
 
 async function runObserverStage(
@@ -351,144 +409,5 @@ async function runObserverStage(
 		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
 		"info",
 	);
-	return "continue";
-}
-
-async function runReflectorStage(
-	pi: ExtensionAPI,
-	runtime: Runtime,
-	ctx: ConsolidationCtx,
-	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
-	contextGeneration: number,
-): Promise<ReflectorStageResult> {
-	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const reflectionTokens = rawTokensSinceReflectionCoverage(entries);
-	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
-
-	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
-
-	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
-		"info",
-	);
-	const resolved = await resolveModel("reflector");
-	if (!resolved) return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
-	}
-
-	const folded = foldLedger(entries);
-	const reflections = await runReflector({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		reflections: folded.reflections,
-		observations: folded.activeObservations,
-		maxTurns: runtime.config.agentMaxTurns,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		recordUsage: (usage) => runtime.recordAgentUsage(usage),
-	});
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", passCompleted: false, sameRunReflections: [] };
-	}
-
-	// Persist successful empty passes too. This advances the reflection clock and
-	// lets over-target observation maintenance run without inventing a reflection.
-	const sameRunReflections = reflections ?? [];
-	const data = buildReflectionsRecordedData(sameRunReflections, observationCoverageId);
-	if (!data) return { outcome: "continue", passCompleted: false, sameRunReflections: [] };
-	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
-	return {
-		outcome: "continue",
-		passCompleted: true,
-		sameRunReflections,
-		effectiveReflectionCoverageId: data.coversUpToId,
-	};
-}
-
-async function runDropperStage(
-	pi: ExtensionAPI,
-	runtime: Runtime,
-	ctx: ConsolidationCtx,
-	resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
-	reflectorPassCompleted: boolean,
-	sameRunReflections: Reflection[],
-	sameRunReflectionCoverageId: string | undefined,
-	contextGeneration: number,
-): Promise<StageOutcome> {
-	if (!reflectorPassCompleted || !sameRunReflectionCoverageId) {
-		debugLog("dropper.waiting_for_reflection_pass", { reflectorPassCompleted, sameRunReflections: sameRunReflections.length });
-		return "continue";
-	}
-
-	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return "continue";
-
-	const folded = foldLedger(entries);
-	const metrics = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
-	if (!metrics.ready) {
-		debugLog("dropper.not_ready", {
-			observationTokens: metrics.observationTokens,
-			targetTokens: metrics.targetTokens,
-			tokensOverTarget: metrics.tokensOverTarget,
-			fullness: metrics.fullness,
-			activeObservationCount: metrics.activeObservationCount,
-			droppableCount: metrics.droppableCount,
-			maxDropsAllowed: metrics.maxDropsAllowed,
-		});
-		return "continue";
-	}
-	debugLog("dropper.stage_start", {
-		observationCoverageId,
-		sameRunReflectionCoverageId,
-		sameRunReflectionCount: sameRunReflections.length,
-		activeObservationCount: metrics.activeObservationCount,
-		observationTokens: metrics.observationTokens,
-		targetTokens: metrics.targetTokens,
-		tokensOverTarget: metrics.tokensOverTarget,
-		fullness: metrics.fullness,
-		maxDropsAllowed: metrics.maxDropsAllowed,
-	});
-
-	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: dropper running after reflection pass — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
-		"info",
-	);
-	const resolved = await resolveModel("dropper");
-	if (!resolved) return "abort";
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
-		return "abort";
-	}
-
-	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
-	const droppedIds = await runDropper({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		reflections: reflectionsForDropper,
-		observations: folded.activeObservations,
-		targetTokens: runtime.config.observationsPoolTargetTokens,
-		maxTurns: runtime.config.agentMaxTurns,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		recordUsage: (usage) => runtime.recordAgentUsage(usage),
-	});
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
-		return "abort";
-	}
-	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
-	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
-	debugLog("dropper.append", {
-		droppedIdsCount: droppedIds?.length ?? 0,
-		coversUpToId,
-		dataBuilt: data !== undefined,
-		appended: data !== undefined,
-	});
-	if (data) appendEntry(pi, OM_OBSERVATIONS_DROPPED, data);
 	return "continue";
 }

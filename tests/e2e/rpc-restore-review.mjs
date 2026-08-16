@@ -9,7 +9,7 @@ function observation(request, res, marker) {
 	const hasTool = (request.body.messages ?? []).some((message) => message.role === "tool");
 	if (hasTool) return sendSse(res, { text: "observation recorded" });
 	const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-	return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 01:00", content: `${marker} durable restart evidence`, relevance: "high", sourceEntryIds: [id] }] } } });
+	return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 01:00", content: `${marker} durable restart evidence`, relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 }
 
 async function pendingProbeRestart() {

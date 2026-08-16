@@ -59,8 +59,8 @@ describe("V3 /om:status", () => {
 		const output = await setup({ entries: [] }).run();
 
 		expect(output).toContain("── Memory ──");
-		expect(output).toContain("Observations: 0 recorded / 0 dropped / 0 active / 0 visible");
-		expect(output).toContain("Reflections:  0 recorded / 0 visible");
+		expect(output).toContain("Observations: 0 recorded / 0 deleted / 0 inactive / 0 active / 0 visible");
+		expect(output).toContain("Reflections:  0 recorded / 0 deleted / 0 inactive / 0 active / 0 visible");
 		expect(output).toContain("Next observation:");
 		expect(output).toContain("Next compaction:");
 		expect(output).not.toContain("Visible:");
@@ -85,10 +85,10 @@ describe("V3 /om:status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 active / 1 visible +1 -1");
-		expect(output).toContain("Reflections:  1 recorded / 0 visible +1");
+		expect(output).toContain("Observations: 2 recorded / 1 deleted / 0 inactive / 1 active / 1 visible +1 -1");
+		expect(output).toContain("Reflections:  1 recorded / 0 deleted / 0 inactive / 1 active / 0 visible +1");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active observation pool: ~7 / 20 target tokens (35%)");
+		expect(output).toContain("Active memory pool:      ~10 / 20 target tokens (50%)");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("full truth");
@@ -111,13 +111,12 @@ describe("V3 /om:status", () => {
 
 		expect(output).toContain("Next observation:");
 		expect(output).toContain("/ 10 tokens");
-		expect(output).toContain("Next reflection:");
-		expect(output).toContain("/ 20 tokens");
+		expect(output).toContain("Librarian backlog:");
 		expect(output).toContain("Next compaction:");
 		expect(output).toContain("/ 30 tokens");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active observation pool: ~5 / 20 target tokens (25%)");
-		expect(output).toContain("Reflection pool:         ~3 tokens");
+		expect(output).toContain("Active memory pool:      ~8 / 20 target tokens (40%)");
+		expect(output).toContain("Reflection pool:         ~3 visible tokens");
 		expect(output).not.toContain("Observation pool:");
 		expect(output).not.toContain("Full fold pool:");
 		expect(output).not.toContain("visible observation tokens");
@@ -132,7 +131,7 @@ describe("V3 /om:status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Active observation pool: ~25 / 20 target tokens (125%)");
+		expect(output).toContain("Active memory pool:      ~25 / 20 target tokens (125%)");
 	});
 
 	it("shows passive mode, consolidation in flight, compaction in flight, and stage-specific last errors", async () => {
@@ -158,7 +157,7 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Compaction hook: running");
 		expect(output).toContain("Observer: observer failed");
 		expect(output).toContain("Reflector: reflect failed");
-		expect(output).toContain("Dropper: drop failed");
+		expect(output).toContain("Dropper (legacy): drop failed");
 	});
 
 	it("shows consolidation in flight without phase when phase is unavailable", async () => {

@@ -132,6 +132,7 @@ class CompactionServer {
 						timestamp: "2026-08-15 00:00",
 						content: `${scenario}: preserve this compaction checkpoint and its continuation requirement.`,
 						relevance: "high",
+						retention: "contextual",
 						sourceEntryIds: [sourceId],
 					}] },
 				},

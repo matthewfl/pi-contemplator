@@ -9,8 +9,8 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "reflectAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns";
-type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens";
+type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "librarianEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "current session model";
@@ -29,7 +29,7 @@ function hasOverride(settings: SessionSettings, key: string): boolean {
 	return  Object.hasOwn(settings, key);
 }
 
-function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio"): string {
+function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio"): string {
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
@@ -170,6 +170,11 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			ctx.ui.notify(`Compaction observer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
+		if (argument === "librarian on" || argument === "librarian off") {
+			appendSettings(pi, runtime, { librarianEnabled: argument.endsWith("on") });
+			ctx.ui.notify(`Librarian: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
+			return;
+		}
 		if (argument === "reviewer on" || argument === "reviewer off") {
 			appendSettings(pi, runtime, { reviewerEnabled: argument.endsWith("on") });
 			ctx.ui.notify(`Structural reviewer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
@@ -181,7 +186,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			return;
 		}
 		if (argument) {
-			ctx.ui.notify("Usage: /om:settings [on|off|messages on|messages off|reviewer on|reviewer off|compaction on|compaction off]", "info");
+			ctx.ui.notify("Usage: /om:settings [on|off|messages on|messages off|librarian on|librarian off|reviewer on|reviewer off|compaction on|compaction off]", "info");
 			return;
 		}
 
@@ -191,12 +196,16 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Contemplation: ${scalarLabel(runtime, "contemplatorEnabled")}`,
 				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
 				`Contemplator messages visible: ${scalarLabel(runtime, "showContemplatorMessages")}`,
+				`Librarian enabled: ${scalarLabel(runtime, "librarianEnabled")}`,
+				`Librarian minimum interval: ${scalarLabel(runtime, "librarianMinIntervalMinutes")}`,
+				`Librarian maximum delay: ${scalarLabel(runtime, "librarianMaxDelayMinutes")}`,
+				`Librarian new-memory trigger: ${scalarLabel(runtime, "librarianMinNewMemoryTokens")}`,
+				`Librarian pressure trigger: ${scalarLabel(runtime, "librarianPressureTriggerRatio")}`,
 				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
 				`Memory worker model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `default (${modelLabel(runtime.getDefaultConfig().model)})`}`,
 				`Observation threshold: ${scalarLabel(runtime, "observeAfterTokens")}`,
-				`Reflection threshold: ${scalarLabel(runtime, "reflectAfterTokens")}`,
 				`Compaction threshold: ${scalarLabel(runtime, "compactAfterTokens")}`,
 				`Compaction mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `default (${runtime.getDefaultConfig().compactAfterTokensMode})`}`,
 				`Compaction ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `default (${runtime.getDefaultConfig().compactAfterTokensRatio})`}`,
@@ -214,6 +223,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			]);
 			if (!choice || choice === "Done") return;
 			if (choice.startsWith("Contemplation:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
+			else if (choice.startsWith("Librarian enabled:")) appendSettings(pi, runtime, { librarianEnabled: !runtime.config.librarianEnabled });
 			else if (choice.startsWith("Contemplator messages visible:")) appendSettings(pi, runtime, { showContemplatorMessages: !runtime.config.showContemplatorMessages });
 			else if (choice.startsWith("Structural reviewer:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
 			else if (choice.startsWith("Compaction observer:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
@@ -232,6 +242,11 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else if (choice.startsWith("Compaction mode:")) {
 				const mode = await ctx.ui.select("Compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });
+			} else if (choice.startsWith("Librarian pressure trigger:")) {
+				const value = await ctx.ui.input(`Librarian pressure trigger ratio (current: ${scalarLabel(runtime, "librarianPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
+				const ratio = value === undefined ? undefined : Number(value.trim());
+				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { librarianPressureTriggerRatio: ratio });
+				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
 			} else if (choice.startsWith("Compaction ratio:")) {
 				const value = await ctx.ui.input(`Compaction ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
@@ -240,7 +255,6 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else {
 				const numberChoice: Array<[string, NumberSetting, string]> = [
 					["Observation threshold:", "observeAfterTokens", "Observation threshold"],
-					["Reflection threshold:", "reflectAfterTokens", "Reflection threshold"],
 					["Compaction threshold:", "compactAfterTokens", "Compaction threshold"],
 					["Observer chunk limit:", "observerChunkMaxTokens", "Observer chunk limit"],
 					["Observation pool max:", "observationsPoolMaxTokens", "Observation pool max"],
@@ -249,6 +263,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Contemplation observation trigger:", "contemplatorMinNewObservations", "Contemplation observation trigger"],
 					["Contemplation reflection trigger:", "contemplatorMinNewReflections", "Contemplation reflection trigger"],
 					["Contemplation turn interval:", "contemplatorMinTurns", "Contemplation turn interval"],
+					["Librarian minimum interval:", "librarianMinIntervalMinutes", "Librarian minimum interval (minutes)"],
+					["Librarian maximum delay:", "librarianMaxDelayMinutes", "Librarian maximum delay (minutes)"],
+					["Librarian new-memory trigger:", "librarianMinNewMemoryTokens", "Librarian new-memory token trigger"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {

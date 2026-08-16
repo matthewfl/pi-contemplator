@@ -94,7 +94,7 @@ describe("session-ledger recall", () => {
 		expect(result.partial).toBe(false);
 	});
 
-	it("recalls a dropped observation and preserves source evidence", () => {
+	it("recalls a legacy-dropped observation as deleted and preserves source evidence", () => {
 		const entries = [
 			sourceEntry("src-1"),
 			observationsEntry("obs-entry-1", [observation({ id: OBS_1, sourceEntryIds: ["src-1"] })]),
@@ -106,7 +106,7 @@ describe("session-ledger recall", () => {
 		expect(result.status).toBe("found");
 		if (result.status !== "found") return;
 		expect(result.observations).toHaveLength(1);
-		expect(result.observations[0].status).toBe("dropped");
+		expect(result.observations[0].status).toBe("deleted");
 		expect(result.observations[0].sourceEntries.map((entry) => entry.id)).toEqual(["src-1"]);
 	});
 
@@ -132,7 +132,7 @@ describe("session-ledger recall", () => {
 		expect(result.partial).toBe(false);
 	});
 
-	it("marks supporting observations as dropped when recalling a reflection", () => {
+	it("marks supporting observations as deleted when recalling a reflection", () => {
 		const entries = [
 			sourceEntry("src-1"),
 			observationsEntry("obs-entry-1", [observation({ id: OBS_1, sourceEntryIds: ["src-1"] })]),
@@ -145,7 +145,7 @@ describe("session-ledger recall", () => {
 		expect(result.status).toBe("found");
 		if (result.status !== "found") return;
 		expect(result.observations).toHaveLength(1);
-		expect(result.observations[0].status).toBe("dropped");
+		expect(result.observations[0].status).toBe("deleted");
 	});
 
 	it("reports missing and non-source source ids as partial recall", () => {

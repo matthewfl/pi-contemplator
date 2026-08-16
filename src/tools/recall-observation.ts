@@ -28,8 +28,17 @@ type RecallObservationToolStatus =
 	| "no_source"
 	| "source_unavailable";
 
-type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance"> & { status?: "active" | "dropped" };
-type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
+type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance" | "retention"> & {
+	status?: "active" | "inactive" | "deleted";
+	deleteReason?: string;
+};
+type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds" | "sourceMemoryIds"> & {
+	reflectionIndex: number;
+	status?: "active" | "inactive" | "deleted";
+	deleteReason?: string;
+	mergedInto?: string[];
+	replacedBy?: string[];
+};
 
 export type RecallSourceEntryDetails = {
 	id: string;
@@ -41,7 +50,7 @@ export type RecallSourceEntryDetails = {
 };
 
 type RecallObservationMatchDetails = {
-	status: "active" | "dropped" | "source_unavailable" | "no_source";
+	status: "active" | "inactive" | "deleted" | "source_unavailable" | "no_source";
 	observationEntryId: string;
 	observationRecordIndex: number;
 	observation: ObservationDetails;
@@ -145,22 +154,42 @@ function sourceEntryDetails(entry: Entry, includeContent: boolean): RecallSource
 	};
 }
 
-function observationDetails(observation: Observation, status?: "active" | "dropped"): ObservationDetails {
-	return { id: observation.id, content: observation.content, timestamp: observation.timestamp, relevance: observation.relevance, ...(status ? { status } : {}) };
+function observationDetails(observation: Observation, status?: "active" | "inactive" | "deleted", deleteReason?: string): ObservationDetails {
+	return {
+		id: observation.id,
+		content: observation.content,
+		timestamp: observation.timestamp,
+		relevance: observation.relevance,
+		...(observation.retention ? { retention: observation.retention } : {}),
+		...(status ? { status } : {}),
+		...(deleteReason ? { deleteReason } : {}),
+	};
 }
 
-function reflectionDetails(reflection: Reflection, reflectionIndex: number): ReflectionDetails {
-	return { id: reflection.id, content: reflection.content, supportingObservationIds: reflection.supportingObservationIds, reflectionIndex };
+function reflectionDetails(match: { reflection: Reflection; reflectionRecordIndex: number; status?: "active" | "inactive" | "deleted"; deleteReason?: string; mergedInto?: string[]; replacedBy?: string[] }, exposeInactive = false): ReflectionDetails {
+	const visibleStatus = match.status === "inactive" && !exposeInactive ? "active" : match.status;
+	return {
+		id: match.reflection.id,
+		content: match.reflection.content,
+		supportingObservationIds: match.reflection.supportingObservationIds,
+		...(match.reflection.sourceMemoryIds ? { sourceMemoryIds: match.reflection.sourceMemoryIds } : {}),
+		reflectionIndex: match.reflectionRecordIndex,
+		...(visibleStatus ? { status: visibleStatus } : {}),
+		...(match.deleteReason ? { deleteReason: match.deleteReason } : {}),
+		...(match.mergedInto?.length ? { mergedInto: match.mergedInto } : {}),
+		...(match.replacedBy?.length ? { replacedBy: match.replacedBy } : {}),
+	};
 }
 
-function observationMatchDetails(match: RecalledObservation, includeSourceContent = true): RecallObservationMatchDetails {
+function observationMatchDetails(match: RecalledObservation, includeSourceContent = true, exposeInactive = false): RecallObservationMatchDetails {
 	const unavailable = match.missingSourceEntryIds.length > 0 || match.nonSourceEntryIds.length > 0;
-	const status = unavailable ? "source_unavailable" : match.sourceEntries.length === 0 ? "no_source" : match.status;
+	const visibleLifecycleStatus = match.status === "inactive" && !exposeInactive ? "active" : match.status;
+	const status = unavailable ? "source_unavailable" : match.sourceEntries.length === 0 ? "no_source" : visibleLifecycleStatus;
 	return {
 		status,
 		observationEntryId: match.observationEntryId,
 		observationRecordIndex: match.observationRecordIndex,
-		observation: observationDetails(match.observation, match.status),
+		observation: observationDetails(match.observation, visibleLifecycleStatus, match.deleteReason),
 		sourceEntryIds: match.sourceEntryIds,
 		sourceEntries: match.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent)),
 		missingSourceEntryIds: match.missingSourceEntryIds,
@@ -216,8 +245,9 @@ function reflectionLineText(reflection: ReflectionDetails): string {
 }
 
 function observationLineText(observation: ObservationDetails): string {
-	const status = observation.status === "dropped" ? " [dropped]" : "";
-	return `[${observation.id}]${status} ${observation.timestamp} [${observation.relevance}] ${observation.content}`;
+	const status = observation.status === "deleted" ? " [deleted]" : observation.status === "inactive" ? " [inactive]" : "";
+	const reason = observation.deleteReason ? `\n  deleted because: ${observation.deleteReason}` : "";
+	return `[${observation.id}]${status} ${observation.timestamp} [${observation.relevance}] ${observation.content}${reason}`;
 }
 
 function directObservationMatches(result: Extract<RecallResult, { status: "found" }>): RecalledObservation[] {
@@ -228,7 +258,7 @@ function renderObservationOnlyTextFromResult(result: Extract<RecallResult, { sta
 	const sections: string[] = [];
 	if (result.collision) sections.push(`Memory id ${result.memoryId} matched multiple observations; returning all matching source results from the current branch.`);
 	for (const match of directObservationMatches(result)) {
-		if (match.status === "dropped") sections.push(`Observation ${match.observation.id} is dropped from active memory but remains recallable.`);
+		if (match.status === "deleted") sections.push(`Observation ${match.observation.id} is deleted from automatic memory but remains recallable.${match.deleteReason ? ` Reason: ${match.deleteReason}` : ""}`);
 		if (match.missingSourceEntryIds.length > 0 || match.nonSourceEntryIds.length > 0) {
 			sections.push(friendlySourceUnavailableMessage(observationMatchDetails(match, false)));
 			continue;
@@ -273,11 +303,11 @@ function renderReviewText(review: ReviewResult): string {
 	return lines.join("\n");
 }
 
-function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): string {
+function renderMemoryText(result: Extract<RecallResult, { status: "found" }>, exposeInactive = false): string {
 	const sections: string[] = [];
 	if (result.collision) sections.push(`Memory id ${result.memoryId} matched multiple observations/reflections; returning all available evidence from the current branch.`);
-	if (result.reflections.length > 0) sections.push(`Reflections:\n${result.reflections.map((match) => reflectionLineText(reflectionDetails(match.reflection, match.reflectionRecordIndex))).join("\n")}`);
-	if (result.observations.length > 0) sections.push(`Observations:\n${result.observations.map((match) => observationLineText(observationDetails(match.observation, match.status))).join("\n")}`);
+	if (result.reflections.length > 0) sections.push(`Reflections:\n${result.reflections.map((match) => reflectionLineText(reflectionDetails(match, exposeInactive))).join("\n")}`);
+	if (result.observations.length > 0) sections.push(`Observations:\n${result.observations.map((match) => observationLineText(observationDetails(match.observation, match.status === "inactive" && !exposeInactive ? "active" : match.status, match.deleteReason))).join("\n")}`);
 	if (result.missingSupportingObservationIds.length > 0) sections.push(`Unavailable supporting observations:\n${result.missingSupportingObservationIds.map((id) => unavailableSupportingLineText({ observationId: id })).join("\n")}`);
 	if (result.missingSourceEntryIds.length > 0 || result.nonSourceEntryIds.length > 0) {
 		const parts: string[] = [];
@@ -291,11 +321,11 @@ function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): s
 	return sections.join("\n\n");
 }
 
-function resultDetails(result: Extract<RecallResult, { status: "found" }>, includeSourceContent = true): RecallObservationToolDetails {
-	const reflections = result.reflections.map((match) => reflectionDetails(match.reflection, match.reflectionRecordIndex));
+function resultDetails(result: Extract<RecallResult, { status: "found" }>, includeSourceContent = true, exposeInactive = false): RecallObservationToolDetails {
+	const reflections = result.reflections.map((match) => reflectionDetails(match, exposeInactive));
 	const reviews = result.reviews.map((match) => match.review);
-	const observations = result.observations.map((match) => observationMatchDetails(match, includeSourceContent));
-	const directMatches = directObservationMatches(result).map((match) => observationMatchDetails(match, includeSourceContent));
+	const observations = result.observations.map((match) => observationMatchDetails(match, includeSourceContent, exposeInactive));
+	const directMatches = directObservationMatches(result).map((match) => observationMatchDetails(match, includeSourceContent, exposeInactive));
 	const sourceEntries = result.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent));
 	const detailWithoutStatus = {
 		memoryId: result.memoryId,
@@ -320,11 +350,11 @@ function isObservationOnly(details: RecallObservationToolDetails): boolean {
 	return details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0;
 }
 
-function renderFoundResult(result: Extract<RecallResult, { status: "found" }>): ReturnType<typeof textResult> {
-	const details = resultDetails(result);
+function renderFoundResult(result: Extract<RecallResult, { status: "found" }>, exposeInactive = false): ReturnType<typeof textResult> {
+	const details = resultDetails(result, true, exposeInactive);
 	const text = result.kind === "review"
 		? result.reviews.map((match) => renderReviewText(match.review)).join("\n\n")
-		: result.kind === "observation" ? renderObservationOnlyTextFromResult(result) : renderMemoryText(result);
+		: result.kind === "observation" ? renderObservationOnlyTextFromResult(result) : renderMemoryText(result, exposeInactive);
 	return textResult(text, details);
 }
 
@@ -385,7 +415,7 @@ function sourceMetadataLine(source: RecallSourceEntryDetails): string {
 }
 
 function observationLine(observation: ObservationDetails): string {
-	const status = observation.status === "dropped" ? " dropped" : "";
+	const status = observation.status === "deleted" ? " deleted" : observation.status === "inactive" ? " inactive" : "";
 	return alignedRow("✓ observation", `${observation.timestamp} [${observation.relevance}]${status}`, observation.content);
 }
 
@@ -431,7 +461,7 @@ function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEn
 		return notes;
 	}
 	if (details.collision) notes.push(noteLine("id collision", `multiple memory items share ${details.memoryId}`));
-	if (details.observations.some((match) => match.observation.status === "dropped")) notes.push(noteLine("dropped", "one or more observations are dropped from active memory but remain recallable"));
+	if (details.observations.some((match) => match.observation.status === "deleted")) notes.push(noteLine("deleted", "one or more memories are deleted from automatic memory but remain recallable"));
 	if (details.unavailableSupportingObservations.length > 0) notes.push(noteLine("missing support", details.unavailableSupportingObservations.map((item) => item.observationId).join(", ")));
 	if (details.missingSourceEntryIds.length > 0) notes.push(noteLine("missing source", details.missingSourceEntryIds.join(", ")));
 	if (details.nonSourceEntryIds.length > 0) notes.push(noteLine("non-source", details.nonSourceEntryIds.join(", ")));
@@ -478,7 +508,9 @@ export const RECALL_PARAMETERS = Type.Object({
 });
 export type RecallArgs = Static<typeof RECALL_PARAMETERS>;
 
-export function executeRecall(params: RecallArgs, getBranch: () => Entry[]) {
+export type RecallAgentToolOptions = { librarian?: boolean };
+
+export function executeRecall(params: RecallArgs, getBranch: () => Entry[], options: RecallAgentToolOptions = {}) {
 	const memoryId = params.id;
 	if (!MEMORY_ID_PATTERN.test(memoryId)) {
 		const message = `Memory id must be 12 lowercase hex characters. Received: ${memoryId}`;
@@ -489,16 +521,16 @@ export function executeRecall(params: RecallArgs, getBranch: () => Entry[]) {
 		const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
 		return textResult(message, emptyDetails("not_found", memoryId, message));
 	}
-	return renderFoundResult(result);
+	return renderFoundResult(result, options.librarian === true);
 }
 
-export function createRecallAgentTool(getBranch: () => Entry[]): AgentTool<typeof RECALL_PARAMETERS> {
+export function createRecallAgentTool(getBranch: () => Entry[], options: RecallAgentToolOptions = {}): AgentTool<typeof RECALL_PARAMETERS> {
 	return {
 		name: RECALL_OBSERVATION_TOOL_NAME,
 		label: "Recall memory evidence",
 		description: RECALL_DESCRIPTION,
 		parameters: RECALL_PARAMETERS,
-		execute: async (_toolCallId, params) => executeRecall(params, getBranch),
+		execute: async (_toolCallId, params) => executeRecall(params, getBranch, options),
 	};
 }
 

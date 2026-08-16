@@ -1,6 +1,7 @@
 import {
 	OM_FOLDED,
 	isMemoryDetails,
+	isLibrarianCommitEntry,
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
@@ -11,6 +12,7 @@ import {
 	type Reflection,
 	type ReviewResult,
 } from "./types.js";
+import { foldLedger } from "./fold.js";
 
 export type Projection = {
 	observations: Observation[];
@@ -43,6 +45,7 @@ type ProjectionFoldOptions = {
 	observationsBoundary: ProjectionBoundary;
 	reflectionsBoundary: ProjectionBoundary;
 	dropsBoundary: ProjectionBoundary;
+	librarianBoundary: ProjectionBoundary;
 	reviewsBoundary: ProjectionBoundary;
 };
 
@@ -91,6 +94,7 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	const observationsBoundary = boundaryIndex(entries, indexes, options.observationsBoundary);
 	const reflectionsBoundary = boundaryIndex(entries, indexes, options.reflectionsBoundary);
 	const dropsBoundary = boundaryIndex(entries, indexes, options.dropsBoundary);
+	const librarianBoundary = boundaryIndex(entries, indexes, options.librarianBoundary);
 	const reviewsBoundary = boundaryIndex(entries, indexes, options.reviewsBoundary);
 	const observations: Observation[] = [];
 	const reflections: Reflection[] = [];
@@ -98,7 +102,7 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	const observationsById = new Set<string>();
 	const reflectionsById = new Set<string>();
 	const reviewIds = new Set<string>();
-	const droppedObservationIds = new Set<string>();
+	const memoryStatus = new Map<string, "active" | "inactive" | "deleted">();
 
 	for (const entry of entries) {
 		if (isObservationsRecordedEntry(entry) && isCoveredAtOrBefore(entry, indexes, observationsBoundary)) {
@@ -106,6 +110,7 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 				if (observationsById.has(observation.id)) continue;
 				observationsById.add(observation.id);
 				observations.push(observation);
+				memoryStatus.set(observation.id, "active");
 			}
 			continue;
 		}
@@ -115,12 +120,31 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 				if (reflectionsById.has(reflection.id)) continue;
 				reflectionsById.add(reflection.id);
 				reflections.push(reflection);
+				memoryStatus.set(reflection.id, "active");
 			}
 			continue;
 		}
 
 		if (isObservationsDroppedEntry(entry) && isCoveredAtOrBefore(entry, indexes, dropsBoundary)) {
-			for (const observationId of entry.data.observationIds) droppedObservationIds.add(observationId);
+			for (const observationId of entry.data.observationIds) memoryStatus.set(observationId, "deleted");
+			continue;
+		}
+
+		if (isLibrarianCommitEntry(entry) && isCoveredAtOrBefore(entry, indexes, librarianBoundary)) {
+			for (const reflection of entry.data.reflections) {
+				if (reflectionsById.has(reflection.id)) continue;
+				reflectionsById.add(reflection.id);
+				reflections.push(reflection);
+				memoryStatus.set(reflection.id, "active");
+			}
+			for (const action of entry.data.actions) {
+				for (const memoryId of action.memoryIds) {
+					const prior = memoryStatus.get(memoryId);
+					if (action.type === "makeInactive" && prior === "active") memoryStatus.set(memoryId, "inactive");
+					else if (action.type === "makeActive" && prior === "inactive") memoryStatus.set(memoryId, "active");
+					else if (action.type === "delete" && prior !== undefined && prior !== "deleted") memoryStatus.set(memoryId, "deleted");
+				}
+			}
 			continue;
 		}
 
@@ -133,8 +157,8 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	}
 
 	return {
-		observations: observations.filter((observation) => !droppedObservationIds.has(observation.id)),
-		reflections,
+		observations: observations.filter((observation) => (memoryStatus.get(observation.id) ?? "active") === "active"),
+		reflections: reflections.filter((reflection) => (memoryStatus.get(reflection.id) ?? "active") === "active"),
 		...(reviews.length > 0 ? { reviews } : {}),
 	};
 }
@@ -163,6 +187,7 @@ export function fullProjection(entries: Entry[], upToEntryId?: string): Projecti
 		observationsBoundary: boundary,
 		reflectionsBoundary: boundary,
 		dropsBoundary: boundary,
+		librarianBoundary: boundary,
 		reviewsBoundary: boundary,
 	});
 }
@@ -201,6 +226,7 @@ export function buildCompactionProjection(
 		observationsBoundary: entryBoundary(firstKeptEntryId),
 		reflectionsBoundary: maintenanceBoundary,
 		dropsBoundary: maintenanceBoundary,
+		librarianBoundary: entryBoundary(firstKeptEntryId),
 		reviewsBoundary: entryBoundary(firstKeptEntryId),
 	});
 	const observationTokens = normalProjection.observations.reduce(
@@ -212,12 +238,26 @@ export function buildCompactionProjection(
 		? fullProjection(entries, firstKeptEntryId)
 		: normalProjection;
 
+	const durable = foldLedger(entries, { upToEntryId: firstKeptEntryId });
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
 		version: 1,
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		archive: {
+			observations: durable.observations,
+			reflections: durable.reflections,
+			lifecycle: Array.from(durable.lifecycleByMemoryId, ([memoryId, state]) => ({
+				memoryId,
+				status: state.status,
+				...(state.recallIf ? { recallIf: state.recallIf } : {}),
+				...(state.reason ? { reason: state.reason } : {}),
+				becauseOfMemoryIds: [...state.becauseOfMemoryIds],
+				replacementMemoryIds: [...state.replacementMemoryIds],
+				...(state.changedAt !== undefined ? { changedAt: state.changedAt } : {}),
+			})),
+		},
 		...(projection.reviews?.length ? { reviews: projection.reviews } : {}),
 	};
 

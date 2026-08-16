@@ -42,7 +42,7 @@ describe("memory search", () => {
 		]);
 	});
 
-	it("includes dropped observations so old memories remain discoverable", () => {
+	it("includes legacy-dropped observations as deleted so old memories remain discoverable", () => {
 		const obs = observation("aaaaaaaaaaaa", {
 			content: "The old API endpoint was /v1/users.",
 		});
@@ -63,7 +63,7 @@ describe("memory search", () => {
 
 		expect(result.results[0]).toMatchObject({
 			id: "aaaaaaaaaaaa",
-			status: "dropped",
+			status: "deleted",
 		});
 	});
 

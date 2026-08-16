@@ -5,6 +5,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	searchMemories,
 	type MemorySearchResult,
+	type SearchMemoriesOptions,
 } from "../session-ledger/search.js";
 import type { Entry } from "../session-ledger/index.js";
 import { Text } from "@earendil-works/pi-tui";
@@ -31,10 +32,12 @@ function formatResult(result: MemorySearchResult): string {
 			: `${result.scope} review concluded with no proposal`;
 		return `- [${result.id}] ${label}: ${result.content}`;
 	}
-	const status = result.status === "dropped" ? " [dropped]" : "";
+	const status = result.status === "deleted" ? " [deleted]" : result.status === "inactive" ? " [inactive]" : "";
 	const relevance = result.relevance ? ` [${result.relevance}]` : "";
+	const retention = result.retention ? ` [${result.retention}]` : "";
 	const timestamp = result.timestamp ? ` ${result.timestamp}` : "";
-	return `- ${result.kind} [${result.id}]${status}${timestamp}${relevance}: ${result.content}`;
+	const lifecycle = result.deleteReason ? `\n  deleted because: ${result.deleteReason}` : result.recallIf ? `\n  recallIf: ${result.recallIf}` : "";
+	return `- ${result.kind} [${result.id}]${status}${timestamp}${relevance}${retention}: ${result.content}${lifecycle}`;
 }
 
 export const SEARCH_MEMORIES_PARAMETERS = Type.Object({
@@ -50,7 +53,7 @@ export const SEARCH_MEMORIES_PARAMETERS = Type.Object({
 	),
 });
 
-export function executeSearchMemories(branchEntries: Entry[], params: SearchMemoriesArgs): { content: [{ type: "text"; text: string }]; details: SearchDetails } {
+export function executeSearchMemories(branchEntries: Entry[], params: SearchMemoriesArgs, options: SearchMemoriesOptions = {}): { content: [{ type: "text"; text: string }]; details: SearchDetails } {
 	const query = params.query.trim();
 	const limit = params.limit ?? 8;
 	if (!query) {
@@ -65,7 +68,7 @@ export function executeSearchMemories(branchEntries: Entry[], params: SearchMemo
 		return { content: [{ type: "text", text: "Search query must not be empty." }], details };
 	}
 
-	const search = searchMemories(branchEntries, query, limit);
+	const search = searchMemories(branchEntries, query, limit, options);
 	const details: SearchDetails = { ...search, limit };
 	const text = search.results.length
 		? [
@@ -77,13 +80,13 @@ export function executeSearchMemories(branchEntries: Entry[], params: SearchMemo
 	return { content: [{ type: "text", text }], details };
 }
 
-export function createSearchMemoriesAgentTool(getBranch: () => Entry[]): AgentTool<typeof SEARCH_MEMORIES_PARAMETERS> {
+export function createSearchMemoriesAgentTool(getBranch: () => Entry[], options: SearchMemoriesOptions = {}): AgentTool<typeof SEARCH_MEMORIES_PARAMETERS> {
 	return {
 		name: SEARCH_MEMORIES_TOOL_NAME,
 		label: "Search memories",
 		description: SEARCH_MEMORIES_DESCRIPTION,
 		parameters: SEARCH_MEMORIES_PARAMETERS,
-		execute: async (_toolCallId, params) => executeSearchMemories(getBranch(), params),
+		execute: async (_toolCallId, params) => executeSearchMemories(getBranch(), params, options),
 	};
 }
 

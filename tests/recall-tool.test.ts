@@ -59,7 +59,7 @@ describe("V3 recall tool", () => {
 		expect(formatRecallRenderedResultForTui(result as any, false)).toContain("✓ observation");
 	});
 
-	it("renders dropped observations as recallable but dropped", async () => {
+	it("renders legacy-dropped observations as recallable deleted memories", async () => {
 		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
 		const entries = [
 			rawMessage("raw-1", "I like tea."),
@@ -70,9 +70,9 @@ describe("V3 recall tool", () => {
 		const { result, text } = await execute("aaaaaaaaaaaa", entries);
 		const tui = formatRecallRenderedResultForTui(result as any, false);
 
-		expect(result.details?.matches[0].observation.status).toBe("dropped");
-		expect(text).toContain("dropped from active memory but remains recallable");
-		expect(tui).toContain("[dropped]");
+		expect(result.details?.matches[0].observation.status).toBe("deleted");
+		expect(text).toContain("deleted from automatic memory but remains recallable");
+		expect(tui).toContain("deleted");
 	});
 
 	it("renders reflection recall with supporting observations and sources", async () => {

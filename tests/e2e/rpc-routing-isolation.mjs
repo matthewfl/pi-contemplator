@@ -11,7 +11,7 @@ async function modelRoutingAndFeatureFlags() {
 		if (request.role === "observer") {
 			if (hasTool) return sendSse(res, { text: "recorded" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: "route-observation", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:00", content: "E2E_ROUTING durable evidence", relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: "route-observation", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:00", content: "E2E_ROUTING durable evidence", relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			assert(toolNames(request.body).has("request_review"), "Reviewer-enabled contemplator lacked request_review");
@@ -116,7 +116,7 @@ async function concurrentIsolation() {
 		if (request.role === "observer") {
 			if (hasTool) return sendSse(res, { text: "recorded" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:10", content: `${marker} isolated memory`, relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:10", content: `${marker} isolated memory`, relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			assert(!toolNames(request.body).has("request_review"), "Reviewer-disabled session exposed request_review");

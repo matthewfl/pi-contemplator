@@ -8,7 +8,7 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
-import type { Observation, Relevance } from "../../session-ledger/index.js";
+import type { Observation, Relevance, Retention } from "../../session-ledger/index.js";
 import { estimateStringTokens } from "../../tokens.js";
 import type { LlmUsageInput } from "../../runtime.js";
 
@@ -34,6 +34,12 @@ const RelevanceSchema = Type.Union([
 	Type.Literal("critical"),
 ]);
 
+const RetentionSchema = Type.Union([
+	Type.Literal("ephemeral"),
+	Type.Literal("contextual"),
+	Type.Literal("durable"),
+]);
+
 export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
 
 const RecordObservationsSchema = Type.Object({
@@ -48,6 +54,7 @@ const RecordObservationsSchema = Type.Object({
 				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
+			retention: RetentionSchema,
 			sourceEntryIds: Type.Array(
 				Type.String({ minLength: 1 }),
 				{
@@ -121,6 +128,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 					content,
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
+					retention: obs.retention as Retention,
 					sourceEntryIds,
 					tokenCount: estimateStringTokens(content),
 				});

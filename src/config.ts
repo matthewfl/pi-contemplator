@@ -61,6 +61,12 @@ export interface Config {
 	contemplatorMinNewObservations: number;
 	contemplatorMinNewReflections: number;
 	contemplatorMinTurns: number;
+	/** Delayed stateless memory curator replacing reflector/dropper workers. */
+	librarianEnabled: boolean;
+	librarianMinIntervalMinutes: number;
+	librarianMaxDelayMinutes: number;
+	librarianMinNewMemoryTokens: number;
+	librarianPressureTriggerRatio: number;
 	debugLog: boolean;
 }
 
@@ -82,6 +88,11 @@ export const DEFAULTS: Config = {
 	contemplatorMinNewObservations: 8,
 	contemplatorMinNewReflections: 1,
 	contemplatorMinTurns: 10,
+	librarianEnabled: true,
+	librarianMinIntervalMinutes: 30,
+	librarianMaxDelayMinutes: 180,
+	librarianMinNewMemoryTokens: 5_000,
+	librarianPressureTriggerRatio: 1,
 	debugLog: false,
 };
 
@@ -155,6 +166,10 @@ function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
 }
 
+function nonNegativeIntegerOrUndefined(value: unknown): number | undefined {
+	return Number.isInteger(value) && typeof value === "number" && value >= 0 ? value : undefined;
+}
+
 function validTargetOrUndefined(value: unknown, maxTokens: number): number | undefined {
 	const target = positiveIntegerOrUndefined(value);
 	return target !== undefined && target < maxTokens ? target : undefined;
@@ -212,9 +227,14 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"contemplatorMinNewObservations",
 		"contemplatorMinNewReflections",
 		"contemplatorMinTurns",
+		"librarianMinNewMemoryTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
+		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
+	}
+	for (const key of ["librarianMinIntervalMinutes", "librarianMaxDelayMinutes"] as const) {
+		const normalizedValue = nonNegativeIntegerOrUndefined(value[key]);
 		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
 	}
 	if (isCompactAfterTokensMode(value.compactAfterTokensMode)) {
@@ -228,6 +248,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
 	if (typeof value.showContemplatorMessages === "boolean") normalized.showContemplatorMessages = value.showContemplatorMessages;
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
+	if (typeof value.librarianEnabled === "boolean") normalized.librarianEnabled = value.librarianEnabled;
+	if (typeof value.librarianPressureTriggerRatio === "number" && Number.isFinite(value.librarianPressureTriggerRatio) && value.librarianPressureTriggerRatio > 0) normalized.librarianPressureTriggerRatio = value.librarianPressureTriggerRatio;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;

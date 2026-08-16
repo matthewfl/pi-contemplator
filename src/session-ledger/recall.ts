@@ -1,4 +1,5 @@
 import {
+	isMemoryDetails,
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
@@ -8,6 +9,7 @@ import {
 	type Reflection,
 	type ReviewResult,
 } from "./types.js";
+import { foldLedger } from "./fold.js";
 
 const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
@@ -29,7 +31,9 @@ export type RecalledObservation = {
 	observation: Observation;
 	observationEntryId: string;
 	observationRecordIndex: number;
-	status: "active" | "dropped";
+	status: "active" | "inactive" | "deleted";
+	deleteReason?: string;
+	recallIf?: string;
 	sourceEntryIds: string[];
 	sourceEntries: Entry[];
 	missingSourceEntryIds: string[];
@@ -40,6 +44,11 @@ export type RecalledReflection = {
 	reflection: Reflection;
 	reflectionEntryId: string;
 	reflectionRecordIndex: number;
+	status: "active" | "inactive" | "deleted";
+	deleteReason?: string;
+	recallIf?: string;
+	mergedInto: string[];
+	replacedBy: string[];
 };
 
 export type RecalledReviewResult = {
@@ -104,35 +113,58 @@ function indexLedger(entries: Entry[]): {
 	observations: IndexedObservation[];
 	reflections: IndexedReflection[];
 	reviews: IndexedReviewResult[];
-	droppedIds: Set<string>;
 } {
 	const observations: IndexedObservation[] = [];
 	const reflections: IndexedReflection[] = [];
 	const reviews: IndexedReviewResult[] = [];
-	const droppedIds = new Set<string>();
+	// Deduplicate snapshots/retries of the same record without collapsing true
+	// content-address collisions that point at different source evidence.
+	const observationKeys = new Set<string>();
+	const reflectionKeys = new Set<string>();
+	const observationKey = (observation: Observation) => `${observation.id}:${uniqueStrings(observation.sourceEntryIds).sort().join(",")}`;
+	const reflectionKey = (reflection: Reflection) => `${reflection.id}:${uniqueStrings(reflection.sourceMemoryIds ?? reflection.supportingObservationIds).sort().join(",")}`;
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 		const entry = entries[entryIndex];
-		if (isObservationsRecordedEntry(entry)) {
-			entry.data.observations.forEach((observation, recordIndex) => {
+		if (entry.type === "compaction" && isMemoryDetails(entry.details) && entry.details.archive) {
+			entry.details.archive.observations.forEach((observation, recordIndex) => {
+				const key = observationKey(observation);
+				if (observationKeys.has(key)) return;
+				observationKeys.add(key);
 				observations.push({ observation, entryId: entry.id, entryIndex, recordIndex });
 			});
-			continue;
-		}
-		if (isReflectionsRecordedEntry(entry)) {
-			entry.data.reflections.forEach((reflection, recordIndex) => {
+			entry.details.archive.reflections.forEach((reflection, recordIndex) => {
+				const key = reflectionKey(reflection);
+				if (reflectionKeys.has(key)) return;
+				reflectionKeys.add(key);
 				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
 			});
 			continue;
 		}
-		if (isObservationsDroppedEntry(entry)) {
-			entry.data.observationIds.forEach((id) => droppedIds.add(id));
+		if (isObservationsRecordedEntry(entry)) {
+			entry.data.observations.forEach((observation, recordIndex) => {
+				const key = observationKey(observation);
+				if (observationKeys.has(key)) return;
+				observationKeys.add(key);
+				observations.push({ observation, entryId: entry.id, entryIndex, recordIndex });
+			});
 			continue;
 		}
+		if (isReflectionsRecordedEntry(entry) || (entry.type === "custom" && entry.customType === "om.librarian.commit" && entry.data && typeof entry.data === "object" && Array.isArray((entry.data as { reflections?: unknown }).reflections))) {
+			const records = isReflectionsRecordedEntry(entry) ? entry.data.reflections : (entry.data as { reflections: Reflection[] }).reflections;
+			records.forEach((reflection, recordIndex) => {
+				const key = reflectionKey(reflection);
+				if (reflectionKeys.has(key)) return;
+				reflectionKeys.add(key);
+				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
+			});
+			continue;
+		}
+		if (isObservationsDroppedEntry(entry)) continue;
 		if (isReviewResultEntry(entry)) reviews.push({ review: entry.data.result, entryId: entry.id });
 	}
 
-	return { observations, reflections, reviews, droppedIds };
+	return { observations, reflections, reviews };
 }
 
 function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
@@ -185,7 +217,8 @@ function notFound(memoryId: string): RecallResult {
 }
 
 export function recallMemorySources(entries: Entry[], memoryId: string): RecallResult {
-	const { observations: indexedObservations, reflections: indexedReflections, reviews: indexedReviews, droppedIds } = indexLedger(entries);
+	const { observations: indexedObservations, reflections: indexedReflections, reviews: indexedReviews } = indexLedger(entries);
+	const folded = foldLedger(entries);
 	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
 	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
 	const reviewMatches = indexedReviews.filter(({ review }) => review.id === memoryId);
@@ -204,14 +237,25 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		const key = `${indexed.entryId}:${indexed.recordIndex}`;
 		if (recalledByKey.has(key)) return;
 		const recalled = resolveObservationSources(entries, indexed.observation, indexed);
-		recalled.status = droppedIds.has(indexed.observation.id) ? "dropped" : "active";
+		const lifecycle = folded.lifecycleByMemoryId.get(indexed.observation.id);
+		recalled.status = lifecycle?.status ?? "active";
+		recalled.deleteReason = lifecycle?.reason;
+		recalled.recallIf = lifecycle?.recallIf;
 		recalledByKey.set(key, recalled);
 	}
 
 	for (const match of directObservationMatches) addObservation(match);
 
+	const reflectionsById = new Map(indexedReflections.map((indexed) => [indexed.reflection.id, indexed]));
+	const includedReflections = new Map(reflectionMatches.map((indexed) => [indexed.reflection.id, indexed]));
 	for (const { reflection } of reflectionMatches) {
-		for (const observationId of uniqueStrings(reflection.supportingObservationIds)) {
+		for (const sourceId of uniqueStrings(reflection.sourceMemoryIds ?? reflection.supportingObservationIds)) {
+			const sourceReflection = reflectionsById.get(sourceId);
+			if (sourceReflection) {
+				includedReflections.set(sourceReflection.reflection.id, sourceReflection);
+				continue;
+			}
+			const observationId = sourceId;
 			const indexed = observationsById.get(observationId);
 			if (!indexed) {
 				missingSupportingObservationIds.push(observationId);
@@ -222,11 +266,19 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 	}
 
 	const recalledObservations = Array.from(recalledByKey.values());
-	const recalledReflections: RecalledReflection[] = reflectionMatches.map(({ reflection, entryId, recordIndex }) => ({
-		reflection,
-		reflectionEntryId: entryId,
-		reflectionRecordIndex: recordIndex,
-	}));
+	const recalledReflections: RecalledReflection[] = Array.from(includedReflections.values()).map(({ reflection, entryId, recordIndex }) => {
+		const lifecycle = folded.lifecycleByMemoryId.get(reflection.id);
+		return {
+			reflection,
+			reflectionEntryId: entryId,
+			reflectionRecordIndex: recordIndex,
+			status: lifecycle?.status ?? "active",
+			deleteReason: lifecycle?.reason,
+			recallIf: lifecycle?.recallIf,
+			mergedInto: folded.mergedIntoByMemoryId.get(reflection.id) ?? [],
+			replacedBy: folded.replacedByMemoryId.get(reflection.id) ?? [],
+		};
+	});
 	const recalledReviews: RecalledReviewResult[] = reviewMatches.map(({ review, entryId }) => ({ review, reviewEntryId: entryId }));
 	const sourceEntries = uniqueById(recalledObservations.flatMap((match) => match.sourceEntries));
 	const missingSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.missingSourceEntryIds));

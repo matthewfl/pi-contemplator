@@ -6,7 +6,7 @@ export type ResolveResult =
 
 type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
-export type ConsolidationPhase = "observer" | "reflector" | "dropper";
+export type ConsolidationPhase = "observer" | "reflector" | "dropper" | "librarian";
 
 export const OM_SETTINGS = "om.settings";
 
@@ -36,7 +36,9 @@ export type SessionSettings = Partial<Pick<Config,
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
-	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "debugLog"
+	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns"
+	| "librarianEnabled" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianPressureTriggerRatio"
+	| "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
 	model?: ConfiguredModel | null;
@@ -108,17 +110,19 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (!source || typeof source !== "object") return;
 		const data = source as Record<string, unknown>;
 		const booleanKeys = [
-			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "debugLog",
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "librarianEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
 			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
+			"librarianMinIntervalMinutes", "librarianMaxDelayMinutes", "librarianMinNewMemoryTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
 		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
 		if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
 		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
+		if (typeof data.librarianPressureTriggerRatio === "number" && Number.isFinite(data.librarianPressureTriggerRatio) && data.librarianPressureTriggerRatio > 0) restored.librarianPressureTriggerRatio = data.librarianPressureTriggerRatio;
 		if (data.model === null) restored.model = null;
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;
@@ -140,6 +144,14 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	reviewInFlight = false;
 	reviewPromise: Promise<void> | null = null;
+	librarianInFlight = false;
+	librarianPromise: Promise<void> | null = null;
+	librarianDirtySince: number | undefined;
+	librarianLastStartedAt: number | undefined;
+	librarianPendingTokens = 0;
+	librarianPendingCount = 0;
+	librarianTimer: ReturnType<typeof setTimeout> | undefined;
+	librarianFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
@@ -156,6 +168,7 @@ export class Runtime {
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
+	lastLibrarianError: string | undefined;
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
 	/** Accumulate usage from one background LLM call (contemplator flush/summary or observer/reflector/dropper run). */
@@ -220,6 +233,12 @@ export class Runtime {
 		this.compactionResumeGeneration += 1;
 		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
 		this.compactionResumeTimer = undefined;
+		if (this.librarianTimer !== undefined) clearTimeout(this.librarianTimer);
+		this.librarianTimer = undefined;
+		this.librarianDirtySince = undefined;
+		this.librarianPendingTokens = 0;
+		this.librarianPendingCount = 0;
+		this.librarianFairness.clear();
 	}
 
 	getContextGeneration(): number {
@@ -274,6 +293,32 @@ export class Runtime {
 		return promise;
 	}
 
+	markLibrarianDirty(memoryCount: number, memoryTokens: number, now = Date.now()): void {
+		if (this.librarianDirtySince === undefined) this.librarianDirtySince = now;
+		this.librarianPendingCount += Math.max(0, memoryCount);
+		this.librarianPendingTokens += Math.max(0, memoryTokens);
+	}
+
+	clearLibrarianDirty(): void {
+		this.librarianDirtySince = undefined;
+		this.librarianPendingCount = 0;
+		this.librarianPendingTokens = 0;
+	}
+
+	launchLibrarianTask(ctx: LaunchCtx, work: () => Promise<void>, now = Date.now()): Promise<void> | undefined {
+		if (this.librarianInFlight) return undefined;
+		this.librarianInFlight = true;
+		this.librarianLastStartedAt = now;
+		this.lastLibrarianError = undefined;
+		const promise = this.launchTrackedTask(ctx, "librarian", work, (error) => {
+			this.librarianInFlight = false;
+			this.lastLibrarianError = error;
+			if (this.librarianPromise === promise) this.librarianPromise = null;
+		});
+		this.librarianPromise = promise;
+		return promise;
+	}
+
 	launchReviewTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> | undefined {
 		// Structural reviews are intentionally serialized. Pending requests are
 		// persisted in the session ledger and resumed after the active task exits.
@@ -292,6 +337,7 @@ export class Runtime {
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
+		if (phase === "librarian") this.lastLibrarianError = message;
 		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
 		return message;
 	}
