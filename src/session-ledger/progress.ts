@@ -143,10 +143,6 @@ export function rawTokensSinceObservationCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_RECORDED);
 }
 
-export function rawTokensSinceReflectionCoverage(entries: Entry[]): number {
-	return rawTokensSinceCoverage(entries, OM_REFLECTIONS_RECORDED);
-}
-
 export function rawTokensSinceDropCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_DROPPED);
 }

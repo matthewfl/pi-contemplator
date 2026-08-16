@@ -173,6 +173,7 @@ function median(values: number[]): number {
 }
 
 export function buildLibrarianPrompt(sample: LibrarianSample, args: {
+	activeCount: number;
 	activeTokens: number;
 	targetTokens: number;
 	contextWindow: number;
@@ -182,12 +183,12 @@ export function buildLibrarianPrompt(sample: LibrarianSample, args: {
 }): string {
 	const activePct = Math.round((args.activeTokens / Math.max(1, args.contextWindow)) * 1_000) / 10;
 	const sections = [
-		`LIBRARIAN RUN\nActive memories: ${sample.activeMemories.length.toLocaleString()} selected from ${sample.eligibleCount.toLocaleString()} eligible items.\nActive memory tokens: ~${args.activeTokens.toLocaleString()} (${activePct}% of librarian context); configured target: ~${args.targetTokens.toLocaleString()}.\nNew memory since the previous successful pass: ${args.newCount.toLocaleString()} records / ~${args.newTokens.toLocaleString()} tokens.\nInitial memory input: ~${sample.selectedTokens.toLocaleString()} / ${sample.budgetTokens.toLocaleString()} token cap (${sample.sampled ? `sampled from ~${sample.eligibleTokens.toLocaleString()} eligible tokens; recent evidence favored` : "complete eligible set; sampling not used"}).`,
+		`LIBRARIAN RUN\nVisible active memories this run: ${sample.activeMemories.length.toLocaleString()} selected from ${args.activeCount.toLocaleString()} active memories (${sample.eligibleCount.toLocaleString()} total eligible items including inactive cohorts).\nWhole active pool: ~${args.activeTokens.toLocaleString()} tokens (${activePct}% of librarian context); configured target: ~${args.targetTokens.toLocaleString()}.\nNew memory since the previous successful pass: ${args.newCount.toLocaleString()} records / ~${args.newTokens.toLocaleString()} tokens.\nInitial visible memory input: ~${sample.selectedTokens.toLocaleString()} / ${sample.budgetTokens.toLocaleString()} token cap (${sample.sampled ? `sampled from ~${sample.eligibleTokens.toLocaleString()} eligible tokens; recent evidence favored` : "complete eligible set; sampling not used"}).`,
 	];
 	if (args.activeTokens > args.targetTokens) {
 		const excess = args.activeTokens - args.targetTokens;
 		const approximateCount = Math.max(1, Math.ceil(excess / Math.max(1, median(args.activeTokenSizes))));
-		sections.push(`${sample.sampled ? "SEVERE " : ""}MEMORY PRESSURE ADVISORY\nReducing automatic memory by roughly ${excess.toLocaleString()} tokens would return to target. At the current median memory size, that is approximately ${approximateCount.toLocaleString()} memories. Consider combining related memories, making currently irrelevant memories inactive, and deleting only obsolete or consumed temporal detail. This is guidance, not a quota: preserve uncertain or uniquely useful memories and defer unsafe decisions to a future librarian run.`);
+		sections.push(`WHOLE-POOL MEMORY PRESSURE ADVISORY\nThe complete active pool—not just the subset visible in this run—is roughly ${excess.toLocaleString()} tokens above target (about ${approximateCount.toLocaleString()} memories at the whole-pool median size). This is context about the unseen global pool, not a quota for this sample. Never compensate for unseen memories by acting more aggressively on visible ones. Curate only individually justified items: combine clearly related memories, make currently irrelevant memories inactive, and delete only obsolete or consumed temporal detail. Preserve uncertain or uniquely useful memories and defer unsafe decisions to a future librarian run.`);
 	}
 	sections.push(`ACTIVE MEMORIES (${sample.sampled ? "SAMPLED SUBSET" : "COMPLETE SET"})\n${sample.activeMemories.length ? sample.activeMemories.map(renderLibrarianMemory).join("\n") : "(none)"}`);
 	sections.push(`INACTIVE MEMORY GROUPS\n${sample.inactiveCohorts.length ? sample.inactiveCohorts.map((cohort) => `[${cohort.alias}] (${cohort.memoryIds.length} memories) ${cohort.recallIf}`).join("\n") : "(none)"}`);
@@ -213,7 +214,8 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	const inactiveCohorts = buildInactiveCohorts(allMemories, recallIfById);
 	const contextWindow = typeof args.model.contextWindow === "number" && args.model.contextWindow > 0 ? args.model.contextWindow : 128_000;
 	const newMemoryIds = newMemoryIdsSinceLibrarianCoverage(snapshot);
-	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, contextWindow, samplingThresholdRatio: args.samplingThresholdRatio, newMemoryIds, fairness: args.fairness, random: args.random, now: args.now });
+	const samplingNow = args.now ?? Date.now();
+	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, contextWindow, samplingThresholdRatio: args.samplingThresholdRatio, newMemoryIds, fairness: args.fairness, random: args.random, now: samplingNow });
 	const inspected = new Set(sample.activeMemories.map((item) => item.memory.id));
 	const memoryById = new Map<string, Observation | Reflection>([
 		...folded.observations.map((item) => [item.id, item] as const),
@@ -334,9 +336,10 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 		const alias = sample.aliasMembers.get(ref);
 		if (alias) return alias;
 		if (statusOf(ref) !== "inactive") return undefined;
-		const cue = folded.lifecycleByMemoryId.get(ref)?.recallIf;
-		if (!cue) return undefined;
-		return allMemories.filter((item) => item.status === "inactive" && folded.lifecycleByMemoryId.get(item.memory.id)?.recallIf === cue).map((item) => item.memory.id);
+		// buildInactiveCohorts already applies NFKC + whitespace normalization.
+		// Resolve durable ids through those same cohorts so alias and id forms
+		// always reactivate exactly the same members.
+		return inactiveCohorts.find((cohort) => cohort.memoryIds.includes(ref))?.memoryIds;
 	};
 
 	const makeActive: AgentTool<typeof MakeActiveSchema> = {
@@ -410,6 +413,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	const activeTokens = activeMemories.reduce((sum, item) => sum + item.memory.tokenCount, 0);
 	const newTokens = activeMemories.filter((item) => newMemoryIds.has(item.memory.id)).reduce((sum, item) => sum + item.memory.tokenCount, 0);
 	const initialPrompt = buildLibrarianPrompt(sample, {
+		activeCount: activeMemories.length,
 		activeTokens,
 		targetTokens: args.targetTokens,
 		contextWindow,
@@ -447,7 +451,30 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 		history.push(prompt as AgentMessage);
 		args.onMessages?.(history.slice());
 		const stream = loop([prompt], context, config, args.signal, streamSimple);
-		for await (const event of stream) logAgentStreamError("librarian", event);
+		// The loop emits the prompt again through message_start/message_end. Start
+		// before that prompt and maintain the complete live invocation transcript,
+		// replacing only the currently streaming message as updates arrive.
+		const liveMessages = history.slice(0, -1);
+		let liveMessageIndex: number | undefined;
+		for await (const event of stream) {
+			logAgentStreamError("librarian", event);
+			if (event.type === "message_start") {
+				liveMessageIndex = liveMessages.length;
+				liveMessages.push(event.message);
+				args.onMessages?.(liveMessages.slice());
+			} else if (event.type === "message_update") {
+				if (liveMessageIndex === undefined) {
+					liveMessageIndex = liveMessages.length;
+					liveMessages.push(event.message);
+				} else liveMessages[liveMessageIndex] = event.message;
+				args.onMessages?.(liveMessages.slice());
+			} else if (event.type === "message_end") {
+				if (liveMessageIndex === undefined) liveMessages.push(event.message);
+				else liveMessages[liveMessageIndex] = event.message;
+				liveMessageIndex = undefined;
+				args.onMessages?.(liveMessages.slice());
+			}
+		}
 		const messages = await stream.result();
 		history.push(...messages);
 		args.onMessages?.(history.slice());
@@ -459,6 +486,13 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	if (!doneSummary) {
 		debugLog("librarian.incomplete", { stagedReflections: stagedReflections.size, stagedActions: stagedActions.length });
 		return { completed: false, sample };
+	}
+	// Fairness is launch-local and represents completed pressure-valve review
+	// opportunities. Do not penalize a selected sample when the run fails or stops
+	// without done, and do not record anything when the entire set fit.
+	if (sample.sampled && args.fairness) for (const item of sample.activeMemories) {
+		const prior = args.fairness.get(item.memory.id) ?? { sampleCount: 0 };
+		args.fairness.set(item.memory.id, { lastSampledAt: samplingNow, sampleCount: prior.sampleCount + 1 });
 	}
 	return {
 		completed: true,

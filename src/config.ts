@@ -32,7 +32,6 @@ export type CompactAfterTokensMode = "calibrated" | "ratio";
 
 export interface Config {
 	observeAfterTokens: number;
-	reflectAfterTokens: number;
 	/**
 	 * Maximum estimated source tokens serialized into a single observer chunk.
 	 * Unset (default) derives the cap from the resolved memory model's context
@@ -78,7 +77,6 @@ export interface Config {
 
 export const DEFAULTS: Config = {
 	observeAfterTokens: 10_000,
-	reflectAfterTokens: 20_000,
 	compactAfterTokens: 81_000,
 	compactAfterTokensMode: "calibrated",
 	compactAfterTokensRatio: 0.68,
@@ -226,7 +224,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	const normalized: Partial<Config> = {};
 	const numberKeys = [
 		"observeAfterTokens",
-		"reflectAfterTokens",
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
 		"observationsPoolMaxTokens",

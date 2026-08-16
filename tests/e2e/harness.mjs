@@ -173,7 +173,7 @@ export async function prepareWorkspace(workspace, port, settings, models = [{ id
 
 export function omSettings(overrides = {}) {
 	return { "observational-memory": {
-		observeAfterTokens: 1, reflectAfterTokens: 1000000, compactAfterTokens: 1000000,
+		observeAfterTokens: 1, compactAfterTokens: 1000000,
 		agentMaxTurns: 8, model: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorEnabled: true, contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorMinNewObservations: 1, contemplatorMinNewReflections: 1, contemplatorMinTurns: 1,

@@ -4,7 +4,7 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
 type StoredMessage = { role?: unknown; content?: unknown };
-type ContentPart = { type?: unknown; text?: unknown; name?: unknown; arguments?: unknown; content?: unknown };
+type ContentPart = { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; arguments?: unknown; content?: unknown };
 
 function renderValue(value: unknown): string {
 	if (typeof value === "string") return value;
@@ -17,6 +17,10 @@ function renderContent(content: unknown): string {
 	if (!Array.isArray(content)) return renderValue(content);
 	return content.map((part: ContentPart) => {
 		if (part.type === "text") return typeof part.text === "string" ? part.text : "";
+		if (part.type === "thinking") {
+			const thinking = typeof part.thinking === "string" ? part.thinking : typeof part.text === "string" ? part.text : renderValue(part);
+			return `[thinking]\n${thinking}`;
+		}
 		if (part.type === "toolCall" || part.type === "tool_use" || part.type === "toolUse") {
 			const name = typeof part.name === "string" ? part.name : "unknown tool";
 			return `[tool call: ${name}${part.arguments === undefined ? "" : ` ${renderValue(part.arguments)}`}]`;

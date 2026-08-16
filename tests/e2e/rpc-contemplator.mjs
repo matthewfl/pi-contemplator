@@ -517,7 +517,6 @@ async function run() {
 		await writeFile(join(project, ".pi/settings.json"), JSON.stringify({
 			"observational-memory": {
 				observeAfterTokens: 1,
-				reflectAfterTokens: 1,
 				compactAfterTokens: 1000000,
 				observationsPoolMaxTokens: 2,
 				observationsPoolTargetTokens: 1,

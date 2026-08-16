@@ -52,7 +52,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and librarian. |
 | `librarianEnabled` | `true` | Enables stateless memory curation. |
 | `librarianMinIntervalMinutes` | `10` | Normal minimum time between librarian starts. Zero is valid. |
-| `librarianMaxDelayMinutes` | `180` | Maximum coalescing delay after new memory. Zero is valid. |
+| `librarianMaxDelayMinutes` | `180` | Maximum cumulative main-agent active-time delay after new memory. Zero is valid. |
 | `librarianMinNewMemoryTokens` | `5000` | Pending new-memory tokens that make a pass ready before max delay, while still respecting the normal minimum interval. |
 | `librarianMaxPendingMemoryTokens` | `20000` | Urgent pending-memory threshold. At or above this value, the librarian bypasses the minimum interval and starts as soon as its single-flight slot is available. |
 | `librarianPressureTriggerRatio` | `1` | Active-token ratio against `observationsPoolTargetTokens` that makes a pass ready. |
@@ -66,11 +66,9 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `reviewerEnabled` | `true` | Allows scoped structural review requests. |
 | `reviewerModel` | current model | Optional reviewer model override. |
 | `compactionObserverEnabled` | `true` | Runs an asynchronous observer sidecar when compaction begins. |
-| `showWorkerNotifications` | `true` | Shows routine observer/librarian progress notifications. |
+| `showWorkerNotifications` | `true` | Shows routine observer, librarian, and contemplator progress notifications. |
 | `passive` | `false` | Disables proactive background work while leaving ledger views, tools, and compaction hooks available. |
 | `debugLog` | `false` | Writes structured diagnostics under the observational-memory debug directory. |
-
-`reflectAfterTokens` remains accepted in old configuration/session records for compatibility but no longer schedules work; the librarian replaces the reflector/dropper lane.
 
 Positive count/token settings must be finite positive integers. Librarian minute settings additionally accept zero. Invalid values are ignored. `observationsPoolTargetTokens` must be below max or it is re-derived.
 

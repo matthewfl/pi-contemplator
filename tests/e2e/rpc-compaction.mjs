@@ -238,7 +238,6 @@ async function launchPi({ workspace, project, agentDir, sessions, providerExtens
 		compaction: { enabled: false, reserveTokens: 512, keepRecentTokens: 1 },
 		"observational-memory": {
 			observeAfterTokens: 1,
-			reflectAfterTokens: 1000000,
 			compactAfterTokens,
 			agentMaxTurns: 4,
 			model: { provider: "e2e", id: "mock-model", thinking: "off" },

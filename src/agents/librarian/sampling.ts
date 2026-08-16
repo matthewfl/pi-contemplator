@@ -173,11 +173,6 @@ export function sampleLibrarianMemories(args: LibrarianSamplingArgs): LibrarianS
 	const aliasMembers = new Map(inactiveCohorts.map((cohort) => [cohort.alias, [...cohort.memoryIds]]));
 	const selectedTokens = selected.reduce((sum, candidate) => sum + candidate.tokens, 0);
 
-	for (const item of activeMemories) {
-		const prior = args.fairness?.get(item.memory.id) ?? { sampleCount: 0 };
-		args.fairness?.set(item.memory.id, { lastSampledAt: now, sampleCount: prior.sampleCount + 1 });
-	}
-
 	return {
 		activeMemories,
 		inactiveCohorts,

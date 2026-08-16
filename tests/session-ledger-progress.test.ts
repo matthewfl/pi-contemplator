@@ -13,7 +13,6 @@ import {
 	rawTokensSinceDropCoverage,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
 } from "../src/session-ledger/index.js";
 import {
 	V3_OBSERVATIONS_DROPPED,
@@ -95,7 +94,7 @@ describe("session-ledger V3 progress helpers", () => {
 		expect(rawTokensAfterIndex(entries, 2)).toBe(3);
 	});
 
-	it("uses independent coverage clocks for observations, reflections, and drops", () => {
+	it("uses independent coverage clocks for observations and legacy drops", () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),
 			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [observation("aaaaaaaaaaaa")], coversUpToId: "raw-1" }),
@@ -107,7 +106,6 @@ describe("session-ledger V3 progress helpers", () => {
 		];
 
 		expect(rawTokensSinceObservationCoverage(entries)).toBe(9); // raw-2 + raw-3 + raw-4
-		expect(rawTokensSinceReflectionCoverage(entries)).toBe(7); // raw-3 + raw-4
 		expect(rawTokensSinceDropCoverage(entries)).toBe(7); // covers ledger entry om-eeeeeeeeeeee, raw after it
 	});
 
@@ -119,7 +117,6 @@ describe("session-ledger V3 progress helpers", () => {
 		];
 
 		expect(latestCoverageMarkerId(entries, V3_REFLECTIONS_RECORDED)).toBe("raw-1");
-		expect(rawTokensSinceReflectionCoverage(entries)).toBe(2);
 	});
 
 	it("lets coversUpToId point to a memory ledger entry", () => {

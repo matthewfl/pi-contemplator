@@ -133,7 +133,7 @@ describe("V3 /om:view", () => {
 				status: "completed",
 				messages: [
 					{ role: "user", content: [{ type: "text", text: "Curate these memories." }] },
-					{ role: "assistant", content: [{ type: "toolCall", name: "done", arguments: { summary: "Kept durable facts." } }] },
+					{ role: "assistant", content: [{ type: "thinking", thinking: "Checking whether consolidation is safe." }, { type: "toolCall", name: "done", arguments: { summary: "Kept durable facts." } }] },
 					{ role: "toolResult", content: [{ type: "text", text: "Librarian plan committed." }] },
 				],
 				summary: "Kept durable facts.",
@@ -142,6 +142,7 @@ describe("V3 /om:view", () => {
 
 		expect(clipboardText).toContain("LIBRARIAN · completed · 3 messages");
 		expect(clipboardText).toContain("Curate these memories.");
+		expect(clipboardText).toContain("[thinking]\nChecking whether consolidation is safe.");
 		expect(clipboardText).toContain("[tool call: done");
 		expect(clipboardText).toContain("Completion summary");
 		expect(output).toContain("Copied /om:view librarian output to clipboard.");

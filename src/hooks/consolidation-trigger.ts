@@ -267,6 +267,7 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	const generation = runtime.getContextGeneration();
 	const capturedCount = runtime.librarianPendingCount;
 	const capturedTokens = runtime.librarianPendingTokens;
+	const capturedDirtySince = runtime.librarianDirtySince;
 	runtime.clearLibrarianDirty();
 	const runId = `librarian-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const sessionMetadata = debugSessionMetadata(ctx);
@@ -277,16 +278,17 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 		runId,
 	}, async () => {
 		let completed = false;
+		const startedAt = Date.now();
+		runtime.lastLibrarianRun = { startedAt, status: "running", messages: [] };
 		try {
 			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
 			if (!resolved.ok) {
 				debugLog("librarian.model_unavailable", { reason: resolved.reason });
+				runtime.lastLibrarianRun = { startedAt, status: "failed", messages: [], error: resolved.reason };
 				return;
 			}
 			if (generation !== runtime.getContextGeneration()) return;
 			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: librarian running", "info");
-			const startedAt = Date.now();
-			runtime.lastLibrarianRun = { startedAt, status: "running", messages: [] };
 			const result = await runLibrarian({
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
@@ -326,10 +328,15 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 			throw error;
 		} finally {
 			if (!completed && generation === runtime.getContextGeneration()) {
-				const currentEntries = ctx.sessionManager.getBranch() as Entry[];
-				runtime.markLibrarianDirty(capturedCount, capturedTokens, agentActiveTimeMs(currentEntries));
+				// Preserve the original age of failed work. markLibrarianDirty takes
+				// the earlier clock if observations arrived while this run was active.
+				runtime.markLibrarianDirty(capturedCount, capturedTokens, capturedDirtySince);
 			}
-			setTimeout(() => {
+			// A failed/incomplete pass retains its original age but retries only after
+			// the next main-agent activity checkpoint; otherwise a zero minimum interval
+			// could spin forever without new evidence. Successful passes may immediately
+			// pick up observations that arrived while they were running.
+			if (completed) setTimeout(() => {
 				if (generation === runtime.getContextGeneration()) scheduleLibrarian(pi, runtime, ctx);
 			}, 0);
 		}

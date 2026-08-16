@@ -54,7 +54,7 @@ const RecordObservationsSchema = Type.Object({
 				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
-			retention: RetentionSchema,
+			retention: Type.Optional(RetentionSchema),
 			sourceEntryIds: Type.Array(
 				Type.String({ minLength: 1 }),
 				{
@@ -128,7 +128,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 					content,
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
-					retention: obs.retention as Retention,
+					retention: (obs.retention ?? "contextual") as Retention,
 					sourceEntryIds,
 					tokenCount: estimateStringTokens(content),
 				});

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runLibrarian } from "../src/agents/librarian/agent.js";
+import { buildLibrarianPrompt, runLibrarian } from "../src/agents/librarian/agent.js";
 import { LIBRARIAN_SYSTEM } from "../src/agents/librarian/prompts.js";
 import { hashId } from "../src/ids.js";
 import { OM_LIBRARIAN_COMMIT, type Entry } from "../src/session-ledger/index.js";
@@ -68,6 +68,21 @@ describe("librarian agent", () => {
 		expect(LIBRARIAN_SYSTEM).toContain("Link that reflection as the replacement");
 	});
 
+	it("labels sampled pressure as a whole-pool signal rather than a visible quota", () => {
+		const prompt = buildLibrarianPrompt({
+			activeMemories: [], inactiveCohorts: [], aliasMembers: new Map(), sampled: true,
+			eligibleCount: 100, selectedCount: 25, eligibleTokens: 40_000, selectedTokens: 10_000, budgetTokens: 10_000,
+		}, {
+			activeCount: 90, activeTokens: 36_000, targetTokens: 10_000, contextWindow: 20_000,
+			newCount: 10, newTokens: 2_000, activeTokenSizes: [400, 400, 400],
+		});
+		expect(prompt).toContain("Visible active memories this run: 0 selected from 90 active memories");
+		expect(prompt).toContain("WHOLE-POOL MEMORY PRESSURE ADVISORY");
+		expect(prompt).toContain("complete active pool—not just the subset visible in this run");
+		expect(prompt).toContain("Never compensate for unseen memories");
+		expect(prompt).not.toContain("SEVERE");
+	});
+
 	it("completes an explicit no-action pass and emits pressure guidance", async () => {
 		let prompt = "";
 		let configSeen: any;
@@ -88,14 +103,37 @@ describe("librarian agent", () => {
 		expect(transcriptSnapshots[0]?.[0]).toMatchObject({ role: "user" });
 		expect(result.commit).toMatchObject({ coversUpToId: "obs-entry", reflections: [], actions: [], summary: "No safe changes." });
 		expect(prompt).toContain("complete eligible set; sampling not used");
-		expect(prompt).toContain("MEMORY PRESSURE ADVISORY");
-		expect(prompt).toContain("guidance, not a quota");
+		expect(prompt).toContain("WHOLE-POOL MEMORY PRESSURE ADVISORY");
+		expect(prompt).toContain("not a quota for this sample");
+		expect(prompt).toContain("Never compensate for unseen memories");
 		expect(configSeen.toolExecution).toBe("parallel");
 		expect(configSeen.beforeToolCall).toBeTypeOf("function");
 		await expect(configSeen.beforeToolCall({
 			toolCall: { name: "done" },
 			context: { messages: [{ role: "assistant", content: [{ type: "toolCall", name: "make_inactive" }, { type: "toolCall", name: "done" }] }] },
 		})).resolves.toMatchObject({ block: true });
+	});
+
+	it("publishes in-progress thinking before the librarian stream settles", async () => {
+		const snapshots: Array<readonly any[]> = [];
+		const loop = ((_prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield {
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "Comparing durable evidence." }] },
+					assistantMessageEvent: {},
+				};
+			},
+			result: async () => {
+				await tool(context, "done").execute("done-live", { summary: "No changes." });
+				return [{ role: "assistant", content: [{ type: "text", text: "Finished." }] }];
+			},
+		})) as any;
+
+		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop, onMessages: (messages) => snapshots.push(messages) });
+		expect(result.completed).toBe(true);
+		expect(snapshots.some((messages) => messages.some((message) => message.content?.some?.((part: any) => part.thinking === "Comparing durable evidence.")))).toBe(true);
+		expect(snapshots.at(-1)?.some((message) => message.content?.some?.((part: any) => part.text === "Finished."))).toBe(true);
 	});
 
 	it("records an atomic reflection with explicit source deletion reason", async () => {
@@ -154,13 +192,26 @@ describe("librarian agent", () => {
 		expect(result.commit?.actions[0]).toMatchObject({ type: "delete", memoryIds: [A] });
 	});
 
-	it("discards staged mutations after bounded ordinary-text stops without done", async () => {
-		const loop = fakeAgentLoop(async (invocation, _prompts, context) => {
-			if (invocation === 0) await tool(context, "make_inactive").execute("x1", { memoryIds: [A], becauseOfObservationIds: [C], recallIf: "Recall when alpha resumes" });
-		});
-		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+	it("discards staged mutations and fairness changes after bounded stops without done", async () => {
+		const fairness = new Map();
+		const loop = fakeAgentLoop(async () => {});
+		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5 });
 		expect(result.completed).toBe(false);
+		expect(result.sample?.sampled).toBe(true);
 		expect(result.commit).toBeUndefined();
+		expect(fairness.size).toBe(0);
+	});
+
+	it("records fairness only after a sampled pass calls done", async () => {
+		const fairness = new Map();
+		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
+			await tool(context, "done").execute("done-fairness", { summary: "Reviewed sample." });
+		});
+		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5, now: 123 });
+		expect(result.completed).toBe(true);
+		expect(result.sample?.sampled).toBe(true);
+		expect(fairness.size).toBeGreaterThan(0);
+		expect(Array.from(fairness.values())).toEqual(expect.arrayContaining([expect.objectContaining({ lastSampledAt: 123, sampleCount: 1 })]));
 	});
 
 	it("reactivates an ephemeral alias cohort and returns full bodies", async () => {
@@ -186,5 +237,29 @@ describe("librarian agent", () => {
 		expect(receipt).toContain("Old alpha implementation detail.");
 		expect(receipt).toContain("Beta command output");
 		expect(result.commit?.actions[0]).toMatchObject({ type: "makeActive", memoryIds: [A, B], becauseOfMemoryIds: [D] });
+	});
+
+	it("reactivates the same normalized cohort by durable memory id as by alias", async () => {
+		const inactiveCommit: Entry = {
+			type: "custom", id: "lib-normalized", customType: OM_LIBRARIAN_COMMIT,
+			data: {
+				version: 1, reflections: [], coversUpToId: "obs-entry", summary: "Archived related memories.", createdAt: 1,
+				actions: [
+					{ type: "makeInactive", memoryIds: [A], recallIf: "Recall   alpha work", becauseOfMemoryIds: [C], createdAt: 1 },
+					{ type: "makeInactive", memoryIds: [B], recallIf: "Ｒｅｃａｌｌ alpha work", becauseOfMemoryIds: [C], createdAt: 1 },
+				],
+			},
+		};
+		const resumedObservation: Entry = {
+			type: "custom", id: "obs-entry-normalized", customType: "om.observations.recorded",
+			data: { coversUpToId: "raw-1", observations: [{ id: D, content: "User resumed alpha work.", timestamp: "2026-01-04 10:00", relevance: "high", retention: "contextual", sourceEntryIds: ["raw-1"], tokenCount: 10 }] },
+		};
+		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
+			await tool(context, "make_active").execute("x1", { inactiveRefs: [A], becauseOfObservationIds: [D] });
+			await tool(context, "done").execute("d1", { summary: "Restored normalized cohort." });
+		});
+
+		const result = await runLibrarian({ ...base, getBranch: () => entries([inactiveCommit, resumedObservation]), agentLoop: loop });
+		expect(result.commit?.actions[0]).toMatchObject({ type: "makeActive", memoryIds: [A, B] });
 	});
 });

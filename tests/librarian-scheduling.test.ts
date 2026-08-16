@@ -224,6 +224,20 @@ describe("librarian scheduling", () => {
 		expect(r.librarianDirtySince).toBeUndefined();
 	});
 
+	it("exposes model-resolution failures in the last librarian view", async () => {
+		const r = runtime();
+		const entries = observationBranch();
+		const ctx = context(entries) as any;
+		ctx.modelRegistry.getApiKeyAndHeaders = vi.fn(async () => ({ ok: false }));
+		r.markLibrarianDirty(1, 5_000, 1);
+
+		scheduleLibrarian({ appendEntry: vi.fn() } as any, r, ctx, 2);
+		await r.librarianPromise;
+
+		expect(r.lastLibrarianRun).toMatchObject({ status: "failed", messages: [], error: expect.stringContaining("no API key") });
+		expect(r.librarianDirtySince).toBe(1);
+	});
+
 	it("restores captured dirty work when a pass stops without done", async () => {
 		const r = runtime();
 		const entries = observationBranch();
@@ -233,6 +247,6 @@ describe("librarian scheduling", () => {
 		await r.librarianPromise;
 		expect(r.librarianPendingCount).toBe(4);
 		expect(r.librarianPendingTokens).toBe(5_000);
-		expect(r.librarianDirtySince).toBeDefined();
+		expect(r.librarianDirtySince).toBe(1);
 	});
 });

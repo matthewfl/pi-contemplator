@@ -27,7 +27,6 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		ensureConfig: vi.fn(),
 		config: {
 			observeAfterTokens: 10,
-			reflectAfterTokens: 20,
 			compactAfterTokens: 30,
 			observationsPoolMaxTokens: 40,
 			observationsPoolTargetTokens: 20,
@@ -137,7 +136,7 @@ describe("V3 /om:status", () => {
 		const output = await setup({
 			entries: [],
 			runtime: {
-				config: { observeAfterTokens: 10, reflectAfterTokens: 20, compactAfterTokens: 30, observationsPoolMaxTokens: 40, observationsPoolTargetTokens: 20, passive: true },
+				config: { observeAfterTokens: 10, compactAfterTokens: 30, observationsPoolMaxTokens: 40, observationsPoolTargetTokens: 20, passive: true },
 				consolidationInFlight: true,
 				consolidationPhase: "observer",
 				compactInFlight: true,
@@ -171,7 +170,6 @@ describe("V3 /om:status", () => {
 				runtime: {
 					config: {
 						observeAfterTokens: 10,
-						reflectAfterTokens: 20,
 						compactAfterTokens: 30,
 						compactAfterTokensMode: "ratio",
 						compactAfterTokensRatio: 0.5,
@@ -192,7 +190,6 @@ describe("V3 /om:status", () => {
 				runtime: {
 					config: {
 						observeAfterTokens: 10,
-						reflectAfterTokens: 20,
 						compactAfterTokens: 30,
 						compactAfterTokensMode: "ratio",
 						compactAfterTokensRatio: 0.5,
@@ -213,7 +210,6 @@ describe("V3 /om:status", () => {
 				runtime: {
 					config: {
 						observeAfterTokens: 10,
-						reflectAfterTokens: 20,
 						compactAfterTokens: 30,
 						compactAfterTokensMode: "ratio",
 						compactAfterTokensRatio: 0.5,

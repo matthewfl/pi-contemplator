@@ -37,7 +37,6 @@ describe("V3 config", () => {
 	it("uses V3 defaults", () => {
 		expect(DEFAULTS).toEqual({
 			observeAfterTokens: 10000,
-			reflectAfterTokens: 20000,
 			compactAfterTokens: 81000,
 			compactAfterTokensMode: "calibrated",
 			compactAfterTokensRatio: 0.68,
@@ -69,7 +68,6 @@ describe("V3 config", () => {
 		writeJson(join(agentDir, "settings.json"), {
 			"observational-memory": {
 				observeAfterTokens: 10,
-				reflectAfterTokens: 20,
 				compactAfterTokens: 30,
 				observationsPoolMaxTokens: 40,
 				observationsPoolTargetTokens: 15,
@@ -90,7 +88,6 @@ describe("V3 config", () => {
 
 		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "true" })).toMatchObject({
 			observeAfterTokens: 100,
-			reflectAfterTokens: 20,
 			compactAfterTokens: 30,
 			observationsPoolMaxTokens: 40,
 			observationsPoolTargetTokens: 15,
@@ -100,6 +97,13 @@ describe("V3 config", () => {
 			passive: true,
 			debugLog: true,
 		});
+	});
+
+	it("ignores the retired reflector threshold", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { reflectAfterTokens: 1 },
+		});
+		expect(loadConfig(cwd, {})).not.toHaveProperty("reflectAfterTokens");
 	});
 
 	it("loads contemplator message visibility and reviewer overrides", () => {
@@ -122,7 +126,6 @@ describe("V3 config", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
 			"observational-memory": {
 				observeAfterTokens: -1,
-				reflectAfterTokens: 0,
 				compactAfterTokens: 1.5,
 				observationsPoolMaxTokens: "20000",
 				observationsPoolTargetTokens: "10000",

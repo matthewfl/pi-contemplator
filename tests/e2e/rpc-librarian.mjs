@@ -21,7 +21,8 @@ const server = new ModelServer(async (request, res) => {
 					timestamp: `2026-08-16 0${Math.min(9, state.observer)}:00`,
 					content: `E2E_LIBRARIAN_EVIDENCE_${state.observer}: related implementation evidence worth consolidating`,
 					relevance: "high",
-					retention: "contextual",
+					// Intentionally omit retention: observer must default it rather than
+					// rejecting and losing the entire otherwise-valid batch.
 					sourceEntryIds: [sourceId],
 				}] },
 			},

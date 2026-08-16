@@ -179,7 +179,7 @@ Useful commands:
 - `/om:view` — inspect visible memory (and attempt to copy it).
 - `/om:view full` — inspect the full memory ledger, including everything not yet folded into a compaction.
 - `/om:view contemplator` — inspect the contemplator's private transcript and probes.
-- `/om:view librarian` — inspect the latest librarian transcript from this launch.
+- `/om:view librarian` — inspect the latest launch-local librarian transcript, including live thinking/output and completion or failure status.
 - `/om:view reviewer` — inspect structural reviewer transcripts and outcomes.
 - `/om:settings` — inspect or change session-level settings (including `messages on|off`, `librarian on|off`, `reviewer on|off`, `compaction on|off`).
 

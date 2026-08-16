@@ -32,7 +32,7 @@ function normalizeSessionSettings(settings: SessionSettings, baseConfig: Config)
 }
 
 export type SessionSettings = Partial<Pick<Config,
-	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
+	| "observeAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
@@ -121,7 +121,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "librarianEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
-			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
+			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
 			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
 			"librarianMinIntervalMinutes", "librarianMaxDelayMinutes", "librarianMinNewMemoryTokens", "librarianMaxPendingMemoryTokens",
@@ -314,7 +314,9 @@ export class Runtime {
 	}
 
 	markLibrarianDirty(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
-		if (this.librarianDirtySince === undefined) this.librarianDirtySince = agentActiveTimeMs;
+		this.librarianDirtySince = this.librarianDirtySince === undefined
+			? agentActiveTimeMs
+			: Math.min(this.librarianDirtySince, agentActiveTimeMs);
 		this.librarianPendingCount += Math.max(0, memoryCount);
 		this.librarianPendingTokens += Math.max(0, memoryTokens);
 	}
