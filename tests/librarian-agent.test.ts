@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runLibrarian } from "../src/agents/librarian/agent.js";
+import { LIBRARIAN_SYSTEM } from "../src/agents/librarian/prompts.js";
 import { hashId } from "../src/ids.js";
 import { OM_LIBRARIAN_COMMIT, type Entry } from "../src/session-ledger/index.js";
 
@@ -50,6 +51,23 @@ const base = {
 };
 
 describe("librarian agent", () => {
+	it("preserves the durability, abstraction, novelty, and provenance gates", () => {
+		expect(LIBRARIAN_SYSTEM).toContain("ONLY information the assistant will have");
+		expect(LIBRARIAN_SYSTEM).toContain("Over-reflection is also memory distortion");
+		expect(LIBRARIAN_SYSTEM).toContain("future-agent utility test");
+		expect(LIBRARIAN_SYSTEM).toContain("Abstraction gate");
+		expect(LIBRARIAN_SYSTEM).toContain("Do not lightly reword an existing reflection");
+		expect(LIBRARIAN_SYSTEM).toContain("False or inflated source ids are dangerous");
+		expect(LIBRARIAN_SYSTEM).toContain("High and critical observations deserve careful review, not automatic reflection");
+		expect(LIBRARIAN_SYSTEM).toContain("Zero is better than a weak abstraction");
+		expect(LIBRARIAN_SYSTEM).toContain("Delete versus make inactive");
+		expect(LIBRARIAN_SYSTEM).toContain("Old raw tool output after its meaningful result");
+		expect(LIBRARIAN_SYSTEM).toContain("How a particular bug was diagnosed and fixed");
+		expect(LIBRARIAN_SYSTEM).toContain("Inactive memory should have a plausible future retrieval trigger");
+		expect(LIBRARIAN_SYSTEM).toContain("reflection completely replaces");
+		expect(LIBRARIAN_SYSTEM).toContain("Link that reflection as the replacement");
+	});
+
 	it("completes an explicit no-action pass and emits pressure guidance", async () => {
 		let prompt = "";
 		let configSeen: any;
