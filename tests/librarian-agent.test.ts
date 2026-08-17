@@ -81,6 +81,19 @@ describe("librarian agent", () => {
 		expect(prompt).toContain("complete active pool—not just the subset visible in this run");
 		expect(prompt).toContain("Never compensate for unseen memories");
 		expect(prompt).not.toContain("SEVERE");
+		const memoryStart = prompt.indexOf("<memory_records>");
+		const activeStart = prompt.indexOf("ACTIVE MEMORIES", memoryStart);
+		const memoryEnd = prompt.indexOf("</memory_records>", activeStart);
+		const repeatedInstructions = prompt.indexOf("INSTRUCTIONS REPEATED AFTER MEMORY RECORDS", memoryEnd);
+		const repeatedMetadata = prompt.indexOf("RUN METADATA AND PRESSURE ADVISORY REPEATED AFTER INSTRUCTIONS", repeatedInstructions);
+		expect(memoryStart).toBeGreaterThanOrEqual(0);
+		expect(activeStart).toBeGreaterThan(memoryStart);
+		expect(memoryEnd).toBeGreaterThan(activeStart);
+		expect(repeatedInstructions).toBeGreaterThan(memoryEnd);
+		expect(repeatedMetadata).toBeGreaterThan(repeatedInstructions);
+		expect(prompt.slice(repeatedInstructions, repeatedMetadata)).toContain(LIBRARIAN_SYSTEM);
+		expect(prompt.slice(repeatedMetadata)).toContain("Visible active memories this run: 0 selected from 90 active memories");
+		expect(prompt.slice(repeatedMetadata)).toContain("WHOLE-POOL MEMORY PRESSURE ADVISORY");
 	});
 
 	it("completes an explicit no-action pass and emits pressure guidance", async () => {
