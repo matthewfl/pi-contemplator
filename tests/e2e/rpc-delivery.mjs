@@ -31,7 +31,7 @@ async function runCase({ marker, visible }) {
 		}
 		if (request.role === "contemplator") {
 			state.contemplator++;
-			if (hasTool || state.probeSent) return sendSse(res, { tool: { id: `no-intervention-${state.contemplator}`, name: "no_intervention", arguments: { reason: "No second probe is warranted." } } });
+			if (hasTool || state.probeSent) return sendSse(res, { tool: { id: `no-intervention-${state.contemplator}`, name: "no_intervention", arguments: {} } });
 			if (marker === PARALLEL) await waitFor(() => state.parallelIssued, "parallel tools issued");
 			else await sleep(900);
 			state.probeSent = true;

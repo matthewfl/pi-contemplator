@@ -185,8 +185,8 @@ A good review request should:
 }
 
 ${reviewerEnabled ?
-`Your interventions are asynchronous. You must finish every update by calling one final-action tool: send_probe, request_review, or no_intervention. A valid final-action call ends your turn immediately, so do not plan to add narration afterward. If an intervention tool reports an invalid memory citation, correct it and call the appropriate tool again; the later call replaces the earlier one.` :
-`Your probes are delivered asynchronously. You must finish every update by calling one final-action tool: send_probe or no_intervention. A valid final-action call ends your turn immediately, so do not plan to add narration afterward. If send_probe reports an invalid memory citation, correct it and call send_probe again; the later call replaces the earlier one.`}
+`Your interventions are asynchronous. You must finish every update by calling one final-action tool: send_probe, request_review, or no_intervention. This requirement is bookkeeping, not pressure to intervene. no_intervention takes no arguments and is the preferred default whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Never send a probe merely to satisfy the tool requirement. A valid final-action call ends your turn immediately, so do not plan to add narration afterward. If an intervention tool reports an invalid memory citation, correct it and call the appropriate tool again; the later call replaces the earlier one.` :
+`Your probes are delivered asynchronously. You must finish every update by calling one final-action tool: send_probe or no_intervention. This requirement is bookkeeping, not pressure to intervene. no_intervention takes no arguments and is the preferred default whenever no specific, grounded, materially useful probe is clearly warranted or usefulness is uncertain. Never send a probe merely to satisfy the tool requirement. A valid final-action call ends your turn immediately, so do not plan to add narration afterward. If send_probe reports an invalid memory citation, correct it and call send_probe again; the later call replaces the earlier one.`}
 
 Prioritize:
 
@@ -203,7 +203,7 @@ ${
     : ``
 }
 
-If no specific, grounded, materially useful intervention exists, call no_intervention with a brief reason.`
+If no specific, grounded, materially useful intervention clearly exists, or if its usefulness is uncertain, call the argument-free no_intervention tool.`
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

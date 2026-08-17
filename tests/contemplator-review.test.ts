@@ -56,15 +56,17 @@ describe("contemplator review request tool", () => {
 		expect(result.details).toMatchObject({ queued: true, overwritten: false, memoryIds: ["aaaaaaaaaaaa", "bbbb1234", "bbbbbbbbbbbb", "abcdef0", "cc22dd33"] });
 	});
 
-	it("records an explicit no-intervention final action", async () => {
-		let reason = "";
-		const tool = createNoInterventionTool((value) => {
-			reason = value;
+	it("records an argument-free no-intervention final action", async () => {
+		let selected = false;
+		const tool = createNoInterventionTool(() => {
+			selected = true;
 			return { overwritten: true };
 		});
-		const result = await tool.execute("none-call", { reason: " Nothing useful is grounded yet. " });
+		const result = await tool.execute("none-call", {});
 
-		expect(reason).toBe("Nothing useful is grounded yet.");
+		expect(selected).toBe(true);
+		expect(tool.description).toContain("preferred default");
+		expect(tool.description).toContain("argument-free");
 		expect((result.content[0] as { text: string }).text).toContain("No intervention will be sent.");
 		expect((result.content[0] as { text: string }).text).toContain("WARNING: overwriting prior probe/review/no_intervention tool call");
 		expect(result.details).toEqual({ selected: true, overwritten: true });

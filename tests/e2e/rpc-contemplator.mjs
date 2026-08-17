@@ -297,7 +297,7 @@ class MockModelServer {
 				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
 			if (this.interventionsSent.has(scenario)) {
-				return sendSse(res, { tool: { id: `no-intervention-${scenario}-${this.requests.length}`, name: "no_intervention", arguments: { reason: "No additional intervention is warranted for this update." } } });
+				return sendSse(res, { tool: { id: `no-intervention-${scenario}-${this.requests.length}`, name: "no_intervention", arguments: {} } });
 			}
 			// Simulate a realistically slow contemplator. The primary agent must finish
 			// three independent model/tool rounds and either enter another provider

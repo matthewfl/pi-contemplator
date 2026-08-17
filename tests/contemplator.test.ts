@@ -32,7 +32,7 @@ function stream(waitFor: Promise<void> = Promise.resolve(), messages: any[] = []
 
 function selectNoIntervention(context: { tools?: Array<{ name: string; execute: (id: string, args: any) => Promise<unknown> }> }): void {
 	const tool = context.tools?.find((candidate) => candidate.name === "no_intervention");
-	if (tool) void tool.execute("test-no-intervention", { reason: "No useful intervention in this test." });
+	if (tool) void tool.execute("test-no-intervention", {});
 }
 
 function setup(initialEntries: TestEntry[] = []) {
@@ -755,6 +755,9 @@ describe("Contemplator lifecycle", () => {
 		const continuation = agentMocks.agentLoop.mock.calls[1][0][0];
 		expect(continuation.role).toBe("user");
 		expect(continuation.content[0].text).toContain("You stopped without selecting a final action");
+		expect(continuation.content[0].text).toContain("argument-free no_intervention tool now");
+		expect(continuation.content[0].text).toContain("preferred default");
+		expect(continuation.content[0].text).toContain("Do not invent or send a probe merely to satisfy the tool requirement");
 		expect(continuation.content[0].text).toContain("send_probe, request_review, or no_intervention");
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
 		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.message", expect.objectContaining({

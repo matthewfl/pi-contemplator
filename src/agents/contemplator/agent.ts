@@ -29,7 +29,7 @@ interface PendingUpdate {
 type Intervention =
 	| { kind: "probe"; question: string }
 	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> }
-	| { kind: "none"; reason: string };
+	| { kind: "none" };
 
 type ReviewerSession = {
 	scope: StructuralReviewRequest["scope"];
@@ -112,7 +112,7 @@ const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const REVIEW_PROPOSAL_MESSAGE = "om.review.proposal";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
-const NoInterventionSchema = Type.Object({ reason: Type.String({ minLength: 1, pattern: "\\S", description: "Briefly explain why no grounded, materially useful intervention is warranted for this update." }) });
+const NoInterventionSchema = Type.Object({});
 const ReviewScopeSchema = Type.Union([Type.Literal("workflow"), Type.Literal("software")]);
 export const RequestReviewSchema = Type.Object({
 	scope: ReviewScopeSchema,
@@ -122,7 +122,6 @@ export const RequestReviewSchema = Type.Object({
 	constraints: Type.Optional(Type.String({ minLength: 1, description: "Relevant user requirements, boundaries, or uncertainties." })),
 });
 type SendProbeArgs = Static<typeof SendProbeSchema>;
-type NoInterventionArgs = Static<typeof NoInterventionSchema>;
 export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
 type InterventionWrite = { overwritten: boolean };
@@ -167,17 +166,16 @@ export function createSendProbeTool(
 }
 
 export function createNoInterventionTool(
-	onNoIntervention: (reason: string) => InterventionWrite,
+	onNoIntervention: () => InterventionWrite,
 ): AgentTool<typeof NoInterventionSchema> {
 	return {
 		name: "no_intervention",
 		label: "No intervention",
-		description: "End this contemplator update without sending a probe or requesting a review because no grounded, materially useful intervention is warranted. Give a brief reason. This tool is always terminal. A later final-action call in the same turn replaces an earlier warned action.",
+		description: "Terminally end this contemplator update without sending anything to the primary agent. This argument-free tool is the preferred default whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Never send a probe merely to avoid choosing no_intervention. A later final-action call in the same turn replaces an earlier warned action.",
 		parameters: NoInterventionSchema,
-		execute: async (_toolCallId, params: NoInterventionArgs) => {
-			const reason = params.reason.trim();
-			const write = onNoIntervention(reason);
-			debugLog("contemplator.no_intervention", { reasonLength: reason.length, overwritten: write.overwritten });
+		execute: async () => {
+			const write = onNoIntervention();
+			debugLog("contemplator.no_intervention", { overwritten: write.overwritten });
 			const warning = write.overwritten ? "WARNING: overwriting prior probe/review/no_intervention tool call; only one final action may be taken per turn.\n" : "";
 			return {
 				content: [{ type: "text", text: `${warning}No intervention will be sent.` }],
@@ -619,8 +617,8 @@ export class Contemplator {
 				? "send_probe, request_review, or no_intervention"
 				: "send_probe or no_intervention";
 			const interventionInstruction = reviewerEnabled
-				? `You must end this update by calling exactly one final-action tool: ${finalActionNames}. Use send_probe for one focused question, request_review only when a deeper workflow or software review is justified, or no_intervention when no useful intervention exists. If a tool warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`
-				: `You must end this update by calling exactly one final-action tool: ${finalActionNames}. Use send_probe only when one focused question is materially useful, or no_intervention when no useful probe exists. If send_probe warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`;
+				? `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question, and request_review only when a deeper workflow or software review is justified. Never send a probe merely to satisfy the final-action requirement. If a tool warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`
+				: `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful probe is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question. Never send a probe merely to satisfy the final-action requirement. If send_probe warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`;
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			let intervention: Intervention | undefined;
 			let finalActionWarned = false;
@@ -639,10 +637,10 @@ export class Contemplator {
 				intervention = { kind: "probe", question };
 				return { overwritten };
 			}, memoryExists);
-			const noIntervention = createNoInterventionTool((reason) => {
+			const noIntervention = createNoInterventionTool(() => {
 				const overwritten = intervention !== undefined;
 				finalActionWarned = false;
-				intervention = { kind: "none", reason };
+				intervention = { kind: "none" };
 				return { overwritten };
 			});
 			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>, noIntervention as AgentTool<any>];
@@ -697,7 +695,7 @@ export class Contemplator {
 					intervention: (intervention as Intervention | undefined)?.kind,
 				});
 				if (!intervention && invocation < CONTEMPLATOR_MAX_INVOCATIONS) {
-					nextPrompt = { role: "user", content: [{ type: "text", text: `You stopped without selecting a final action. Call at least one tool: ${finalActionNames}. search_memories and recall do not satisfy this requirement. Do not stop again without calling a required final-action tool.` }], timestamp: Date.now() };
+					nextPrompt = { role: "user", content: [{ type: "text", text: `You stopped without selecting a final action. If stopping meant that no intervention was clearly warranted, call the argument-free no_intervention tool now; that is the preferred default, and no explanation is required. Do not invent or send a probe merely to satisfy the tool requirement. Use send_probe only for a specific, memory-grounded question that is materially likely to improve the primary agent's reasoning${reviewerEnabled ? ", and request_review only for a well-supported recurring structural concern" : ""}. Call one final-action tool now: ${finalActionNames}. search_memories and recall do not satisfy this requirement.` }], timestamp: Date.now() };
 				}
 			}
 			if (!intervention) throw new Error(`Contemplator stopped ${CONTEMPLATOR_MAX_INVOCATIONS} times without calling a final-action tool`);
