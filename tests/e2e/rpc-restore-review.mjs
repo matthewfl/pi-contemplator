@@ -18,7 +18,8 @@ async function pendingProbeRestart() {
 		if (request.role === "observer") return observation(request, res, "probe-restart");
 		if (request.role === "contemplator") {
 			const hasTool = (request.body.messages ?? []).some((message) => message.role === "tool");
-			if (hasTool || state.probeSent) return sendSse(res, { text: "done" });
+			if (hasTool) return sendSse(res, { text: "The warned probe may be delivered as-is." });
+			if (state.probeSent) return sendSse(res, { tool: { id: "restart-no-intervention", name: "no_intervention", arguments: { reason: "The restart probe was already selected." } } });
 			await sleep(500);
 			state.probeSent = true;
 			return sendSse(res, { tool: { id: "restart-probe", name: "send_probe", arguments: { question: PROBE } } });
@@ -65,7 +66,8 @@ async function reviewerRestart() {
 		const hasTool = (request.body.messages ?? []).some((message) => message.role === "tool");
 		if (request.role === "observer") return observation(request, res, "review-restart");
 		if (request.role === "contemplator") {
-			if (hasTool || state.reviewRequested) return sendSse(res, { text: "review requested" });
+			if (hasTool) return sendSse(res, { text: "The warned review request may be delivered as-is." });
+			if (state.reviewRequested) return sendSse(res, { tool: { id: "review-restart-no-intervention", name: "no_intervention", arguments: { reason: "The restart review was already selected." } } });
 			state.reviewRequested = true;
 			return sendSse(res, { tool: { id: "request-restored-review", name: "request_review", arguments: { scope: "workflow", evidence: "[000000000000] repeated restart evidence", concern: "Determine whether resumability has a structural weakness.", review_focus: "Reach one terminal evidence-based outcome.", constraints: "Preserve asynchronous operation." } } });
 		}
@@ -116,7 +118,8 @@ async function reviewerBudgetExhaustion() {
 		const hasTool = (request.body.messages ?? []).some((message) => message.role === "tool");
 		if (request.role === "observer") return observation(request, res, "budget");
 		if (request.role === "contemplator") {
-			if (hasTool || state.requested) return sendSse(res, { text: "done" });
+			if (hasTool) return sendSse(res, { text: "The warned budget review may be delivered as-is." });
+			if (state.requested) return sendSse(res, { tool: { id: "budget-no-intervention", name: "no_intervention", arguments: { reason: "The budget review was already selected." } } });
 			state.requested = true;
 			return sendSse(res, { tool: { id: "request-budget-review", name: "request_review", arguments: { scope: "software", evidence: "[000000000000] budget evidence", concern: "Assess this bounded review.", review_focus: "Reach a terminal outcome.", constraints: "Respect the lifetime budget." } } });
 		}

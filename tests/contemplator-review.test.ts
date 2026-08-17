@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRequestReviewTool, createSendProbeTool } from "../src/agents/contemplator/agent.js";
+import { createNoInterventionTool, createRequestReviewTool, createSendProbeTool } from "../src/agents/contemplator/agent.js";
 import { memoryReferenceIds } from "../src/memory-citations.js";
 import { CONTEMPLATOR_SYSTEM, buildContemplatorSystemPrompt } from "../src/agents/contemplator/prompts.js";
 
@@ -12,6 +12,8 @@ describe("contemplator review request tool", () => {
 		expect(enabled).toContain("request_review");
 		expect(enabled).toContain("recurring structural patterns");
 		expect(enabled).toContain("later call replaces the earlier one");
+		expect(enabled).toContain("send_probe, request_review, or no_intervention");
+		expect(enabled).toContain("must finish every update");
 
 		// Non-review improvements from the revision remain shared.
 		expect(disabled).toContain("direct progress may be more informative than further hypothesis formation");
@@ -19,6 +21,7 @@ describe("contemplator review request tool", () => {
 
 		// Only instructions specific to the structural-review tool are omitted.
 		expect(disabled).not.toContain("request_review");
+		expect(disabled).toContain("send_probe or no_intervention");
 		expect(disabled.toLowerCase()).not.toContain("reviewer");
 	});
 
@@ -51,6 +54,20 @@ describe("contemplator review request tool", () => {
 		expect(text).toContain("call send_probe again to replace the probe");
 		expect(text).toContain("Probe will be delivered at the end of your turn.");
 		expect(result.details).toMatchObject({ queued: true, overwritten: false, memoryIds: ["aaaaaaaaaaaa", "bbbb1234", "bbbbbbbbbbbb", "abcdef0", "cc22dd33"] });
+	});
+
+	it("records an explicit no-intervention final action", async () => {
+		let reason = "";
+		const tool = createNoInterventionTool((value) => {
+			reason = value;
+			return { overwritten: true };
+		});
+		const result = await tool.execute("none-call", { reason: " Nothing useful is grounded yet. " });
+
+		expect(reason).toBe("Nothing useful is grounded yet.");
+		expect((result.content[0] as { text: string }).text).toContain("No intervention will be sent.");
+		expect((result.content[0] as { text: string }).text).toContain("WARNING: overwriting prior probe/review/no_intervention tool call");
+		expect(result.details).toEqual({ selected: true, overwritten: true });
 	});
 
 	it("reports last-write-wins replacement across intervention tool calls", async () => {

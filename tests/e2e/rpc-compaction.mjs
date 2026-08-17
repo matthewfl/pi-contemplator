@@ -140,8 +140,7 @@ class CompactionServer {
 		}
 
 		if (role === "contemplator") {
-			if (hasToolResult) return sendSse(res, { text: "Probe recorded." });
-			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention." });
+			if (hasToolResult || this.interventionsSent.has(scenario)) return sendSse(res, { tool: { id: `no-intervention-${this.requests.length}`, name: "no_intervention", arguments: { reason: "No additional intervention is warranted." } } });
 			assert(scenario === MANUAL, `Unexpected held contemplator request for ${scenario}`);
 			assert(!this.heldContemplator.has(scenario), "Duplicate held contemplator request");
 			this.heldContemplator.set(scenario, res);

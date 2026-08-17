@@ -296,13 +296,9 @@ class MockModelServer {
 				const memoryId = serializedMessages.match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
 				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
-			if (scenario === "SCENARIO_PROBE" && phase === "probe_sent") {
-				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
-				assert(resultText.includes("WARNING: overwriting prior probe/review tool call"), "Corrected send_probe did not report last-write-wins replacement");
-				return sendSse(res, { text: "Memory search, source recall, and intervention replacement are complete." });
+			if (this.interventionsSent.has(scenario)) {
+				return sendSse(res, { tool: { id: `no-intervention-${scenario}-${this.requests.length}`, name: "no_intervention", arguments: { reason: "No additional intervention is warranted for this update." } } });
 			}
-			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
-			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention is warranted for this update." });
 			// Simulate a realistically slow contemplator. The primary agent must finish
 			// three independent model/tool rounds and either enter another provider
 			// request or begin the long-running sleep tool before intervention.

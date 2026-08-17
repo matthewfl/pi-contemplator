@@ -28,7 +28,8 @@ interface PendingUpdate {
 
 type Intervention =
 	| { kind: "probe"; question: string }
-	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> };
+	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> }
+	| { kind: "none"; reason: string };
 
 type ReviewerSession = {
 	scope: StructuralReviewRequest["scope"];
@@ -94,6 +95,7 @@ function customMessageText(content: unknown): string {
 }
 
 const AGENT_TIME_BUCKET_MINUTES = 5;
+export const CONTEMPLATOR_MAX_INVOCATIONS = 3;
 
 function coarseAgentTime(durationMs: number): string {
 	const totalMinutes = Math.floor(durationMs / 60_000);
@@ -110,6 +112,7 @@ const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const REVIEW_PROPOSAL_MESSAGE = "om.review.proposal";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
+const NoInterventionSchema = Type.Object({ reason: Type.String({ minLength: 1, pattern: "\\S", description: "Briefly explain why no grounded, materially useful intervention is warranted for this update." }) });
 const ReviewScopeSchema = Type.Union([Type.Literal("workflow"), Type.Literal("software")]);
 export const RequestReviewSchema = Type.Object({
 	scope: ReviewScopeSchema,
@@ -119,6 +122,7 @@ export const RequestReviewSchema = Type.Object({
 	constraints: Type.Optional(Type.String({ minLength: 1, description: "Relevant user requirements, boundaries, or uncertainties." })),
 });
 type SendProbeArgs = Static<typeof SendProbeSchema>;
+type NoInterventionArgs = Static<typeof NoInterventionSchema>;
 export type RequestReviewArgs = Static<typeof RequestReviewSchema>;
 
 type InterventionWrite = { overwritten: boolean };
@@ -147,7 +151,7 @@ export function createSendProbeTool(
 	return {
 		name: "send_probe",
 		label: "Send probe",
-		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review. A later intervention call in the same turn replaces this one.",
+		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review. This is a terminal tool when all cited memory ids are valid; citation warnings leave the turn open so the action can be replaced. A later intervention call in the same turn replaces this one.",
 		parameters: SendProbeSchema,
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
@@ -162,6 +166,27 @@ export function createSendProbeTool(
 	};
 }
 
+export function createNoInterventionTool(
+	onNoIntervention: (reason: string) => InterventionWrite,
+): AgentTool<typeof NoInterventionSchema> {
+	return {
+		name: "no_intervention",
+		label: "No intervention",
+		description: "End this contemplator update without sending a probe or requesting a review because no grounded, materially useful intervention is warranted. Give a brief reason. This tool is always terminal. A later final-action call in the same turn replaces an earlier warned action.",
+		parameters: NoInterventionSchema,
+		execute: async (_toolCallId, params: NoInterventionArgs) => {
+			const reason = params.reason.trim();
+			const write = onNoIntervention(reason);
+			debugLog("contemplator.no_intervention", { reasonLength: reason.length, overwritten: write.overwritten });
+			const warning = write.overwritten ? "WARNING: overwriting prior probe/review/no_intervention tool call; only one final action may be taken per turn.\n" : "";
+			return {
+				content: [{ type: "text", text: `${warning}No intervention will be sent.` }],
+				details: { selected: true, overwritten: write.overwritten },
+			};
+		},
+	};
+}
+
 export function createRequestReviewTool(
 	onReview: (request: RequestReviewArgs) => ReviewWrite,
 	memoryExists: (id: string) => boolean = () => true,
@@ -169,7 +194,7 @@ export function createRequestReviewTool(
 	return {
 		name: "request_review",
 		label: "Request structural review",
-		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution. A later intervention call in the same turn replaces this one.",
+		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution. This is a terminal tool when all cited memory ids are valid; citation warnings leave the turn open so the action can be replaced. A later intervention call in the same turn replaces this one.",
 		parameters: RequestReviewSchema,
 		execute: async (_toolCallId, params: RequestReviewArgs) => {
 			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
@@ -269,13 +294,12 @@ export class Contemplator {
 			this.restoredTipId = undefined;
 		});
 		this.pi.on("session_compact", (_event: any, ctx: ExtensionContext) => {
-			// The in-flight prompt is persisted by flush after its agent loop. Do not
-			// snapshot it here or compaction would make restore replay it twice.
-			const history = this.running ? this.history.slice(0, -1) : this.history;
-			if (history.length > 0) {
-				this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history });
+			// In-flight invocation messages remain local to flush until its required
+			// final action is selected, so history always contains only completed work.
+			if (this.history.length > 0) {
+				this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history: this.history });
 				this.markTipPersisted(ctx);
-				debugLog("contemplator.state_persisted", { historyMessageCount: history.length, running: this.running });
+				debugLog("contemplator.state_persisted", { historyMessageCount: this.history.length, running: this.running });
 			}
 			this.persistReviewerStates(ctx);
 		});
@@ -540,7 +564,6 @@ export class Contemplator {
 		let failed = false;
 		let workerNotified = false;
 		let promptPersisted = false;
-		let promptMessage: Message | undefined;
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
 			newReflectionCount: update.reflections.length,
@@ -592,27 +615,41 @@ export class Contemplator {
 			if (update.reflections.length > 0) updateSections.push(`REFLECTIONS:\n${update.reflections.join("\n")}`);
 			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
+			const finalActionNames = reviewerEnabled
+				? "send_probe, request_review, or no_intervention"
+				: "send_probe or no_intervention";
 			const interventionInstruction = reviewerEnabled
-				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Queue only one final intervention; if a tool warns about a bad memory citation, use search_memories and recall, then call an intervention tool again to replace it."
-				: "Use send_probe only when one focused question is materially useful. Queue only one final probe; if the tool warns about a bad memory citation, use search_memories and recall, then call send_probe again to replace it.";
+				? `You must end this update by calling exactly one final-action tool: ${finalActionNames}. Use send_probe for one focused question, request_review only when a deeper workflow or software review is justified, or no_intervention when no useful intervention exists. If a tool warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`
+				: `You must end this update by calling exactly one final-action tool: ${finalActionNames}. Use send_probe only when one focused question is materially useful, or no_intervention when no useful probe exists. If send_probe warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`;
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
-			promptMessage = prompt;
-			this.history.push(prompt);
 			let intervention: Intervention | undefined;
+			let finalActionWarned = false;
 			const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 			const getBranch = () => branchEntries;
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
 			const recallTool = createRecallAgentTool(getBranch);
-			const memoryExists = (id: string) => recallMemorySources(branchEntries, id).status === "found";
+			const memoryExists = (id: string) => {
+				const exists = recallMemorySources(branchEntries, id).status === "found";
+				if (!exists) finalActionWarned = true;
+				return exists;
+			};
 			const sendProbe = createSendProbeTool((question) => {
 				const overwritten = intervention !== undefined;
+				finalActionWarned = false;
 				intervention = { kind: "probe", question };
 				return { overwritten };
 			}, memoryExists);
-			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>];
+			const noIntervention = createNoInterventionTool((reason) => {
+				const overwritten = intervention !== undefined;
+				finalActionWarned = false;
+				intervention = { kind: "none", reason };
+				return { overwritten };
+			});
+			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>, noIntervention as AgentTool<any>];
 			if (reviewerEnabled) {
 				const requestReview = createRequestReviewTool((request) => {
 					const overwritten = intervention !== undefined;
+					finalActionWarned = false;
 					const reviewRequestId = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 					intervention = { kind: "review", request: {
 						id: reviewRequestId,
@@ -626,7 +663,6 @@ export class Contemplator {
 				}, memoryExists);
 				tools.push(requestReview as AgentTool<any>);
 			}
-			const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: this.history.slice(0, -1), tools };
 			const config: AgentLoopConfig = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
@@ -634,33 +670,48 @@ export class Contemplator {
 				maxTokens: boundedMaxTokens(resolved.model as Model<any>, AGENT_LOOP_MAX_TOKENS),
 				convertToLlm: (messages) => messages as Message[],
 				toolExecution: "sequential",
+				// A clean final-action call is the end of the contemplator turn. Do not
+				// spend another model request asking it to narrate after its decision.
+				// Citation warnings leave the loop open so it can correct the action.
+				shouldStopAfterTurn: () => intervention !== undefined && !finalActionWarned,
 			};
-			const stream = agentLoop([prompt], context, config, undefined, streamSimple);
-			for await (const event of stream) logAgentStreamError("contemplator", event);
-			const result = await stream.result();
-			// The LLM call happened and was billed regardless of what we do next, so
-			// record its usage even if the session generation changed mid-run.
-			for (const message of result) {
-				if (message.role === "assistant" && message.usage) {
-					this.runtime.recordAgentUsage(message.usage);
+			const runMessages: AgentMessage[] = [];
+			let nextPrompt = prompt;
+			for (let invocation = 1; invocation <= CONTEMPLATOR_MAX_INVOCATIONS && !intervention; invocation++) {
+				runMessages.push(nextPrompt);
+				const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: [...this.history, ...runMessages.slice(0, -1)], tools };
+				const stream = agentLoop([nextPrompt], context, config, undefined, streamSimple);
+				for await (const event of stream) logAgentStreamError("contemplator", event);
+				const result = await stream.result();
+				runMessages.push(...result);
+				// The LLM call happened and was billed regardless of what we do next.
+				for (const message of result) {
+					if (message.role === "assistant" && message.usage) this.runtime.recordAgentUsage(message.usage);
+				}
+				const assistant = [...result].reverse().find((message) => message.role === "assistant");
+				debugLog("contemplator.result", {
+					invocation,
+					messageCount: result.length,
+					assistantFound: assistant !== undefined,
+					assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
+					intervention: (intervention as Intervention | undefined)?.kind,
+				});
+				if (!intervention && invocation < CONTEMPLATOR_MAX_INVOCATIONS) {
+					nextPrompt = { role: "user", content: [{ type: "text", text: `You stopped without selecting a final action. Call at least one tool: ${finalActionNames}. search_memories and recall do not satisfy this requirement. Do not stop again without calling a required final-action tool.` }], timestamp: Date.now() };
 				}
 			}
-			const assistant = [...result].reverse().find((message) => message.role === "assistant");
-			debugLog("contemplator.result", {
-				messageCount: result.length,
-				assistantFound: assistant !== undefined,
-				assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
-				intervention: intervention?.kind,
-			});
+			if (!intervention) throw new Error(`Contemplator stopped ${CONTEMPLATOR_MAX_INVOCATIONS} times without calling a final-action tool`);
 			if (sessionGeneration === this.sessionGeneration) {
-				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
-				promptPersisted = true;
-				this.markTipPersisted(ctx);
-			}
-			if (assistant && sessionGeneration === this.sessionGeneration) {
-				this.history.push(assistant);
-				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
-				this.markTipPersisted(ctx);
+				// Keep the durable contemplator history compact: prompts and assistant
+				// decisions are sufficient to resume its reasoning. Tool-result bodies
+				// are available within this run but are not copied into the ledger.
+				for (const message of runMessages) {
+					if (message.role !== "user" && message.role !== "assistant") continue;
+					this.history.push(message);
+					this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message });
+					promptPersisted = true;
+					this.markTipPersisted(ctx);
+				}
 			}
 			if (intervention?.kind === "probe" && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, intervention.question, "send_probe");
 			if (intervention?.kind === "review" && this.runtime.config.reviewerEnabled && sessionGeneration === this.sessionGeneration) {
@@ -690,7 +741,6 @@ export class Contemplator {
 			failed = true;
 			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
 			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
-				if (promptMessage && this.history.at(-1) === promptMessage) this.history.pop();
 				const pending = this.pending as PendingUpdate | undefined;
 				this.pending = {
 					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),

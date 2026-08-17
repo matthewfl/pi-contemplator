@@ -15,7 +15,8 @@ async function modelRoutingAndFeatureFlags() {
 		}
 		if (request.role === "contemplator") {
 			assert(toolNames(request.body).has("request_review"), "Reviewer-enabled contemplator lacked request_review");
-			if (hasTool || state.reviewRequested) return sendSse(res, { text: "done" });
+			if (hasTool) return sendSse(res, { text: "The warned routed review may be delivered as-is." });
+			if (state.reviewRequested) return sendSse(res, { tool: { id: "route-no-intervention", name: "no_intervention", arguments: { reason: "The routed review was already selected." } } });
 			state.reviewRequested = true;
 			return sendSse(res, { tool: { id: "route-review", name: "request_review", arguments: { scope: "workflow", evidence: "[000000000000] routing evidence", concern: "Verify model routing.", review_focus: "Reach a terminal result.", constraints: "No behavior changes." } } });
 		}
@@ -120,7 +121,7 @@ async function concurrentIsolation() {
 		}
 		if (request.role === "contemplator") {
 			assert(!toolNames(request.body).has("request_review"), "Reviewer-disabled session exposed request_review");
-			if (hasTool || sent.has(marker)) return sendSse(res, { text: "done" });
+			if (hasTool || sent.has(marker)) return sendSse(res, { tool: { id: `no-intervention-${marker}`, name: "no_intervention", arguments: { reason: "No further isolated-session probe is warranted." } } });
 			sent.add(marker);
 			return sendSse(res, { delayMs: marker === "SESSION_ALPHA" ? 400 : 200, tool: { id: `probe-${marker}`, name: "send_probe", arguments: { question: `${marker}_PROBE` } } });
 		}

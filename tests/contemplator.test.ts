@@ -21,13 +21,18 @@ function deferred() {
 	return { promise, resolve };
 }
 
-function stream(waitFor: Promise<void> = Promise.resolve()) {
+function stream(waitFor: Promise<void> = Promise.resolve(), messages: any[] = []) {
 	return {
 		async *[Symbol.asyncIterator]() {
 			await waitFor;
 		},
-		result: async () => [],
+		result: async () => messages,
 	};
+}
+
+function selectNoIntervention(context: { tools?: Array<{ name: string; execute: (id: string, args: any) => Promise<unknown> }> }): void {
+	const tool = context.tools?.find((candidate) => candidate.name === "no_intervention");
+	if (tool) void tool.execute("test-no-intervention", { reason: "No useful intervention in this test." });
 }
 
 function setup(initialEntries: TestEntry[] = []) {
@@ -90,7 +95,10 @@ function setup(initialEntries: TestEntry[] = []) {
 
 beforeEach(() => {
 	agentMocks.agentLoop.mockReset();
-	agentMocks.agentLoop.mockImplementation(() => stream());
+	agentMocks.agentLoop.mockImplementation((_prompts, context) => {
+		selectNoIntervention(context);
+		return stream();
+	});
 });
 
 describe("Contemplator lifecycle", () => {
@@ -388,8 +396,14 @@ describe("Contemplator lifecycle", () => {
 	it("rechecks turn throttling before processing updates queued during a run", async () => {
 		const gate = deferred();
 		agentMocks.agentLoop
-			.mockImplementationOnce(() => stream(gate.promise))
-			.mockImplementation(() => stream());
+			.mockImplementationOnce((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream(gate.promise);
+			})
+			.mockImplementation((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
 		const rawA = textCustomMessage("raw-a", "branch a");
 		const obsA = observationsRecordedEntry("obs-a", {
 			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
@@ -718,6 +732,36 @@ describe("Contemplator lifecycle", () => {
 		expect(secondPrompt).toContain("review-two");
 	});
 
+	it("injects a user reminder when the contemplator stops without a final-action tool", async () => {
+		agentMocks.agentLoop
+			.mockImplementationOnce(() => stream(Promise.resolve(), [
+				{ role: "assistant", content: [{ type: "text", text: "I will just stop." }], stopReason: "stop", timestamp: Date.now() },
+			]))
+			.mockImplementationOnce((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
+		const harness = setup([
+			textCustomMessage("raw-a", "branch a"),
+			observationsRecordedEntry("obs-a", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
+				coversUpToId: "raw-a",
+			}),
+		]);
+
+		harness.fire("turn_end");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+
+		const continuation = agentMocks.agentLoop.mock.calls[1][0][0];
+		expect(continuation.role).toBe("user");
+		expect(continuation.content[0].text).toContain("You stopped without selecting a final action");
+		expect(continuation.content[0].text).toContain("send_probe, request_review, or no_intervention");
+		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.message", expect.objectContaining({
+			message: expect.objectContaining({ role: "user", content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("without selecting a final action") })]) }),
+		})));
+	});
+
 	it("removes reviewer instructions and tools when reviewers are disabled", async () => {
 		const harness = setup();
 		harness.runtime.config = { ...harness.runtime.config, reviewerEnabled: false };
@@ -735,7 +779,7 @@ describe("Contemplator lifecycle", () => {
 
 		const [, context] = agentMocks.agentLoop.mock.calls[0];
 		expect(context.systemPrompt).not.toContain("Structural reviews are enabled");
-		expect(context.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_memories", "recall", "send_probe"]);
+		expect(context.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_memories", "recall", "send_probe", "no_intervention"]);
 		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
 		expect(prompt.content[0].text).not.toContain("request_review");
 	});
@@ -748,12 +792,15 @@ describe("Contemplator lifecycle", () => {
 			cacheWrite: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
 		};
-		agentMocks.agentLoop.mockImplementation(() => ({
-			async *[Symbol.asyncIterator]() {},
-			result: async () => [
-				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
-			],
-		}));
+		agentMocks.agentLoop.mockImplementation((_prompts, context) => {
+			selectNoIntervention(context);
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => [
+					{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
+				],
+			};
+		});
 		const harness = setup();
 		harness.fire("session_start");
 		const rawA = textCustomMessage("raw-a", "branch a");
