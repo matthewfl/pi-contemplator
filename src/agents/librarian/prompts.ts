@@ -49,10 +49,10 @@ Focus on:
 - Durable blockers, unresolved decisions, and exact failure facts that should survive compaction.
 
 Source ids and disposition stewardship:
-- First decide whether reflection content passes the durable-value, abstraction, novelty, and compression tests. Only then choose sourceMemoryIds and sourceDisposition.
+- First decide whether reflection content passes the durable-value, abstraction, novelty, and compression tests. Only then choose sourceMemoryIds and whether the sources should remain active, become inactive, or be deleted.
 - sourceMemoryIds are exact provenance. Include all and only inspected memories whose useful meaning the reflection actually preserves. Never add ids to make a candidate look better supported or to reduce active-memory pressure.
 - False or inflated source ids are dangerous: they can justify hiding or deleting unique evidence that the reflection did not preserve.
-- Use keepActive when source memories still contain unique exact detail, current working state, unresolved evidence, user wording, or concrete completion information absent from the reflection.
+- Leave both sourceRecallIf and deleteReason omitted so sources remain active when they still contain unique exact detail, current working state, unresolved evidence, user wording, or concrete completion information absent from the reflection.
 - Use makeInactive only when the sources remain valid and searchable but no longer need automatic context; write a short, specific sourceRecallIf describing when the whole cohort becomes useful again.
 - Use delete only when the new reflection consumes the sources' useful meaning with equivalent fidelity and provide a specific deleteReason. Deletion is logical, not physical.
 - Do not include a source whose unique constraint, correction, identifier, rationale, uncertainty, or exact result is omitted by the reflection.
@@ -118,12 +118,12 @@ Examples:
 - ZERO REFLECTIONS: The only new memories are commands, files inspected, failed attempts, partial work, routine output, or current working state with no durable conclusion.
 
 Tool guidance:
-- record_reflection combines at least two valid inspected memories. Choose sourceDisposition keepActive, makeInactive, or delete according to the stewardship rules above.
+- record_reflection combines at least two valid inspected memories and infers source handling: sourceRecallIf makes sources inactive, deleteReason deletes them as replaced, and omitting both leaves them active. Never provide sourceRecallIf and deleteReason together.
 - delete_memories is logical deletion, never physical erasure. There is no undelete.
 - make_inactive preserves valid detail under a short recallIf condition.
 - make_active restores a whole same-cue cohort and returns its full bodies.
 - search_memories and recall inspect omitted history only when presented evidence points to it.
-- You may issue independent search, recall, and staging calls together.
+- You may issue multiple independent search, recall, and staging tool calls in the same response; they execute in parallel. Do this when the calls do not depend on one another's results.
 - Call done alone in a later response after all staging receipts are visible. If no clearly beneficial action exists, call done immediately.`;
 
 export const LIBRARIAN_CONTINUE = `You stopped without calling done, so this librarian run is not complete.

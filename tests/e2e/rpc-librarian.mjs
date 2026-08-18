@@ -34,16 +34,16 @@ const server = new ModelServer(async (request, res) => {
 		if (operationalToolMessages.length) {
 			const receipt = JSON.stringify(operationalToolMessages);
 			if (/confirmation is required/i.test(receipt)) {
-				return sendSse(res, { tool: { id: `done-confirm-${state.librarian}`, name: "done", arguments: { summary: "Confirmed the reported librarian status." } } });
+				return sendSse(res, { tool: { id: `done-confirm-${state.librarian}`, name: "done", arguments: {} } });
 			}
 			assert(/Staged reflection/.test(receipt), `Librarian did not receive a successful staging receipt: ${receipt}`);
 			state.doneAfterReceipt = true;
-			return sendSse(res, { tool: { id: `done-${state.librarian}`, name: "done", arguments: { summary: "Consolidated related E2E evidence conservatively." } } });
+			return sendSse(res, { tool: { id: `done-${state.librarian}`, name: "done", arguments: {} } });
 		}
 		const contextText = (request.body.messages ?? []).map(textOf).join("\n");
 		const ids = [...new Set([...contextText.matchAll(/^\[([a-f0-9]{12})\] (?:observation|reflection)\b/gm)].map((match) => match[1]))];
 		log(`librarian request inspected ${ids.length} active memory line(s)`);
-		if (ids.length < 2) return sendSse(res, { tool: { id: `done-empty-${state.librarian}`, name: "done", arguments: { summary: "Not enough related evidence yet." } } });
+		if (ids.length < 2) return sendSse(res, { tool: { id: `done-empty-${state.librarian}`, name: "done", arguments: {} } });
 		state.staged++;
 		return sendSse(res, {
 			delayMs: 150,
@@ -53,7 +53,6 @@ const server = new ModelServer(async (request, res) => {
 				arguments: {
 					content: `E2E_LIBRARIAN_CRYSTALLIZED_${state.staged}: the related implementation evidence has been consolidated`,
 					sourceMemoryIds: ids.slice(0, 2),
-					sourceDisposition: "makeInactive",
 					sourceRecallIf: "Recall when revisiting the related E2E implementation",
 				},
 			},

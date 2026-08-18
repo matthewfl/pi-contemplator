@@ -236,7 +236,7 @@ class MockModelServer {
 				assert(!resultText.includes("Rejected:") && !/invalid arguments|validation/i.test(resultText), `Librarian staging call was rejected: ${resultText}`);
 				return sendSse(res, {
 					delayMs: 150,
-					tool: { id: `librarian-done-${this.requests.length}`, name: "done", arguments: { summary: "Conservative curation pass completed." } },
+					tool: { id: `librarian-done-${this.requests.length}`, name: "done", arguments: {} },
 				});
 			}
 			const activeSection = requestText.split("ACTIVE MEMORIES").at(-1)?.split("INACTIVE MEMORY GROUPS")[0] ?? "";
@@ -247,7 +247,7 @@ class MockModelServer {
 			if (memoryIds.length < 2) {
 				return sendSse(res, {
 					delayMs: 200,
-					tool: { id: `librarian-done-empty-${this.requests.length}`, name: "done", arguments: { summary: "Too little related evidence to consolidate safely." } },
+					tool: { id: `librarian-done-empty-${this.requests.length}`, name: "done", arguments: {} },
 				});
 			}
 			const feedbackSuffix = activeSection.includes(PROBE_FEEDBACK_OBSERVATION) ? `: ${PROBE_FEEDBACK_OBSERVATION}` : "";
@@ -259,7 +259,6 @@ class MockModelServer {
 					arguments: {
 						content: `${PIPELINE_REFLECTION_PREFIX}:${scenario}:${this.requests.length}${feedbackSuffix}`,
 						sourceMemoryIds: memoryIds.slice(0, 2),
-						sourceDisposition: "makeInactive",
 						sourceRecallIf: `Recall when revisiting ${scenario ?? "the consolidated work"}`,
 					},
 				},
