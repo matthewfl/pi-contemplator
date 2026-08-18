@@ -30,8 +30,12 @@ const server = new ModelServer(async (request, res) => {
 	}
 	if (request.role === "librarian") {
 		state.librarian++;
-		if (toolMessages.length) {
-			const receipt = JSON.stringify(toolMessages);
+		const operationalToolMessages = toolMessages.filter((message) => !JSON.stringify(message).includes("librarian-record-reflection-example"));
+		if (operationalToolMessages.length) {
+			const receipt = JSON.stringify(operationalToolMessages);
+			if (/confirmation is required/i.test(receipt)) {
+				return sendSse(res, { tool: { id: `done-confirm-${state.librarian}`, name: "done", arguments: { summary: "Confirmed the reported librarian status." } } });
+			}
 			assert(/Staged reflection/.test(receipt), `Librarian did not receive a successful staging receipt: ${receipt}`);
 			state.doneAfterReceipt = true;
 			return sendSse(res, { tool: { id: `done-${state.librarian}`, name: "done", arguments: { summary: "Consolidated related E2E evidence conservatively." } } });
@@ -51,7 +55,6 @@ const server = new ModelServer(async (request, res) => {
 					sourceMemoryIds: ids.slice(0, 2),
 					sourceDisposition: "makeInactive",
 					sourceRecallIf: "Recall when revisiting the related E2E implementation",
-					rationale: "One higher-order memory preserves these related details more compactly.",
 				},
 			},
 		});

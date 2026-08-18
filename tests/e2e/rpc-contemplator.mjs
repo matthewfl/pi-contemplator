@@ -261,7 +261,6 @@ class MockModelServer {
 						sourceMemoryIds: memoryIds.slice(0, 2),
 						sourceDisposition: "makeInactive",
 						sourceRecallIf: `Recall when revisiting ${scenario ?? "the consolidated work"}`,
-						rationale: "These related active memories can be preserved more compactly by one higher-order memory.",
 					},
 				},
 			});
