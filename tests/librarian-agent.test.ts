@@ -142,6 +142,19 @@ describe("librarian agent", () => {
 		})).resolves.toMatchObject({ block: true });
 	});
 
+	it("reminds a prose-only librarian to record decisions with tools", async () => {
+		const prompts: string[] = [];
+		const loop = fakeAgentLoop(async (invocation, invocationPrompts, context) => {
+			prompts.push(invocationPrompts[0].content[0].text);
+			if (invocation > 0) await confirmDone(context);
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+		expect(result.completed).toBe(true);
+		expect(prompts[1]).toContain("IMPORTANT!!!! YOU HAVE BEEN THINKING FOR A WHILE");
+		expect(prompts[1]).toContain("CALL THE TOOLS NOW TO RECORD ANYTHING YOU HAVE ALREADY DECIDED");
+		expect(prompts[1]).toContain("DO NOT DESCRIBE INTENDED ACTIONS IN PROSE");
+	});
+
 	it("publishes in-progress thinking before the librarian stream settles", async () => {
 		const snapshots: Array<readonly any[]> = [];
 		const loop = ((_prompts: any[], context: any) => ({
@@ -237,7 +250,7 @@ describe("librarian agent", () => {
 		expect(result.commit?.actions[0]).toMatchObject({ type: "delete", memoryIds: [A] });
 	});
 
-	it("discards staged mutations and fairness changes after bounded stops without done", async () => {
+	it("does not create an empty commit or fairness credit after bounded stops without tools", async () => {
 		const fairness = new Map();
 		const loop = fakeAgentLoop(async () => {});
 		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5 });
@@ -245,6 +258,26 @@ describe("librarian agent", () => {
 		expect(result.sample?.sampled).toBe(true);
 		expect(result.commit).toBeUndefined();
 		expect(fairness.size).toBe(0);
+	});
+
+	it("commits validated progress with coverage when the run stops without done", async () => {
+		const content = "Alpha and beta were consolidated before the librarian timed out.";
+		const loop = fakeAgentLoop(async (invocation, _prompts, context) => {
+			if (invocation !== 0) return;
+			await tool(context, "record_reflection").execute("partial-reflection", {
+				content,
+				sourceMemoryIds: [A, B],
+				deleteReason: "The new reflection completely preserves these temporal source details.",
+			});
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+		expect(result.completed).toBe(true);
+		expect(result.commit).toMatchObject({
+			coversUpToId: "obs-entry",
+			summary: expect.stringContaining("registered actions were preserved"),
+			reflections: [expect.objectContaining({ content })],
+			actions: [expect.objectContaining({ type: "delete", memoryIds: [A, B] })],
+		});
 	});
 
 	it("records fairness only after a sampled pass calls done", async () => {

@@ -128,4 +128,6 @@ Tool guidance:
 
 export const LIBRARIAN_CONTINUE = `You stopped without calling done, so this librarian run is not complete.
 
+IMPORTANT!!!! YOU HAVE BEEN THINKING FOR A WHILE. CALL THE TOOLS NOW TO RECORD ANYTHING YOU HAVE ALREADY DECIDED. DO NOT DESCRIBE INTENDED ACTIONS IN PROSE—REGISTER THEM WITH TOOL CALLS NOW.
+
 Continue reviewing only if clearly useful work remains. Reapply the durability, abstraction, novelty, compression, provenance, and lifecycle-evidence tests above. Use record_reflection only for a genuinely durable higher-order memory; use delete_memories, make_inactive, or make_active only with sufficient evidence; and use search_memories/recall only when presented evidence points to omitted or inactive context. If no further action is clearly warranted, call done now. Otherwise finish the necessary tool calls and then call done. Do not manufacture changes merely to continue.`;

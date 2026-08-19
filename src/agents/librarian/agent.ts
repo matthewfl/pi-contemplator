@@ -35,7 +35,7 @@ import {
 	type SamplingFairness,
 } from "./sampling.js";
 
-export const LIBRARIAN_MAX_INVOCATIONS = 4;
+export const LIBRARIAN_MAX_INVOCATIONS = 15;
 
 export type RunLibrarianArgs = {
 	model: Model<any>;
@@ -551,7 +551,12 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	for (let invocation = 1; !doneSummary && invocation < LIBRARIAN_MAX_INVOCATIONS; invocation++) await runOnce(LIBRARIAN_CONTINUE);
 	if (!doneSummary) {
 		debugLog("librarian.incomplete", { stagedReflections: stagedReflections.size, stagedActions: stagedActions.length });
-		return { completed: false, sample };
+		if (stagedReflections.size === 0 && stagedActions.length === 0) return { completed: false, sample };
+		const affectedMemories = new Set(stagedActions.flatMap((action) => action.memoryIds)).size;
+		// Successfully registered tool calls are authoritative even if the model
+		// spends too long thinking and exhausts its rounds before confirming done.
+		// Preserve them as a normal covered pass rather than throwing good work away.
+		doneSummary = `Librarian exhausted its rounds after registering ${stagedReflections.size} reflections and ${stagedActions.length} lifecycle actions affecting ${affectedMemories} memories; registered actions were preserved.`;
 	}
 	// Fairness is launch-local and represents completed pressure-valve review
 	// opportunities. Do not penalize a selected sample when the run fails or stops
