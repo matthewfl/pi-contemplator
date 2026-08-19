@@ -69,7 +69,7 @@ const RecordUpdateSchema = Type.Object({
 	make_active: Type.Optional(Type.Boolean({ description: "Set true to reactivate the listed inactive memories or aliases." })),
 	delete: Type.Optional(Type.Boolean({ description: "Set true to logically delete the listed memories, including reflection sources when reflection_content is present." })),
 	reason: Type.Optional(Type.String({ minLength: 1, description: "Required when delete is true." })),
-	because_of_observations: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required evidence for standalone delete, deactivate, or activate updates." })),
+	because_of_memories: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required later observation or reflection evidence for standalone delete, deactivate, or activate updates." })),
 	replacement_memories: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional replacements for standalone deletion." })),
 });
 const DoneSchema = Type.Object({});
@@ -192,6 +192,36 @@ function requiredToolChoice(api: string | undefined): "any" | "required" {
 	return "required";
 }
 
+/**
+ * Force a tool call in the final provider payload. AgentLoopConfig is based on
+ * SimpleStreamOptions, and several pi-ai streamSimple adapters intentionally
+ * copy only known base options before calling their provider-specific stream;
+ * an extra `toolChoice` property is therefore lost for those adapters. onPayload
+ * survives that copy, so enforce the equivalent provider-native field here.
+ */
+export function forceRequiredToolPayload(payload: unknown, api: string | undefined): unknown {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+	const record = payload as Record<string, unknown>;
+	if (api === "anthropic-messages") return { ...record, tool_choice: { type: "any" } };
+	if (api === "google-generative-ai" || api === "google-vertex") {
+		const config = record.config && typeof record.config === "object" && !Array.isArray(record.config) ? record.config as Record<string, unknown> : {};
+		const toolConfig = config.toolConfig && typeof config.toolConfig === "object" && !Array.isArray(config.toolConfig) ? config.toolConfig as Record<string, unknown> : {};
+		const functionCallingConfig = toolConfig.functionCallingConfig && typeof toolConfig.functionCallingConfig === "object" && !Array.isArray(toolConfig.functionCallingConfig) ? toolConfig.functionCallingConfig as Record<string, unknown> : {};
+		return { ...record, config: { ...config, toolConfig: { ...toolConfig, functionCallingConfig: { ...functionCallingConfig, mode: "ANY" } } } };
+	}
+	if (api === "bedrock-converse-stream") {
+		const toolConfig = record.toolConfig && typeof record.toolConfig === "object" && !Array.isArray(record.toolConfig) ? record.toolConfig as Record<string, unknown> : {};
+		return { ...record, toolConfig: { ...toolConfig, toolChoice: { any: {} } } };
+	}
+	if (api === "mistral-conversations") return { ...record, toolChoice: "required" };
+	if (api === "pi-messages") {
+		const options = record.options && typeof record.options === "object" && !Array.isArray(record.options) ? record.options as Record<string, unknown> : {};
+		return { ...record, options: { ...options, toolChoice: "required" } };
+	}
+	// OpenAI Completions/Responses/Codex/Azure and OpenAI-compatible custom APIs.
+	return { ...record, tool_choice: "required" };
+}
+
 export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRunResult> {
 	const snapshot = args.getBranch();
 	const coversUpToId = latestObservationBatchEntryId(snapshot);
@@ -233,10 +263,18 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 
 	const memoryExists = (id: string): boolean => memoryById.has(id) || stagedReflections.has(id);
 	const statusOf = (id: string): MemoryStatus | undefined => stagedStatus.get(id) ?? (stagedReflections.has(id) ? "active" : undefined);
-	const isObservationEvidence = (ids: readonly string[]): boolean => ids.length > 0 && ids.every((id) => inspected.has(id) && folded.observationsById.has(id));
+	const missingMemoryReason = (id: string): string => `Memory [${id}] does not exist on this branch. Double-check that the id was copied correctly.`;
+	const formatRejectionReasons = (reasons: ReadonlyMap<string, string>): string => Array.from(reasons, ([id, reason]) => `- [${id}]: ${reason}`).join("\n");
 	const validateShared = (evidenceIds: readonly string[], replacements: readonly string[] = []): string | undefined => {
-		if (!isObservationEvidence(evidenceIds)) return "Every becauseOfObservationIds value must be an inspected observation in this run.";
-		if (!replacements.every((id) => inspected.has(id) && memoryExists(id))) return "Every replacementMemoryIds value must be an inspected memory in this run.";
+		if (evidenceIds.length === 0) return "because_of_memories is required for a standalone lifecycle update.";
+		for (const id of evidenceIds) {
+			if (!memoryExists(id)) return `${missingMemoryReason(id)} It was supplied in because_of_memories.`;
+			if (!inspected.has(id)) return `Evidence memory [${id}] exists but was not provided or inspected in this librarian run.`;
+		}
+		for (const id of replacements) {
+			if (!memoryExists(id)) return `${missingMemoryReason(id)} It was supplied in replacement_memories.`;
+			if (!inspected.has(id)) return `Replacement memory [${id}] exists but was not provided or inspected in this librarian run.`;
+		}
 		return undefined;
 	};
 	const evidenceFollowsTarget = (targetId: string, evidenceIds: readonly string[]): boolean => {
@@ -275,7 +313,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			const recallIf = params.recall_if?.trim();
 			const activate = params.make_active === true;
 			const deleteRequested = params.delete === true;
-			const evidenceIds = unique(params.because_of_observations ?? []);
+			const evidenceIds = unique(params.because_of_memories ?? []);
 			const replacementIds = unique(params.replacement_memories ?? []);
 
 			if (params.recall_if !== undefined && !recallIf) return textResult("Rejected: recall_if must contain non-whitespace text.");
@@ -287,8 +325,16 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			if (reflectionContent !== undefined) {
 				const sourceMemoryIds = refs;
 				const sourceDisposition = recallIf !== undefined ? "makeInactive" : deleteRequested ? "delete" : "keepActive";
-				if (sourceMemoryIds.length < 2 || sourceMemoryIds.some((id) => !inspected.has(id) || !memoryExists(id))) return textResult("Rejected: every distinct reflection source in memories must be an inspected memory, and at least two are required.", { rejected: sourceMemoryIds });
-				if (sourceDisposition !== "keepActive" && sourceMemoryIds.some((id) => statusOf(id) !== "active")) return textResult("Rejected: reflection source handling can change only currently active sources.");
+				if (sourceMemoryIds.length < 2) return textResult(`Rejected: a reflection requires at least two distinct source memories; received ${sourceMemoryIds.length}.`, { rejected: sourceMemoryIds });
+				const sourceRejections = new Map<string, string>();
+				for (const id of sourceMemoryIds) {
+					if (!memoryExists(id)) sourceRejections.set(id, missingMemoryReason(id));
+					else if (sourceDisposition !== "keepActive" && statusOf(id) !== "active") {
+						const status = statusOf(id);
+						sourceRejections.set(id, status === "deleted" ? `Memory [${id}] is already deleted.` : status === "inactive" ? `Memory [${id}] is already inactive.` : `Memory [${id}] is not active.`);
+					} else if (!inspected.has(id)) sourceRejections.set(id, `Memory [${id}] exists but was not provided or inspected in this librarian run.`);
+				}
+				if (sourceRejections.size) return textResult(`Rejected reflection update:\n${formatRejectionReasons(sourceRejections)}`, { rejected: Array.from(sourceRejections.keys()), rejectionReasons: Object.fromEntries(sourceRejections) });
 				const content = truncateRecordContent(reflectionContent);
 				if (!content || /\r|\n/.test(content)) return textResult("Rejected: reflection_content must be non-empty single-line prose.");
 				const reflectionId = hashId(content);
@@ -297,6 +343,9 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 				const reflection: Reflection = { id: reflectionId, content, supportingObservationIds, sourceMemoryIds, tokenCount: estimateStringTokens(content) };
 				stagedReflections.set(reflectionId, reflection);
 				stagedStatus.set(reflectionId, "active");
+				// A later sequential tool call may cite this newly recorded reflection as
+				// lifecycle evidence. Independent parallel calls cannot depend on it.
+				memoryCreationIndex.set(reflectionId, snapshot.length);
 				inspected.add(reflectionId);
 				const createdAt = args.now ?? Date.now();
 				if (sourceDisposition === "makeInactive") stageAction({ type: "makeInactive", memoryIds: sourceMemoryIds, recallIf: recallIf!, becauseOfMemoryIds: [reflectionId], createdAt });
@@ -310,35 +359,55 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			}
 
 			const sharedError = validateShared(evidenceIds, replacementIds);
-			if (sharedError) return textResult(`Rejected entire update: ${sharedError.replaceAll("becauseOfObservationIds", "because_of_observations").replaceAll("replacementMemoryIds", "replacement_memories")}`);
+			if (sharedError) return textResult(`Rejected entire update: ${sharedError.replaceAll("replacementMemoryIds", "replacement_memories")}`);
 
 			if (activate) {
 				const acceptedRefs: string[] = [];
-				const rejectedRefs: string[] = [];
 				const members: string[] = [];
+				const rejectionReasons = new Map<string, string>();
 				for (const ref of refs) {
 					const resolved = resolveInactiveRef(ref);
-					if (!resolved?.length) rejectedRefs.push(ref);
-					else { acceptedRefs.push(ref); members.push(...resolved); }
+					if (!resolved?.length) {
+						if (!memoryExists(ref) && !sample.aliasMembers.has(ref)) rejectionReasons.set(ref, missingMemoryReason(ref));
+						else {
+							const status = statusOf(ref);
+							rejectionReasons.set(ref, status === "active" ? `Memory [${ref}] is already active.` : status === "deleted" ? `Memory [${ref}] is already deleted and cannot be reactivated.` : `Inactive memory [${ref}] has no resolvable recall cohort in this run.`);
+						}
+						continue;
+					}
+					const eligibleMembers = resolved.filter((id) => statusOf(id) === "inactive" && evidenceFollowsTarget(id, evidenceIds));
+					if (eligibleMembers.length === 0) {
+						rejectionReasons.set(ref, `The cited evidence does not follow the current inactive state for [${ref}], so it cannot justify reactivation.`);
+						continue;
+					}
+					acceptedRefs.push(ref);
+					members.push(...eligibleMembers);
 				}
-				const acceptedMembers = unique(members).filter((id) => statusOf(id) === "inactive" && evidenceFollowsTarget(id, evidenceIds));
+				const acceptedMembers = unique(members);
 				if (acceptedMembers.length) stageAction({ type: "makeActive", memoryIds: acceptedMembers, becauseOfMemoryIds: evidenceIds, createdAt: args.now ?? Date.now() });
 				for (const id of acceptedMembers) inspected.add(id);
 				const bodies = acceptedMembers.map((id) => memoryLine(memoryById.get(id)!, "active")).join("\n");
-				return textResult(`Reactivated ${acceptedMembers.length} memories from ${acceptedRefs.length} references; rejected: ${rejectedRefs.join(", ") || "none"}.${bodies ? `\n\nREACTIVATED MEMORIES\n${bodies}` : ""}`, { update: "activate", acceptedRefs, rejectedRefs, acceptedMembers });
+				const rejectedText = rejectionReasons.size ? `\nRejected references:\n${formatRejectionReasons(rejectionReasons)}` : "";
+				return textResult(`Reactivated ${acceptedMembers.length} memories from ${acceptedRefs.length} references.${rejectedText}${bodies ? `\n\nREACTIVATED MEMORIES\n${bodies}` : ""}`, { update: "activate", acceptedRefs, rejectedRefs: Array.from(rejectionReasons.keys()), rejectionReasons: Object.fromEntries(rejectionReasons), acceptedMembers });
 			}
 
 			const accepted: string[] = [];
-			const rejected: string[] = [];
+			const rejectionReasons = new Map<string, string>();
 			for (const id of refs) {
-				const invalidStatus = deleteRequested ? statusOf(id) === "deleted" : statusOf(id) !== "active";
-				if (!inspected.has(id) || !memoryExists(id) || invalidStatus || evidenceIds.includes(id) || !evidenceFollowsTarget(id, evidenceIds)) rejected.push(id);
+				if (!memoryExists(id)) rejectionReasons.set(id, missingMemoryReason(id));
+				else if (deleteRequested && statusOf(id) === "deleted") rejectionReasons.set(id, `Memory [${id}] is already deleted.`);
+				else if (!deleteRequested && statusOf(id) === "inactive") rejectionReasons.set(id, `Memory [${id}] is already inactive.`);
+				else if (!deleteRequested && statusOf(id) === "deleted") rejectionReasons.set(id, `Memory [${id}] is already deleted and cannot be made inactive.`);
+				else if (!inspected.has(id)) rejectionReasons.set(id, `Memory [${id}] exists but was not provided or inspected in this librarian run.`);
+				else if (evidenceIds.includes(id)) rejectionReasons.set(id, `Memory [${id}] cannot be both the lifecycle target and the evidence justifying that change.`);
+				else if (!evidenceFollowsTarget(id, evidenceIds)) rejectionReasons.set(id, `The cited evidence does not follow the current state of memory [${id}], so it cannot justify this change.`);
 				else accepted.push(id);
 			}
 			if (deleteRequested && accepted.length) stageAction({ type: "delete", memoryIds: accepted, reason: params.reason!.trim(), becauseOfMemoryIds: evidenceIds, replacementMemoryIds: replacementIds, createdAt: args.now ?? Date.now() });
 			if (!deleteRequested && accepted.length) stageAction({ type: "makeInactive", memoryIds: accepted, recallIf: recallIf!, becauseOfMemoryIds: evidenceIds, createdAt: args.now ?? Date.now() });
 			const update = deleteRequested ? "delete" : "deactivate";
-			return textResult(`Staged ${update} update for ${accepted.length} memories; rejected ${rejected.length}: ${rejected.join(", ") || "none"}.`, { update, accepted, rejected });
+			const rejectedText = rejectionReasons.size ? `\nRejected targets:\n${formatRejectionReasons(rejectionReasons)}` : "";
+			return textResult(`Staged ${update} update for ${accepted.length} memories; rejected ${rejectionReasons.size}.${rejectedText}`, { update, accepted, rejected: Array.from(rejectionReasons.keys()), rejectionReasons: Object.fromEntries(rejectionReasons) });
 		},
 	};
 
@@ -455,9 +524,13 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			},
 			shouldStopAfterTurn: () => doneSummary !== undefined || (effectiveMaxTurns !== undefined && ++turnCount >= effectiveMaxTurns),
 			// The first pass gets the configured reasoning level. Once it stops
-			// without a tool, preserve that reasoning in history but force subsequent
-			// requests to spend only a minimal budget before emitting a required tool.
-			...(requireToolCall ? { toolChoice: requiredToolChoice(args.model.api), reasoning: "minimal" as const } : {}),
+			// without a tool, preserve that reasoning in history but disable further
+			// thinking and force a provider-native tool call. In particular, Anthropic
+			// rejects tool_choice:any when extended thinking is enabled.
+			...(requireToolCall ? {
+				toolChoice: requiredToolChoice(args.model.api),
+				onPayload: (payload: unknown) => forceRequiredToolPayload(payload, args.model.api),
+			} : {}),
 			...(!requireToolCall && reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		};
 		history.push(prompt as AgentMessage);

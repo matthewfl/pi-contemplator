@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildLibrarianPrompt, runLibrarian } from "../src/agents/librarian/agent.js";
+import { buildLibrarianPrompt, forceRequiredToolPayload, runLibrarian } from "../src/agents/librarian/agent.js";
 import { LIBRARIAN_CONTINUE, LIBRARIAN_SYSTEM } from "../src/agents/librarian/prompts.js";
 import { hashId } from "../src/ids.js";
 import { OM_LIBRARIAN_COMMIT, type Entry } from "../src/session-ledger/index.js";
@@ -8,6 +8,7 @@ const A = "aaaaaaaaaaaa";
 const B = "bbbbbbbbbbbb";
 const C = "cccccccccccc";
 const D = "dddddddddddd";
+const E = "eeeeeeeeeeee";
 
 function entries(extra: Entry[] = []): Entry[] {
 	return [
@@ -55,6 +56,15 @@ const base = {
 };
 
 describe("librarian agent", () => {
+	it("injects provider-native required-tool controls after streamSimple option filtering", () => {
+		expect(forceRequiredToolPayload({ messages: [] }, "openai-responses")).toMatchObject({ tool_choice: "required" });
+		expect(forceRequiredToolPayload({ messages: [] }, "anthropic-messages")).toMatchObject({ tool_choice: { type: "any" } });
+		expect(forceRequiredToolPayload({ config: { temperature: 1 } }, "google-generative-ai")).toMatchObject({ config: { temperature: 1, toolConfig: { functionCallingConfig: { mode: "ANY" } } } });
+		expect(forceRequiredToolPayload({ toolConfig: { tools: ["existing"] } }, "bedrock-converse-stream")).toMatchObject({ toolConfig: { tools: ["existing"], toolChoice: { any: {} } } });
+		expect(forceRequiredToolPayload({ messages: [] }, "mistral-conversations")).toMatchObject({ toolChoice: "required" });
+		expect(forceRequiredToolPayload({ options: { maxTokens: 10 } }, "pi-messages")).toMatchObject({ options: { maxTokens: 10, toolChoice: "required" } });
+	});
+
 	it("preserves the durability, abstraction, novelty, and provenance gates", () => {
 		expect(LIBRARIAN_SYSTEM).toContain("ONLY information the assistant will have");
 		expect(LIBRARIAN_SYSTEM).toContain("Over-reflection is also memory distortion");
@@ -145,12 +155,14 @@ describe("librarian agent", () => {
 		const toolChoices: unknown[] = [];
 		const reasoningLevels: unknown[] = [];
 		const maxTokenBudgets: unknown[] = [];
+		const forcedPayloads: unknown[] = [];
 		const toolNames: string[][] = [];
 		const loop = fakeAgentLoop(async (invocation, invocationPrompts, context, config) => {
 			prompts.push(invocationPrompts[0].content[0].text);
 			toolChoices.push(config.toolChoice);
 			reasoningLevels.push(config.reasoning);
 			maxTokenBudgets.push(config.maxTokens);
+			forcedPayloads.push(config.onPayload ? await config.onPayload({ messages: [] }, {}) : undefined);
 			toolNames.push(context.tools.map((candidate: any) => candidate.name));
 			if (invocation > 0) await confirmDone(context);
 		});
@@ -160,8 +172,9 @@ describe("librarian agent", () => {
 		expect(prompts[1]).toMatch(/^IMPORTANT!!!!/);
 		expect(prompts[1]).toContain("DO NOT DESCRIBE INTENDED ACTIONS IN PROSE");
 		expect(toolChoices).toEqual([undefined, "required"]);
-		expect(reasoningLevels).toEqual(["low", "minimal"]);
+		expect(reasoningLevels).toEqual(["low", undefined]);
 		expect(maxTokenBudgets).toEqual([256_000, 256_000]);
+		expect(forcedPayloads).toEqual([undefined, { messages: [], tool_choice: "required" }]);
 		expect(toolNames).toEqual([["update_memories", "done"], ["update_memories", "done"]]);
 	});
 
@@ -260,7 +273,7 @@ describe("librarian agent", () => {
 	it("rejects a whitespace-only recall condition before staging an invalid lifecycle action", async () => {
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
 			const receipt = await tool(context, "update_memories").execute("blank-recall", {
-				memories: [A], because_of_observations: [C], recall_if: "   ",
+				memories: [A], because_of_memories: [C], recall_if: "   ",
 			});
 			expect(receipt.content[0].text).toContain("recall_if must contain non-whitespace text");
 			await confirmDone(context);
@@ -273,11 +286,16 @@ describe("librarian agent", () => {
 	it("partially accepts target ids but rejects invalid shared evidence atomically", async () => {
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
 			const partial = await tool(context, "update_memories").execute("x1", {
-				memories: [A, "dddddddddddd"], because_of_observations: [C], delete: true, reason: "Alpha detail is obsolete.",
+				memories: [A, "dddddddddddd"], because_of_memories: [C], delete: true, reason: "Alpha detail is obsolete.",
 			});
-			expect(partial.details).toMatchObject({ accepted: [A], rejected: ["dddddddddddd"] });
+			expect(partial.details).toMatchObject({
+				accepted: [A],
+				rejected: [D],
+				rejectionReasons: { [D]: expect.stringContaining("does not exist on this branch") },
+			});
+			expect(partial.content[0].text).toContain("Double-check that the id was copied correctly");
 			const rejected = await tool(context, "update_memories").execute("x2", {
-				memories: [B], because_of_observations: ["eeeeeeeeeeee"], recall_if: "Recall beta",
+				memories: [B], because_of_memories: ["eeeeeeeeeeee"], recall_if: "Recall beta",
 			});
 			expect(rejected.content[0].text).toContain("Rejected entire update");
 			await confirmDone(context);
@@ -285,6 +303,55 @@ describe("librarian agent", () => {
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
 		expect(result.commit?.actions).toHaveLength(1);
 		expect(result.commit?.actions[0]).toMatchObject({ type: "delete", memoryIds: [A] });
+	});
+
+	it("accepts a later inspected reflection as lifecycle evidence", async () => {
+		const reflectionCommit: Entry = {
+			type: "custom", id: "lib-reflection-evidence", customType: OM_LIBRARIAN_COMMIT,
+			data: {
+				version: 1, coversUpToId: "obs-entry", summary: "Recorded a durable completion conclusion.", createdAt: 1, actions: [],
+				reflections: [{
+					id: E,
+					content: "Alpha work is complete and its implementation detail is no longer needed in active context.",
+					supportingObservationIds: [C],
+					sourceMemoryIds: [C],
+					tokenCount: 18,
+				}],
+			},
+		};
+		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
+			const receipt = await tool(context, "update_memories").execute("reflection-evidence", {
+				memories: [A], because_of_memories: [E], recall_if: "Recall when revisiting the old alpha implementation",
+			});
+			expect(receipt.details).toMatchObject({ accepted: [A], rejected: [] });
+			await confirmDone(context);
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries([reflectionCommit]), agentLoop: loop });
+		expect(result.commit?.actions[0]).toMatchObject({ type: "makeInactive", memoryIds: [A], becauseOfMemoryIds: [E] });
+	});
+
+	it("explains when a lifecycle target was already deleted", async () => {
+		const deletedCommit: Entry = {
+			type: "custom", id: "lib-deleted", customType: OM_LIBRARIAN_COMMIT,
+			data: {
+				version: 1, reflections: [], coversUpToId: "obs-entry", summary: "Deleted obsolete alpha.", createdAt: 1,
+				actions: [{ type: "delete", memoryIds: [A], reason: "Obsolete alpha detail.", becauseOfMemoryIds: [C], replacementMemoryIds: [], createdAt: 1 }],
+			},
+		};
+		const laterEvidence: Entry = {
+			type: "custom", id: "obs-after-delete", customType: "om.observations.recorded",
+			data: { coversUpToId: "raw-1", observations: [{ id: D, content: "Later evidence.", timestamp: "2026-01-04 10:00", relevance: "high", retention: "contextual", sourceEntryIds: ["raw-1"], tokenCount: 10 }] },
+		};
+		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
+			const receipt = await tool(context, "update_memories").execute("delete-again", {
+				memories: [A], because_of_memories: [D], delete: true, reason: "Delete again.",
+			});
+			expect(receipt.details).toMatchObject({ rejected: [A], rejectionReasons: { [A]: expect.stringContaining("already deleted") } });
+			expect(receipt.content[0].text).toContain(`Memory [${A}] is already deleted`);
+			await confirmDone(context);
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries([deletedCommit, laterEvidence]), agentLoop: loop });
+		expect(result.commit?.actions).toEqual([]);
 	});
 
 	it("does not create an empty commit or fairness credit after bounded stops without tools", async () => {
@@ -345,7 +412,7 @@ describe("librarian agent", () => {
 		let receipt = "";
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
 			expect(JSON.stringify(context.messages)).toContain("[inactive_1] (2 memories) Recall when alpha work resumes");
-			const result = await tool(context, "update_memories").execute("x1", { memories: ["inactive_1"], make_active: true, because_of_observations: [D] });
+			const result = await tool(context, "update_memories").execute("x1", { memories: ["inactive_1"], make_active: true, because_of_memories: [D] });
 			receipt = result.content[0].text;
 			await confirmDone(context);
 		});
@@ -371,7 +438,7 @@ describe("librarian agent", () => {
 			data: { coversUpToId: "raw-1", observations: [{ id: D, content: "User resumed alpha work.", timestamp: "2026-01-04 10:00", relevance: "high", retention: "contextual", sourceEntryIds: ["raw-1"], tokenCount: 10 }] },
 		};
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			await tool(context, "update_memories").execute("x1", { memories: [A], make_active: true, because_of_observations: [D] });
+			await tool(context, "update_memories").execute("x1", { memories: [A], make_active: true, because_of_memories: [D] });
 			await confirmDone(context);
 		});
 

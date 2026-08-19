@@ -8,9 +8,9 @@ The librarian manages the active memory collection as a whole. It:
 
 - combines observations and reflections into better reflections;
 - records explicit provenance between source and replacement memories;
-- identifies memories made obsolete by later observations;
+- identifies memories made obsolete by later observation or reflection evidence;
 - moves still-valid but currently irrelevant memories out of the visible set;
-- restores inactive memories when later observations make them relevant again; and
+- restores inactive memories when later memories make them relevant again; and
 - prefers doing nothing over making a speculative merge or forgetting uncertain information.
 
 The durable branch ledger remains append-only. “Delete” means logically retired from active/visible memory, not physically erased from the JSONL file. Deleted and inactive memories remain searchable and recallable. Deleted results expose their status and deletion reason to every caller. Inactive results behave like ordinary non-deleted memories to the main agent and contemplator; only the librarian sees their inactive grouping and `recallIf` metadata.
@@ -57,20 +57,20 @@ The scheduler may keep an in-process map such as `lastSampledAt` and `sampleCoun
 
 ### Evidence-based lifecycle changes
 
-A memory does not become obsolete merely because it is old or because the librarian emitted no reflection. Lifecycle changes require observations that explain the change.
+A memory does not become obsolete merely because it is old or because the librarian emitted no reflection. Lifecycle changes require later memories that explain the change. Evidence may be an observation or a reflection: a reflection is itself a condensed memory and can justify combining, inactivating, reactivating, superseding, or deleting other observations or reflections.
 
 Examples:
 
 - An observation says an earlier implementation approach was abandoned.
-- A later observation records a replacement preference or architecture decision.
-- A completion observation shows that transient debugging details are no longer current working memory.
-- A new observation returns to a previously inactive system or topic.
+- A later observation or reflection records a replacement preference or architecture decision.
+- A completion memory shows that transient debugging details are no longer current working memory.
+- A new memory returns to a previously inactive system or topic.
 
-Standalone `delete_memories`, `make_inactive`, and `make_active` therefore require one or more `becauseOfObservationIds`.
+Standalone lifecycle updates therefore require one or more `becauseOfMemoryIds`.
 
-`record_reflection` is the narrow exception: when its sources become inactive or deleted, the newly created reflection is itself the linked consolidation record and its `derivedFrom` graph proves exactly what was consumed. It does not require an additional evidence list merely to repeat those source IDs.
+Creating a reflection while changing its own sources is the narrow exception: the newly created reflection is itself the linked consolidation record and its provenance graph proves exactly what was consumed. It does not require an additional evidence list merely to repeat those source IDs.
 
-Evidence observations do not need magic status syntax. The librarian judges their meaning. Code verifies that supplied IDs exist on the current branch, were available to the librarian, are distinct from standalone lifecycle targets, and occur after the lifecycle state they change.
+Evidence memories do not need magic status syntax. The librarian judges their meaning. Code verifies that supplied IDs exist on the current branch, were available to the librarian, are distinct from standalone lifecycle targets, and occur after the lifecycle state they change.
 
 ### Explicit reflection source disposition
 
@@ -89,7 +89,7 @@ The system does not maintain a separate database of tasks and task states. Tasks
 The librarian reasons from:
 
 - memory timestamps and age;
-- later observations;
+- later observation or reflection memories;
 - supersession and merge links;
 - active/inactive/deleted status; and
 - retention class proposed by the observer.
@@ -130,9 +130,9 @@ The final prompt should be tested and iterated, but its structure should be appr
 > Your responsibilities are:
 >
 > 1. Combine genuinely related memories when one reflection can preserve their useful meaning more clearly and compactly.
-> 2. Identify memories made obsolete by later observations.
+> 2. Identify memories made obsolete by later observation or reflection evidence.
 > 3. Move valid but currently irrelevant memories out of active visibility.
-> 4. Reactivate inactive groups when later observations make them relevant again.
+> 4. Reactivate inactive groups when later memories make them relevant again.
 > 5. Preserve exact user constraints, corrections, decisions, rationale, unresolved state, identifiers, errors, and other unique details unless a replacement preserves them faithfully.
 >
 > You may receive the complete active memory collection or only a subset. Never assume an omitted memory does not exist. Act only on active memories you were shown or memories you explicitly found and inspected. Do not search merely to find more things to merge, hide, or delete. Search or recall only when evidence in a supplied memory or inactive cue gives a concrete reason to inspect specific omitted history. It is valid to make only local improvements.
@@ -195,7 +195,7 @@ All mutating tools stage actions in the current run. `done` validates and atomic
 
 ### Common validation and batching
 
-Lifecycle tools accept arrays to reduce tool-call overhead. A bad target ID does not prevent valid targets in the same call from being staged: the result lists accepted targets and rejected targets with reasons. Shared dependencies are different. If a shared `becauseOfObservationIds` or `replacementMemoryIds` list is structurally invalid, reject the whole call because every target depends on it.
+Lifecycle tools accept arrays to reduce tool-call overhead. A bad target ID does not prevent valid targets in the same call from being staged: the result lists accepted targets and rejected targets with reasons. Shared dependencies are different. If a shared `becauseOfMemoryIds` or `replacementMemoryIds` list is structurally invalid, reject the whole call because every target depends on it.
 
 `record_reflection` is atomic rather than partially successful. Every source and conditional lifecycle dependency must be valid before any part of the reflection or source disposition is staged.
 
@@ -229,7 +229,7 @@ Rules:
 - With `makeInactive`, every source receives the same `recallIf`, `sourceRecallIf` is required, and `deleteReason` is omitted. The new reflection is the linked consolidation reason for the visibility change.
 - With `delete`, all sources are logically deleted, the new reflection is stored in each source's `replacedBy` list, and a non-empty `deleteReason` is required and persisted with every source's deletion event. `rationale` explains the reflection itself and must not be reused implicitly as the delete reason. The new reflection is the linked replacement; no future undelete operation is provided.
 - Supplying disposition-specific fields for the wrong disposition is rejected rather than silently ignored.
-- Any invalid source rejects the whole call. No separate `becauseOfObservationIds` is needed for source disposition because the atomic reflection and its provenance links are the evidence.
+- Any invalid source rejects the whole call. No separate `becauseOfMemoryIds` is needed for source disposition because the atomic reflection and its provenance links are the evidence.
 - Duplicate content returns the existing reflection ID and allows the librarian to link new sources if appropriate, but the same disposition validation still applies.
 
 A reflection is not intrinsically more durable than an observation. It can later serve as another reflection's source, become inactive, or be deleted. The resulting provenance graph is a DAG, and recall traversal remains bounded.
@@ -241,7 +241,7 @@ Logically deletes low-value, obsolete, or already-consumed temporal memories fro
 ```ts
 delete_memories({
   memoryIds: string[],
-  becauseOfObservationIds: string[], // minimum 1
+  becauseOfMemoryIds: string[], // minimum 1
   replacementMemoryIds?: string[],
   reason: string
 })
@@ -251,7 +251,7 @@ Semantics:
 
 - Valid target IDs are deleted even if other target IDs in `memoryIds` are invalid; the result reports both sets.
 - The shared evidence and replacement lists must be entirely valid or the call stages nothing.
-- `becauseOfObservationIds` identifies later/current evidence explaining why the targets are obsolete now. Evidence must be distinct from each accepted target and must not predate its latest activation/creation state.
+- `becauseOfMemoryIds` identifies later/current observation or reflection evidence explaining why the targets are obsolete now. Evidence must be distinct from each accepted target and must not predate its latest activation/creation state.
 - `replacementMemoryIds` points to memories preserving any remaining useful meaning.
 - Deletion without a replacement is allowed for low-value temporal detail whose useful effect is already captured by the cited evidence. Prefer an explicit replacement when another memory preserves the meaning.
 - The `reason`, evidence IDs, replacement IDs, and target IDs are persisted in the append-only lifecycle event.
@@ -267,7 +267,7 @@ Moves one or more still-valid memories out of automatic visibility under one sha
 ```ts
 make_inactive({
   memoryIds: string[],
-  becauseOfObservationIds: string[], // minimum 1
+  becauseOfMemoryIds: string[], // minimum 1
   recallIf: string
 })
 ```
@@ -277,7 +277,7 @@ Semantics:
 - Every accepted target stores the same short `recallIf` text in its inactivity lifecycle state.
 - Valid targets are staged even if other target IDs are invalid; the result reports accepted and rejected IDs.
 - The evidence list must be entirely valid or the call stages nothing.
-- There is no separate rationale. `recallIf` explains when to recover the memories, while the cited observations record why automatic visibility ceased to be useful.
+- There is no separate rationale. `recallIf` explains when to recover the memories, while the cited observation or reflection evidence records why automatic visibility ceased to be useful.
 - No durable group object or group ID is created. Grouping is reconstructed from equal normalized `recallIf` text for each fresh librarian run.
 - The memories leave the active/visible projection but remain searchable and recallable.
 - Routine librarian input shows only a run-local alias such as `[inactive_1] (N memories) recallIf`; it does not repeat member IDs or bodies.
@@ -293,7 +293,7 @@ Returns one or more inactive groups to the active/visible pool.
 ```ts
 make_active({
   inactiveRefs: string[], // run-local aliases or inactive memory IDs
-  becauseOfObservationIds: string[] // minimum 1
+  becauseOfMemoryIds: string[] // minimum 1
 })
 ```
 
@@ -385,7 +385,7 @@ If the assistant stops without calling `done`, inject this compact reminder and 
 ```text
 You stopped without calling done, so this librarian run is not complete.
 
-Continue reviewing only if useful work remains. Use record_reflection to combine memories; use delete_memories, make_inactive, or make_active only with observation evidence; and use search_memories/recall only when presented evidence points to omitted or inactive context. If no further action is clearly warranted, call done now. Otherwise finish the necessary tool calls and then call done. Do not manufacture changes merely to continue.
+Continue reviewing only if useful work remains. Use record_reflection to combine memories; use delete_memories, make_inactive, or make_active only with inspected observation or reflection evidence; and use search_memories/recall only when presented evidence points to omitted or inactive context. If no further action is clearly warranted, call done now. Otherwise finish the necessary tool calls and then call done. Do not manufacture changes merely to continue.
 ```
 
 The reminder deliberately does not summarize staged actions: the agent already has the tool calls and results in context. It restates tool purpose because a large memory prompt may have pushed the original instructions far back.
@@ -522,7 +522,7 @@ Tool receipts report an invalid retention enum like any other schema error. No c
 
 ### Observer prompt changes
 
-Replace references to “the dropper will drop these first” with “the librarian will use relevance, retention, age, and later observations when curating active memory.”
+Replace references to “the dropper will drop these first” with “the librarian will use relevance, retention, age, and later observation or reflection evidence when curating active memory.”
 
 Add a short retention section without expanding the rest of the decision procedure:
 
