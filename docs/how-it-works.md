@@ -26,7 +26,7 @@ A dirty librarian backlog tracks newly created memory count, estimated tokens, a
 
 The scheduler normally waits until `librarianMinIntervalMinutes` after the prior start. However, if pending memory reaches `librarianMaxPendingMemoryTokens` (20k by default), it bypasses that wall-clock interval and runs as soon as the librarian's single-flight slot is available. This keeps very high-throughput sessions from filling memory faster than a time-only schedule can react. Zero-minute values are supported for tests or deliberately immediate operation. Updates coalesce while one run is active.
 
-The active-memory target is advisory. Code does not force the librarian to remove a fixed count. Librarian input sampling is a separate safeguard: `librarianSamplingThresholdRatio` controls the fraction of model context available to rendered memories (0.5 by default).
+The active-memory target is advisory. Code does not force the librarian to remove a fixed count. Librarian input sampling is a separate safeguard: `librarianSamplingThresholdTokens` caps rendered memory input at 40,000 tokens by default.
 
 ## Librarian transaction
 

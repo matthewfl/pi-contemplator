@@ -681,7 +681,11 @@ export class Contemplator {
 				const stream = agentLoop([nextPrompt], context, config, undefined, streamSimple);
 				for await (const event of stream) logAgentStreamError("contemplator", event);
 				const result = await stream.result();
-				runMessages.push(...result);
+				// agentLoop returns its input prompt as the first new message. We already
+				// added nextPrompt above, so do not duplicate each update in the durable
+				// contemplator history or in a subsequent retry's context.
+				const returnedMessages = result[0] === nextPrompt ? result.slice(1) : result;
+				runMessages.push(...returnedMessages);
 				// The LLM call happened and was billed regardless of what we do next.
 				for (const message of result) {
 					if (message.role === "assistant" && message.usage) this.runtime.recordAgentUsage(message.usage);

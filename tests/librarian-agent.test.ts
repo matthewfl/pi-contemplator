@@ -27,14 +27,11 @@ function entries(extra: Entry[] = []): Entry[] {
 	] as Entry[];
 }
 
-function fakeAgentLoop(handler: (invocation: number, prompts: any[], context: any, config: any) => Promise<void> | void): any {
+function fakeAgentLoop(handler: (invocation: number, prompts: any[], context: any, config: any) => Promise<any[] | void> | any[] | void): any {
 	let invocation = 0;
 	return ((prompts: any[], context: any, config: any) => ({
 		async *[Symbol.asyncIterator]() {},
-		result: async () => {
-			await handler(invocation++, prompts, context, config);
-			return [];
-		},
+		result: async () => (await handler(invocation++, prompts, context, config)) ?? [],
 	})) as any;
 }
 
@@ -146,20 +143,37 @@ describe("librarian agent", () => {
 	it("uses only the terse reminder and requires a tool after a prose-only first pass", async () => {
 		const prompts: string[] = [];
 		const toolChoices: unknown[] = [];
+		const reasoningLevels: unknown[] = [];
+		const maxTokenBudgets: unknown[] = [];
 		const toolNames: string[][] = [];
 		const loop = fakeAgentLoop(async (invocation, invocationPrompts, context, config) => {
 			prompts.push(invocationPrompts[0].content[0].text);
 			toolChoices.push(config.toolChoice);
+			reasoningLevels.push(config.reasoning);
+			maxTokenBudgets.push(config.maxTokens);
 			toolNames.push(context.tools.map((candidate: any) => candidate.name));
 			if (invocation > 0) await confirmDone(context);
 		});
-		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+		const result = await runLibrarian({ ...base, model: { contextWindow: 1_000_000, maxTokens: 256_000, reasoning: true } as any, getBranch: () => entries(), agentLoop: loop });
 		expect(result.completed).toBe(true);
 		expect(prompts[1]).toBe(LIBRARIAN_CONTINUE);
 		expect(prompts[1]).toMatch(/^IMPORTANT!!!!/);
 		expect(prompts[1]).toContain("DO NOT DESCRIBE INTENDED ACTIONS IN PROSE");
 		expect(toolChoices).toEqual([undefined, "required"]);
+		expect(reasoningLevels).toEqual(["low", "minimal"]);
+		expect(maxTokenBudgets).toEqual([256_000, 256_000]);
 		expect(toolNames).toEqual([["update_memories", "done"], ["update_memories", "done"]]);
+	});
+
+	it("keeps an agentLoop-returned invocation prompt only once in librarian history", async () => {
+		let finalMessages: readonly any[] = [];
+		const loop = fakeAgentLoop(async (_invocation, prompts, context) => {
+			await confirmDone(context);
+			return [prompts[0], { role: "assistant", content: [{ type: "text", text: "Done." }] }];
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop, onMessages: (messages) => { finalMessages = messages; } });
+		expect(result.completed).toBe(true);
+		expect(finalMessages.filter((message) => message.role === "user")).toHaveLength(2);
 	});
 
 	it("publishes in-progress thinking before the librarian stream settles", async () => {
@@ -222,7 +236,9 @@ describe("librarian agent", () => {
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
 		expect(receipt.details).toMatchObject({ sourceDisposition: "keepActive" });
 		expect(receipt.content[0].text).toContain(`Source memories [${A}, ${B}] remain active`);
-		expect(receipt.content[0].text).toContain("another update_memories call");
+		expect(receipt.content[0].text).toContain("HINT: when creating a reflection");
+		expect(receipt.content[0].text).toContain("include recall_if");
+		expect(receipt.content[0].text).toContain("delete: true with reason");
 		expect(result.commit?.reflections).toEqual([expect.objectContaining({ content })]);
 		expect(result.commit?.actions).toEqual([]);
 	});
@@ -234,6 +250,19 @@ describe("librarian agent", () => {
 				recall_if: "Recall later", delete: true, reason: "Replaced completely",
 			});
 			expect(receipt.content[0].text).toContain("mutually exclusive");
+			await confirmDone(context);
+		});
+		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
+		expect(result.commit?.reflections).toEqual([]);
+		expect(result.commit?.actions).toEqual([]);
+	});
+
+	it("rejects a whitespace-only recall condition before staging an invalid lifecycle action", async () => {
+		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
+			const receipt = await tool(context, "update_memories").execute("blank-recall", {
+				memories: [A], because_of_observations: [C], recall_if: "   ",
+			});
+			expect(receipt.content[0].text).toContain("recall_if must contain non-whitespace text");
 			await confirmDone(context);
 		});
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
@@ -261,7 +290,7 @@ describe("librarian agent", () => {
 	it("does not create an empty commit or fairness credit after bounded stops without tools", async () => {
 		const fairness = new Map();
 		const loop = fakeAgentLoop(async () => {});
-		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5 });
+		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, samplingThresholdTokens: 40, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5 });
 		expect(result.completed).toBe(false);
 		expect(result.sample?.sampled).toBe(true);
 		expect(result.commit).toBeUndefined();
@@ -294,7 +323,7 @@ describe("librarian agent", () => {
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
 			await confirmDone(context);
 		});
-		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5, now: 123 });
+		const result = await runLibrarian({ ...base, model: { contextWindow: 80 } as any, samplingThresholdTokens: 40, getBranch: () => entries(), agentLoop: loop, fairness, random: () => 0.5, now: 123 });
 		expect(result.completed).toBe(true);
 		expect(result.sample?.sampled).toBe(true);
 		expect(fairness.size).toBeGreaterThan(0);

@@ -21,9 +21,9 @@ The durable branch ledger remains append-only. “Delete” means logically reti
 
 Each librarian run starts with a fresh model context. Its durable state is only the memory ledger and the actions committed during prior runs. It does not persist a private conversational transcript like the contemplator.
 
-When eligible memory material fits within half of the librarian context window, a normal run receives **all** active observations/reflections and all compact inactive cues. Sampling is not part of the healthy/common path. Deleted memories are never included routinely; they remain deliberately searchable and recallable.
+When eligible rendered memory material fits within the configured token threshold—**40,000 tokens by default**—a normal run receives **all** active observations/reflections and all compact inactive cues. Sampling is not part of the healthy/common path. Deleted memories are never included routinely; they remain deliberately searchable and recallable.
 
-Only when the complete rendered memory material would exceed **50% of the librarian model's context window** does the pressure-valve sampler activate. The resulting initial memory material is capped at 50%, leaving the remainder for the system prompt, tool definitions, model output, search/recall results, staging receipts, and continuation turns. Pool targets are advisory signals for LLM judgment, not deterministic deletion limits.
+Only when the complete rendered memory material exceeds that fixed token threshold does the pressure-valve sampler activate. The resulting initial memory material is capped at the configured token count, keeping the librarian's workload bounded independently of model context-window size. Pool targets are advisory signals for LLM judgment, not deterministic deletion limits.
 
 The run may make multiple read and staging tool calls, then ends with an explicit `done` call. If the process is interrupted before `done`, no staged mutations are committed.
 
@@ -44,10 +44,10 @@ This invariant supports bounded sampling without redesigning librarian semantics
 
 ### Bounded randomized sampling
 
-Let `T` be the conservative token estimate for all normally rendered active memories and inactive cues, and let `B` be 50% of the model context window.
+Let `T` be the conservative token estimate for all normally rendered active memories and inactive cues, and let `B` be the configured sampling threshold in tokens (40,000 by default).
 
 - If `T <= B`, do not sample: render the complete eligible set.
-- If `T > B`, choose one token-bounded random sample targeting `B` tokens. The sampling fraction is therefore approximately `B / T`, not a fixed percentage. For example, a pool requiring 80% of the context is sampled at approximately `50 / 80 = 5/8`; a pool requiring 60% is sampled at approximately `5/6`.
+- If `T > B`, choose one token-bounded random sample targeting `B` tokens. The sampling fraction is therefore approximately `B / T`, not a fixed percentage. For example, a 64,000-token pool is sampled at approximately `40 / 64 = 5/8`; a 48,000-token pool is sampled at approximately `5/6`.
 - Select by rendered token size rather than record count, so a few very large memories cannot overflow the cap.
 - Perform one sampled pass. Do not page through the remainder or immediately rerun the librarian merely to obtain full coverage.
 
@@ -569,10 +569,10 @@ A pressure trigger may schedule a run sooner after the minimum interval, but it 
 
 Every invocation uses the same bounded input policy:
 
-- If complete rendered memory material is at or below 50% of the context window, supply it all with no sampling.
-- Only above 50%, perform one token-aware weighted sample at fraction `50% / estimatedUsage`; do not page or immediately rerun for coverage.
+- If complete rendered memory material is at or below the configured token threshold (40,000 by default), supply it all with no sampling.
+- Above that threshold, perform one token-aware weighted sample targeting the configured token budget; do not page or immediately rerun for coverage.
 - Favor new/recent evidence, modestly favor durable/high-relevance and long-lived active memories, and retain a nonzero probability for everything else.
-- Group inactive cues dynamically and assign run-local `inactive_N` aliases. Inactive cues count toward the same 50% threshold and budget.
+- Group inactive cues dynamically and assign run-local `inactive_N` aliases. Inactive cues count toward the same token threshold and budget.
 - Include all new observations since the last successful checkpoint when they fit; if they alone exceed the cap, retain the cap and strongly favor the newest.
 - Let deliberate search/recall bridge omitted history.
 - Run once even when no action may be needed, and require `done` to advance the checkpoint.
@@ -660,9 +660,9 @@ Most semantic choices belong to the librarian rather than deterministic policy, 
 - `make_active` accepts aliases or member IDs, restores the resolved cohort, returns full bodies, and preserves prior lifecycle history.
 - Main-agent and contemplator search do not expose inactive status or `recallIf`; librarian search does.
 - Tool names are snake_case while every argument/property name and multiword enum value is lowerCamelCase; schema tests prevent mixed naming from returning.
-- At or below 50% estimated context use, the complete eligible memory set is supplied and the sampler is not invoked.
-- Above 50%, initial rendered memory material never exceeds the cap, including oversized new-memory and inactive-cue cases.
-- A 60%-sized pool is sampled at approximately 5/6 and an 80%-sized pool at approximately 5/8 by tokens, proving the ratio is dynamic rather than fixed.
+- At or below the configured token threshold, the complete eligible memory set is supplied and the sampler is not invoked.
+- Above the threshold, initial rendered memory material never exceeds the configured token cap, including oversized new-memory and inactive-cue cases.
+- A 48,000-token pool is sampled at approximately 5/6 and a 64,000-token pool at approximately 5/8 with the default 40,000-token budget, proving the sampling fraction adapts to pool size.
 - Pressure-valve sampling favors new evidence, modestly boosts old durable/high-relevance memories, gives every eligible record nonzero probability, and changes samples across seeded runs.
 - In-process fairness statistics are never written to the durable ledger and may be lost safely on restart.
 - A sampled run never mutates an omitted memory without finding and inspecting it.

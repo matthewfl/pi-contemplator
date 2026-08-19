@@ -9,7 +9,7 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens" | "librarianSamplingThresholdTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "librarianEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
@@ -29,7 +29,7 @@ function hasOverride(settings: SessionSettings, key: string): boolean {
 	return  Object.hasOwn(settings, key);
 }
 
-function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio" | "librarianSamplingThresholdRatio"): string {
+function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio"): string {
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
@@ -204,7 +204,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Librarian new-memory trigger (tokens): ${scalarLabel(runtime, "librarianMinNewMemoryTokens")}`,
 				`Librarian urgent backlog trigger (tokens): ${scalarLabel(runtime, "librarianMaxPendingMemoryTokens")}`,
 				`Librarian pressure trigger: ${scalarLabel(runtime, "librarianPressureTriggerRatio")}`,
-				`Librarian sampling threshold: ${scalarLabel(runtime, "librarianSamplingThresholdRatio")}`,
+				`Librarian sampling threshold (tokens): ${scalarLabel(runtime, "librarianSamplingThresholdTokens")}`,
 				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
@@ -251,11 +251,6 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				const ratio = value === undefined ? undefined : Number(value.trim());
 				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { librarianPressureTriggerRatio: ratio });
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
-			} else if (choice.startsWith("Librarian sampling threshold:")) {
-				const value = await ctx.ui.input(`Librarian sampling threshold ratio (current: ${scalarLabel(runtime, "librarianSamplingThresholdRatio")})`, "context fraction between 0 and 1, e.g. 0.5");
-				const ratio = value === undefined ? undefined : Number(value.trim());
-				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0 && ratio < 1) appendSettings(pi, runtime, { librarianSamplingThresholdRatio: ratio });
-				else if (value !== undefined) ctx.ui.notify("Ratio must be a number between 0 and 1.", "warning");
 			} else if (choice.startsWith("Compaction ratio:")) {
 				const value = await ctx.ui.input(`Compaction ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
@@ -276,6 +271,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Librarian maximum delay (agent-active minutes):", "librarianMaxDelayMinutes", "Librarian maximum delay (agent-active minutes)"],
 					["Librarian new-memory trigger (tokens):", "librarianMinNewMemoryTokens", "Librarian new-memory token trigger"],
 					["Librarian urgent backlog trigger (tokens):", "librarianMaxPendingMemoryTokens", "Librarian urgent backlog token trigger"],
+					["Librarian sampling threshold (tokens):", "librarianSamplingThresholdTokens", "Librarian sampling threshold (tokens)"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {

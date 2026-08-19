@@ -58,7 +58,7 @@ describe("V3 config", () => {
 			librarianMinNewMemoryTokens: 5000,
 			librarianMaxPendingMemoryTokens: 20000,
 			librarianPressureTriggerRatio: 1,
-			librarianSamplingThresholdRatio: 0.5,
+			librarianSamplingThresholdTokens: 40000,
 			debugLog: false,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
@@ -190,11 +190,11 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
 
-	it("loads the librarian sampling threshold ratio", () => {
+	it("loads the librarian sampling token threshold", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { librarianSamplingThresholdRatio: 0.65 },
+			"observational-memory": { librarianSamplingThresholdTokens: 32000 },
 		});
-		expect(loadConfig(cwd, {})).toMatchObject({ librarianSamplingThresholdRatio: 0.65 });
+		expect(loadConfig(cwd, {})).toMatchObject({ librarianSamplingThresholdTokens: 32000 });
 	});
 
 	it("allows zero-minute librarian delays for immediate scheduling", () => {

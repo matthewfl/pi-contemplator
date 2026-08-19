@@ -38,26 +38,22 @@ Deletion is never physical erasure. A delete records its reason, evidence ids, a
 
 The librarian replaces the old reflector/dropper pipeline. It is a fresh, mostly stateless agent on every run. Its input contains active memory and compact inactive-cohort cues; deleted memory is not injected.
 
-The librarian can:
+The librarian has two tools:
 
-- `record_reflection` from two or more inspected memories, while keeping, inactivating, or deleting all sources;
-- `make_inactive` for valid but currently irrelevant memory;
-- `make_active` when later observations make an inactive cohort relevant;
-- `delete_memories` for obsolete, low-value, or consumed temporal detail;
-- use `search_memories` and `recall` only when presented evidence points to omitted history;
-- call `done` to atomically commit all staged changes.
+- `update_memories` creates reflections and keeps, inactivates, deletes, or reactivates memories according to its supplied fields;
+- `done` confirms that the pass is complete after registered update receipts are visible.
 
-If the librarian does not call `done`, staged work is discarded and its dirty backlog is restored. It is instructed to defer uncertain changes because future runs will provide later evidence and different samples.
+Validated updates are preserved even if the librarian exhausts its rounds without confirming `done`; a run that registers no update and does not finish remains incomplete. The librarian is instructed to defer uncertain changes because future runs will provide later evidence and different samples.
 
 ## Sampling and pressure
 
-When all eligible librarian input fits within the configured `librarianSamplingThresholdRatio` of the librarian model's context window (50% by default), the complete set is provided. Sampling begins only above that boundary. The sampling ratio adapts to the excess; recent/new memories are strongly favored, while every eligible item keeps nonzero probability. Fairness bookkeeping is runtime-only.
+When all eligible librarian input fits within `librarianSamplingThresholdTokens` (40,000 tokens by default), the complete set is provided. Sampling begins only above that fixed token boundary and selects at most that budget. Recent/new memories are strongly favored, while every eligible item keeps nonzero probability. Fairness bookkeeping is runtime-only.
 
 The librarian sees active token usage, the configured target, and an advisory estimate of how much curation could return the pool toward target. This is guidance, not a hard quota.
 
 ## Search and recall
 
-`search_memories` searches durable observations, reflections, and review outcomes. Main-agent and contemplator results do not expose whether a non-deleted memory is inactive. Deleted results include their deletion reason. Librarian search additionally exposes inactive status and `recallIf`.
+`search_memories` searches durable observations, reflections, and review outcomes. Main-agent and contemplator results do not expose whether a non-deleted memory is inactive. Deleted results include their deletion reason.
 
 `recall` returns exact source context, lifecycle metadata where appropriate, provenance links, and collision information. Content-address collisions with different source evidence are preserved rather than collapsed.
 

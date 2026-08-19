@@ -30,9 +30,8 @@ export type LibrarianSample = {
 export type LibrarianSamplingArgs = {
 	activeMemories: LibrarianMemory[];
 	inactiveCohorts: InactiveCohort[];
-	contextWindow: number;
-	/** Fraction of the model context reserved for rendered memory input. */
-	samplingThresholdRatio?: number;
+	/** Maximum rendered memory-input tokens before sampling. */
+	samplingThresholdTokens?: number;
 	newMemoryIds?: ReadonlySet<string>;
 	fairness?: Map<string, SamplingFairness>;
 	now?: number;
@@ -136,8 +135,7 @@ export function buildInactiveCohorts(memories: LibrarianMemory[], recallIfById: 
 export function sampleLibrarianMemories(args: LibrarianSamplingArgs): LibrarianSample {
 	const now = args.now ?? Date.now();
 	const random = args.random ?? Math.random;
-	const thresholdRatio = args.samplingThresholdRatio ?? 0.5;
-	const budgetTokens = Math.max(1, Math.floor(args.contextWindow * thresholdRatio));
+	const budgetTokens = Math.max(1, Math.floor(args.samplingThresholdTokens ?? 40_000));
 	const newMemoryIds = args.newMemoryIds ?? new Set<string>();
 	const timestamps = args.activeMemories.map(timestampMs).filter((value): value is number => value !== undefined);
 	const oldestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : undefined;

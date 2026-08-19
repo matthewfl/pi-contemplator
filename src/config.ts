@@ -70,8 +70,8 @@ export interface Config {
 	/** Pending new-memory tokens that bypass the minimum run interval. */
 	librarianMaxPendingMemoryTokens: number;
 	librarianPressureTriggerRatio: number;
-	/** Fraction of librarian context available to memory input before sampling. */
-	librarianSamplingThresholdRatio: number;
+	/** Rendered librarian-memory tokens available before pressure-valve sampling. */
+	librarianSamplingThresholdTokens: number;
 	debugLog: boolean;
 }
 
@@ -98,7 +98,7 @@ export const DEFAULTS: Config = {
 	librarianMinNewMemoryTokens: 5_000,
 	librarianMaxPendingMemoryTokens: 20_000,
 	librarianPressureTriggerRatio: 1,
-	librarianSamplingThresholdRatio: 0.5,
+	librarianSamplingThresholdTokens: 40_000,
 	debugLog: false,
 };
 
@@ -234,6 +234,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"contemplatorMinTurns",
 		"librarianMinNewMemoryTokens",
 		"librarianMaxPendingMemoryTokens",
+		"librarianSamplingThresholdTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -256,8 +257,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
 	if (typeof value.librarianEnabled === "boolean") normalized.librarianEnabled = value.librarianEnabled;
 	if (typeof value.librarianPressureTriggerRatio === "number" && Number.isFinite(value.librarianPressureTriggerRatio) && value.librarianPressureTriggerRatio > 0) normalized.librarianPressureTriggerRatio = value.librarianPressureTriggerRatio;
-	const librarianSamplingRatio = validRatioOrUndefined(value.librarianSamplingThresholdRatio);
-	if (librarianSamplingRatio !== undefined) normalized.librarianSamplingThresholdRatio = librarianSamplingRatio;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;

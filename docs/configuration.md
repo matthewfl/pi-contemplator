@@ -20,7 +20,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "librarianMinNewMemoryTokens": 5000,
     "librarianMaxPendingMemoryTokens": 20000,
     "librarianPressureTriggerRatio": 1,
-    "librarianSamplingThresholdRatio": 0.5,
+    "librarianSamplingThresholdTokens": 40000,
 
     "contemplatorEnabled": true,
     "showContemplatorMessages": true,
@@ -56,7 +56,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `librarianMinNewMemoryTokens` | `5000` | Pending new-memory tokens that make a pass ready before max delay, while still respecting the normal minimum interval. |
 | `librarianMaxPendingMemoryTokens` | `20000` | Urgent pending-memory threshold. At or above this value, the librarian bypasses the minimum interval and starts as soon as its single-flight slot is available. |
 | `librarianPressureTriggerRatio` | `1` | Active-token ratio against `observationsPoolTargetTokens` that makes a pass ready. |
-| `librarianSamplingThresholdRatio` | `0.5` | Fraction of the librarian model context available to rendered memory input. Sampling starts only when eligible input exceeds this fraction and samples back down to this budget. |
+| `librarianSamplingThresholdTokens` | `40000` | Rendered memory-input token budget. Sampling starts only when eligible input exceeds this count and samples back down to this budget. |
 | `contemplatorEnabled` | `true` | Enables contemplator updates. |
 | `contemplatorModel` | current model | Optional model override for the contemplator. |
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
@@ -96,7 +96,7 @@ Responsive curation for a high-volume session:
     "librarianMinNewMemoryTokens": 2500,
     "librarianMaxPendingMemoryTokens": 20000,
     "librarianPressureTriggerRatio": 0.9,
-    "librarianSamplingThresholdRatio": 0.5
+    "librarianSamplingThresholdTokens": 40000
   }
 }
 ```

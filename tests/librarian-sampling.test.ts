@@ -22,18 +22,18 @@ function seeded(values: number[]): () => number {
 }
 
 describe("librarian pressure-valve sampling", () => {
-	it("uses the configured context fraction as the sampling threshold", () => {
+	it("uses the configured token count as the sampling threshold", () => {
 		const activeMemories = [item(1, 20), item(2, 20)];
-		const result = sampleLibrarianMemories({ activeMemories, inactiveCohorts: [], contextWindow: 5_000, samplingThresholdRatio: 0.8, random: () => 0.5 });
+		const result = sampleLibrarianMemories({ activeMemories, inactiveCohorts: [], samplingThresholdTokens: 4_000, random: () => 0.5 });
 		expect(result.budgetTokens).toBe(4_000);
 		expect(result.sampled).toBe(false);
 		expect(result.activeMemories).toEqual(activeMemories);
 		expect(result.selectedTokens).toBe(result.eligibleTokens);
 	});
 
-	it("uses a dynamic token ratio only above the configured threshold", () => {
+	it("samples back to the fixed token budget only above the configured threshold", () => {
 		const activeMemories = Array.from({ length: 80 }, (_, index) => item(index, 100));
-		const full = sampleLibrarianMemories({ activeMemories, inactiveCohorts: [], contextWindow: 10_400, samplingThresholdRatio: 0.5, random: seeded([0.1, 0.5, 0.9]) });
+		const full = sampleLibrarianMemories({ activeMemories, inactiveCohorts: [], samplingThresholdTokens: 5_200, random: seeded([0.1, 0.5, 0.9]) });
 		expect(full.sampled).toBe(true);
 		expect(full.selectedTokens).toBeLessThanOrEqual(5_200);
 		const ratio = full.selectedTokens / full.eligibleTokens;
@@ -49,7 +49,6 @@ describe("librarian pressure-valve sampling", () => {
 				{ recallIf: "Recall alpha", memoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"] },
 				{ recallIf: "Recall beta", memoryIds: ["cccccccccccc"] },
 			],
-			contextWindow: 10_000,
 			fairness,
 		});
 		expect(result.inactiveCohorts.map((cohort) => cohort.alias)).toEqual(["inactive_1", "inactive_2"]);

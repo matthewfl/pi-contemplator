@@ -295,7 +295,7 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 				headers: resolved.headers,
 				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
 				targetTokens: runtime.config.observationsPoolTargetTokens,
-				samplingThresholdRatio: runtime.config.librarianSamplingThresholdRatio,
+				samplingThresholdTokens: runtime.config.librarianSamplingThresholdTokens,
 				fairness: runtime.librarianFairness,
 				maxTurns: runtime.config.agentMaxTurns,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",

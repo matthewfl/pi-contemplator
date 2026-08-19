@@ -1,5 +1,6 @@
 import {
 	isMemoryDetails,
+	OM_LIBRARIAN_COMMIT,
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
@@ -150,7 +151,7 @@ function indexLedger(entries: Entry[]): {
 			});
 			continue;
 		}
-		if (isReflectionsRecordedEntry(entry) || (entry.type === "custom" && entry.customType === "om.librarian.commit" && entry.data && typeof entry.data === "object" && Array.isArray((entry.data as { reflections?: unknown }).reflections))) {
+		if (isReflectionsRecordedEntry(entry) || (entry.type === "custom" && entry.customType === OM_LIBRARIAN_COMMIT && entry.data && typeof entry.data === "object" && Array.isArray((entry.data as { reflections?: unknown }).reflections))) {
 			const records = isReflectionsRecordedEntry(entry) ? entry.data.reflections : (entry.data as { reflections: Reflection[] }).reflections;
 			records.forEach((reflection, recordIndex) => {
 				const key = reflectionKey(reflection);

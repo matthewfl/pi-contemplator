@@ -5,7 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { boundedMaxTokens } from "../../model-budget.js";
 import type { LlmUsageInput } from "../../runtime.js";
 import { truncateRecordContent } from "../../serialize.js";
 import {
@@ -34,6 +34,8 @@ import {
 } from "./sampling.js";
 
 export const LIBRARIAN_MAX_INVOCATIONS = 15;
+const LIBRARIAN_MAX_OUTPUT_TOKENS = 256_000;
+const LIBRARIAN_CONTEXT_RESERVE_TOKENS = 4_096;
 
 export type RunLibrarianArgs = {
 	model: Model<any>;
@@ -41,7 +43,7 @@ export type RunLibrarianArgs = {
 	headers?: Record<string, string>;
 	getBranch: () => Entry[];
 	targetTokens: number;
-	samplingThresholdRatio?: number;
+	samplingThresholdTokens?: number;
 	fairness?: Map<string, SamplingFairness>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
@@ -205,7 +207,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	const contextWindow = typeof args.model.contextWindow === "number" && args.model.contextWindow > 0 ? args.model.contextWindow : 128_000;
 	const newMemoryIds = newMemoryIdsSinceLibrarianCoverage(snapshot);
 	const samplingNow = args.now ?? Date.now();
-	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, contextWindow, samplingThresholdRatio: args.samplingThresholdRatio, newMemoryIds, fairness: args.fairness, random: args.random, now: samplingNow });
+	const sample = sampleLibrarianMemories({ activeMemories, inactiveCohorts, samplingThresholdTokens: args.samplingThresholdTokens, newMemoryIds, fairness: args.fairness, random: args.random, now: samplingNow });
 	const inspected = new Set(sample.activeMemories.map((item) => item.memory.id));
 	const memoryById = new Map<string, Observation | Reflection>([
 		...folded.observations.map((item) => [item.id, item] as const),
@@ -276,6 +278,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			const evidenceIds = unique(params.because_of_observations ?? []);
 			const replacementIds = unique(params.replacement_memories ?? []);
 
+			if (params.recall_if !== undefined && !recallIf) return textResult("Rejected: recall_if must contain non-whitespace text.");
 			if (activate && (reflectionContent !== undefined || recallIf !== undefined || deleteRequested)) return textResult("Rejected: make_active cannot be combined with reflection_content, recall_if, or delete.");
 			if (deleteRequested && recallIf !== undefined) return textResult("Rejected: delete and recall_if are mutually exclusive.");
 			if (!reflectionContent && !activate && !deleteRequested && recallIf === undefined) return textResult("Rejected: provide reflection_content, recall_if, make_active: true, or delete: true to identify the update.");
@@ -299,7 +302,7 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 				if (sourceDisposition === "makeInactive") stageAction({ type: "makeInactive", memoryIds: sourceMemoryIds, recallIf: recallIf!, becauseOfMemoryIds: [reflectionId], createdAt });
 				if (sourceDisposition === "delete") stageAction({ type: "delete", memoryIds: sourceMemoryIds, reason: params.reason!.trim(), becauseOfMemoryIds: [reflectionId], replacementMemoryIds: [reflectionId], createdAt });
 				const sourceOutcome = sourceDisposition === "keepActive"
-					? `Source memories [${sourceMemoryIds.join(", ")}] remain active. Use another update_memories call if a separate lifecycle change is justified.`
+					? `Source memories [${sourceMemoryIds.join(", ")}] remain active. HINT: when creating a reflection, include recall_if to make its source memories inactive at the same time, or include delete: true with reason to delete fully replaced sources at the same time.`
 					: sourceDisposition === "makeInactive"
 						? `Source memories [${sourceMemoryIds.join(", ")}] are staged to become inactive under recall_if: ${recallIf}`
 						: `Source memories [${sourceMemoryIds.join(", ")}] are staged for logical deletion and replaced by reflection [${reflectionId}].`;
@@ -422,15 +425,22 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 
+	const toolDefinitionTokens = estimateStringTokens(JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
 	const runOnce = async (text: string, requireToolCall: boolean): Promise<void> => {
 		const prompt: Message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
 		const context: AgentContext = { systemPrompt: LIBRARIAN_SYSTEM, messages: history.slice(), tools };
+		const estimatedInputTokens = estimateStringTokens(LIBRARIAN_SYSTEM) + toolDefinitionTokens + estimateStringTokens(JSON.stringify([...history, prompt]));
+		// Give the librarian as much output room as the model and remaining context
+		// permit. A large memory set can require far more than the generic 32k
+		// worker cap before the model reaches a concrete curation decision.
+		const contextAvailableOutput = Math.max(1, contextWindow - estimatedInputTokens - LIBRARIAN_CONTEXT_RESERVE_TOKENS);
+		const maxOutputTokens = Math.min(LIBRARIAN_MAX_OUTPUT_TOKENS, contextAvailableOutput);
 		let turnCount = 0;
 		const config: AgentLoopConfig & { toolChoice?: "any" | "required" } = {
 			model: args.model,
 			apiKey: args.apiKey,
 			headers: args.headers,
-			maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
+			maxTokens: boundedMaxTokens(args.model, maxOutputTokens),
 			convertToLlm: (messages) => messages as Message[],
 			toolExecution: "parallel",
 			beforeToolCall: async ({ toolCall, context: toolContext }) => {
@@ -444,8 +454,11 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 				return undefined;
 			},
 			shouldStopAfterTurn: () => doneSummary !== undefined || (effectiveMaxTurns !== undefined && ++turnCount >= effectiveMaxTurns),
-			...(requireToolCall ? { toolChoice: requiredToolChoice(args.model.api) } : {}),
-			...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
+			// The first pass gets the configured reasoning level. Once it stops
+			// without a tool, preserve that reasoning in history but force subsequent
+			// requests to spend only a minimal budget before emitting a required tool.
+			...(requireToolCall ? { toolChoice: requiredToolChoice(args.model.api), reasoning: "minimal" as const } : {}),
+			...(!requireToolCall && reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		};
 		history.push(prompt as AgentMessage);
 		args.onMessages?.(history.slice());
@@ -475,7 +488,10 @@ export async function runLibrarian(args: RunLibrarianArgs): Promise<LibrarianRun
 			}
 		}
 		const messages = await stream.result();
-		history.push(...messages);
+		// agentLoop includes its input prompt in the returned new-message list;
+		// history already contains that prompt for live diagnostics.
+		const returnedMessages = messages[0] === prompt ? messages.slice(1) : messages;
+		history.push(...returnedMessages);
 		args.onMessages?.(history.slice());
 		if (args.recordUsage) for (const message of messages) if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
 	};

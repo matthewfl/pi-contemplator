@@ -82,7 +82,7 @@ try {
 		librarianMaxDelayMinutes: 0,
 		librarianMinNewMemoryTokens: 1,
 		librarianPressureTriggerRatio: 1,
-		librarianSamplingThresholdRatio: 0.6,
+		librarianSamplingThresholdTokens: 40_000,
 		observationsPoolMaxTokens: 100,
 		observationsPoolTargetTokens: 50,
 	}));

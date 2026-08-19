@@ -147,6 +147,32 @@ describe("Contemplator lifecycle", () => {
 		]);
 	});
 
+	it("persists each update prompt once when agentLoop returns that input prompt", async () => {
+		agentMocks.agentLoop.mockImplementation((prompts, context) => {
+			selectNoIntervention(context);
+			return stream(Promise.resolve(), [
+				prompts[0],
+				{ role: "assistant", content: [{ type: "text", text: "No intervention." }], stopReason: "stop" },
+			]);
+		});
+		const raw = textCustomMessage("raw-prompt-once", "work to contemplate");
+		const memory = observationsRecordedEntry("obs-prompt-once", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-prompt-once"] })],
+			coversUpToId: "raw-prompt-once",
+		});
+		const harness = setup([]);
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.message", expect.anything()));
+		const persistedMessages = harness.pi.appendEntry.mock.calls
+			.filter(([type]) => type === "om.contemplator.message")
+			.map(([, data]) => (data as { message: { role: string } }).message);
+		expect(persistedMessages.filter((message) => message.role === "user")).toHaveLength(1);
+		expect(persistedMessages.filter((message) => message.role === "assistant")).toHaveLength(1);
+	});
+
 	it("requeues an unconfirmed probe on fresh startup even when its custom message was persisted", () => {
 		const entries = [
 			{
