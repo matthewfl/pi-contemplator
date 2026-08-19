@@ -41,7 +41,7 @@ export function toolNames(body) {
 export function classify(body) {
 	const tools = toolNames(body);
 	if (tools.has("record_observations")) return "observer";
-	if (tools.has("record_reflection") && tools.has("make_inactive") && tools.has("done")) return "librarian";
+	if (tools.has("update_memories") && tools.has("done") && tools.size === 2) return "librarian";
 	if (tools.has("record_reflections")) return "reflector";
 	if (tools.has("drop_observations")) return "dropper";
 	if (tools.has("send_probe")) return "contemplator";

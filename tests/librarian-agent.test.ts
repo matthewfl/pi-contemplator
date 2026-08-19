@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildLibrarianPrompt, runLibrarian } from "../src/agents/librarian/agent.js";
-import { LIBRARIAN_SYSTEM } from "../src/agents/librarian/prompts.js";
+import { LIBRARIAN_CONTINUE, LIBRARIAN_SYSTEM } from "../src/agents/librarian/prompts.js";
 import { hashId } from "../src/ids.js";
 import { OM_LIBRARIAN_COMMIT, type Entry } from "../src/session-ledger/index.js";
 
@@ -130,29 +130,36 @@ describe("librarian agent", () => {
 		expect(prompt).toContain("WHOLE-POOL MEMORY PRESSURE ADVISORY");
 		expect(prompt).toContain("not a quota for this sample");
 		expect(prompt).toContain("Never compensate for unseen memories");
-		expect(prompt).toContain("librarian-record-reflection-example");
+		expect(prompt).toContain("librarian-record-update-example");
 		expect(prompt).toContain('"type":"toolCall"');
 		expect(prompt).toContain('"role":"toolResult"');
 		expect(prompt).toContain("Illustrative receipt: staged reflection");
 		expect(configSeen.toolExecution).toBe("parallel");
+		expect(configSeen.toolChoice).toBeUndefined();
 		expect(configSeen.beforeToolCall).toBeTypeOf("function");
 		await expect(configSeen.beforeToolCall({
 			toolCall: { name: "done" },
-			context: { messages: [{ role: "assistant", content: [{ type: "toolCall", name: "make_inactive" }, { type: "toolCall", name: "done" }] }] },
+			context: { messages: [{ role: "assistant", content: [{ type: "toolCall", name: "update_memories" }, { type: "toolCall", name: "done" }] }] },
 		})).resolves.toMatchObject({ block: true });
 	});
 
-	it("reminds a prose-only librarian to record decisions with tools", async () => {
+	it("uses only the terse reminder and requires a tool after a prose-only first pass", async () => {
 		const prompts: string[] = [];
-		const loop = fakeAgentLoop(async (invocation, invocationPrompts, context) => {
+		const toolChoices: unknown[] = [];
+		const toolNames: string[][] = [];
+		const loop = fakeAgentLoop(async (invocation, invocationPrompts, context, config) => {
 			prompts.push(invocationPrompts[0].content[0].text);
+			toolChoices.push(config.toolChoice);
+			toolNames.push(context.tools.map((candidate: any) => candidate.name));
 			if (invocation > 0) await confirmDone(context);
 		});
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
 		expect(result.completed).toBe(true);
-		expect(prompts[1]).toContain("IMPORTANT!!!! YOU HAVE BEEN THINKING FOR A WHILE");
-		expect(prompts[1]).toContain("CALL THE TOOLS NOW TO RECORD ANYTHING YOU HAVE ALREADY DECIDED");
+		expect(prompts[1]).toBe(LIBRARIAN_CONTINUE);
+		expect(prompts[1]).toMatch(/^IMPORTANT!!!!/);
 		expect(prompts[1]).toContain("DO NOT DESCRIBE INTENDED ACTIONS IN PROSE");
+		expect(toolChoices).toEqual([undefined, "required"]);
+		expect(toolNames).toEqual([["update_memories", "done"], ["update_memories", "done"]]);
 	});
 
 	it("publishes in-progress thinking before the librarian stream settles", async () => {
@@ -180,10 +187,11 @@ describe("librarian agent", () => {
 	it("records an atomic reflection with explicit source deletion reason", async () => {
 		const content = "Alpha and beta details were consumed into a completed result.";
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			const receipt = await tool(context, "record_reflection").execute("r1", {
-				content,
-				sourceMemoryIds: [A, B],
-				deleteReason: "The reflection preserves the completed result; raw details are temporal.",
+			const receipt = await tool(context, "update_memories").execute("r1", {
+				memories: [A, B],
+				reflection_content: content,
+				delete: true,
+				reason: "The reflection preserves the completed result; raw details are temporal.",
 			});
 			expect(receipt.content[0].text).toContain("Staged reflection");
 			await confirmDone(context);
@@ -205,25 +213,25 @@ describe("librarian agent", () => {
 		const content = "Alpha and beta provide a durable combined fact.";
 		let receipt: any;
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			receipt = await tool(context, "record_reflection").execute("r-default", {
-				content,
-				sourceMemoryIds: [A, B],
+			receipt = await tool(context, "update_memories").execute("r-default", {
+				memories: [A, B],
+				reflection_content: content,
 			});
 			await confirmDone(context);
 		});
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
 		expect(receipt.details).toMatchObject({ sourceDisposition: "keepActive" });
 		expect(receipt.content[0].text).toContain(`Source memories [${A}, ${B}] remain active`);
-		expect(receipt.content[0].text).toContain("make_inactive or delete_memories");
+		expect(receipt.content[0].text).toContain("another update_memories call");
 		expect(result.commit?.reflections).toEqual([expect.objectContaining({ content })]);
 		expect(result.commit?.actions).toEqual([]);
 	});
 
 	it("rejects conflicting inferred source handling", async () => {
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			const receipt = await tool(context, "record_reflection").execute("r1", {
-				content: "Invalid source-handling reflection.", sourceMemoryIds: [A, B],
-				sourceRecallIf: "Recall later", deleteReason: "Replaced completely",
+			const receipt = await tool(context, "update_memories").execute("r1", {
+				memories: [A, B], reflection_content: "Invalid source-handling reflection.",
+				recall_if: "Recall later", delete: true, reason: "Replaced completely",
 			});
 			expect(receipt.content[0].text).toContain("mutually exclusive");
 			await confirmDone(context);
@@ -235,14 +243,14 @@ describe("librarian agent", () => {
 
 	it("partially accepts target ids but rejects invalid shared evidence atomically", async () => {
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			const partial = await tool(context, "delete_memories").execute("x1", {
-				memoryIds: [A, "dddddddddddd"], becauseOfObservationIds: [C], reason: "Alpha detail is obsolete.",
+			const partial = await tool(context, "update_memories").execute("x1", {
+				memories: [A, "dddddddddddd"], because_of_observations: [C], delete: true, reason: "Alpha detail is obsolete.",
 			});
 			expect(partial.details).toMatchObject({ accepted: [A], rejected: ["dddddddddddd"] });
-			const rejected = await tool(context, "make_inactive").execute("x2", {
-				memoryIds: [B], becauseOfObservationIds: ["eeeeeeeeeeee"], recallIf: "Recall beta",
+			const rejected = await tool(context, "update_memories").execute("x2", {
+				memories: [B], because_of_observations: ["eeeeeeeeeeee"], recall_if: "Recall beta",
 			});
-			expect(rejected.content[0].text).toContain("Rejected entire call");
+			expect(rejected.content[0].text).toContain("Rejected entire update");
 			await confirmDone(context);
 		});
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
@@ -264,10 +272,11 @@ describe("librarian agent", () => {
 		const content = "Alpha and beta were consolidated before the librarian timed out.";
 		const loop = fakeAgentLoop(async (invocation, _prompts, context) => {
 			if (invocation !== 0) return;
-			await tool(context, "record_reflection").execute("partial-reflection", {
-				content,
-				sourceMemoryIds: [A, B],
-				deleteReason: "The new reflection completely preserves these temporal source details.",
+			await tool(context, "update_memories").execute("partial-reflection", {
+				memories: [A, B],
+				reflection_content: content,
+				delete: true,
+				reason: "The new reflection completely preserves these temporal source details.",
 			});
 		});
 		const result = await runLibrarian({ ...base, getBranch: () => entries(), agentLoop: loop });
@@ -307,7 +316,7 @@ describe("librarian agent", () => {
 		let receipt = "";
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
 			expect(JSON.stringify(context.messages)).toContain("[inactive_1] (2 memories) Recall when alpha work resumes");
-			const result = await tool(context, "make_active").execute("x1", { inactiveRefs: ["inactive_1"], becauseOfObservationIds: [D] });
+			const result = await tool(context, "update_memories").execute("x1", { memories: ["inactive_1"], make_active: true, because_of_observations: [D] });
 			receipt = result.content[0].text;
 			await confirmDone(context);
 		});
@@ -333,7 +342,7 @@ describe("librarian agent", () => {
 			data: { coversUpToId: "raw-1", observations: [{ id: D, content: "User resumed alpha work.", timestamp: "2026-01-04 10:00", relevance: "high", retention: "contextual", sourceEntryIds: ["raw-1"], tokenCount: 10 }] },
 		};
 		const loop = fakeAgentLoop(async (_invocation, _prompts, context) => {
-			await tool(context, "make_active").execute("x1", { inactiveRefs: [A], becauseOfObservationIds: [D] });
+			await tool(context, "update_memories").execute("x1", { memories: [A], make_active: true, because_of_observations: [D] });
 			await confirmDone(context);
 		});
 

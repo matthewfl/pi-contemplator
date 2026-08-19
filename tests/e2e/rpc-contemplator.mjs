@@ -183,7 +183,7 @@ class MockModelServer {
 		const scenario = latestScenario(body);
 		const role = tools.has("record_observations")
 			? "observer"
-			: tools.has("record_reflection") && tools.has("make_inactive") && tools.has("done")
+			: tools.has("update_memories") && tools.has("done") && tools.size === 2
 				? "librarian"
 				: tools.has("send_probe")
 						? "contemplator"
@@ -255,11 +255,11 @@ class MockModelServer {
 				delayMs: 200,
 				tool: {
 					id: `librarian-reflect-${scenario}-${this.requests.length}`,
-					name: "record_reflection",
+					name: "update_memories",
 					arguments: {
-						content: `${PIPELINE_REFLECTION_PREFIX}:${scenario}:${this.requests.length}${feedbackSuffix}`,
-						sourceMemoryIds: memoryIds.slice(0, 2),
-						sourceRecallIf: `Recall when revisiting ${scenario ?? "the consolidated work"}`,
+						memories: memoryIds.slice(0, 2),
+						reflection_content: `${PIPELINE_REFLECTION_PREFIX}:${scenario}:${this.requests.length}${feedbackSuffix}`,
+						recall_if: `Recall when revisiting ${scenario ?? "the consolidated work"}`,
 					},
 				},
 			});

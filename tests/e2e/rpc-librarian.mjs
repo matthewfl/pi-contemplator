@@ -3,7 +3,7 @@ import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWork
 
 const started = Date.now();
 const log = (text) => console.log(`[librarian-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observer: 0, librarian: 0, staged: 0, doneAfterReceipt: false };
+const state = { main: 0, observer: 0, librarian: 0, staged: 0, doneAfterReceipt: false, proseOnlyAttempted: false, requiredSeen: false };
 
 const server = new ModelServer(async (request, res) => {
 	const toolMessages = (request.body.messages ?? []).filter((message) => message.role === "tool");
@@ -30,7 +30,7 @@ const server = new ModelServer(async (request, res) => {
 	}
 	if (request.role === "librarian") {
 		state.librarian++;
-		const operationalToolMessages = toolMessages.filter((message) => !JSON.stringify(message).includes("librarian-record-reflection-example"));
+		const operationalToolMessages = toolMessages.filter((message) => !JSON.stringify(message).includes("librarian-record-update-example"));
 		if (operationalToolMessages.length) {
 			const receipt = JSON.stringify(operationalToolMessages);
 			if (/confirmation is required/i.test(receipt)) {
@@ -40,6 +40,12 @@ const server = new ModelServer(async (request, res) => {
 			state.doneAfterReceipt = true;
 			return sendSse(res, { tool: { id: `done-${state.librarian}`, name: "done", arguments: {} } });
 		}
+		if (!state.proseOnlyAttempted) {
+			state.proseOnlyAttempted = true;
+			return sendSse(res, { text: "I should consolidate these memories, but I am only describing that intention." });
+		}
+		assert(request.body.tool_choice === "required", `Librarian retry did not require a tool call: ${JSON.stringify(request.body.tool_choice)}`);
+		state.requiredSeen = true;
 		const contextText = (request.body.messages ?? []).map(textOf).join("\n");
 		const ids = [...new Set([...contextText.matchAll(/^\[([a-f0-9]{12})\] (?:observation|reflection)\b/gm)].map((match) => match[1]))];
 		log(`librarian request inspected ${ids.length} active memory line(s)`);
@@ -49,11 +55,11 @@ const server = new ModelServer(async (request, res) => {
 			delayMs: 150,
 			tool: {
 				id: `reflect-${state.librarian}`,
-				name: "record_reflection",
+				name: "update_memories",
 				arguments: {
-					content: `E2E_LIBRARIAN_CRYSTALLIZED_${state.staged}: the related implementation evidence has been consolidated`,
-					sourceMemoryIds: ids.slice(0, 2),
-					sourceRecallIf: "Recall when revisiting the related E2E implementation",
+					memories: ids.slice(0, 2),
+					reflection_content: `E2E_LIBRARIAN_CRYSTALLIZED_${state.staged}: the related implementation evidence has been consolidated`,
+					recall_if: "Recall when revisiting the related E2E implementation",
 				},
 			},
 		});
@@ -93,6 +99,7 @@ try {
 		return commits.find((entry) => (entry.data?.reflections?.length ?? 0) > 0 && (entry.data?.actions?.length ?? 0) > 0);
 	}, "atomic librarian reflection/lifecycle commit", 30_000);
 	assert(state.doneAfterReceipt, "Librarian called done without first receiving the staging result");
+	assert(state.proseOnlyAttempted && state.requiredSeen, "Librarian prose-only retry was not forced into tool-call-required mode");
 	assert(commit.data.actions.some((action) => action.type === "makeInactive" && action.memoryIds.length === 2 && action.recallIf), "Commit did not atomically inactivate both reflection sources with a recall cue");
 	assert(commit.data.reflections[0].sourceMemoryIds.length === 2, "Reflection did not retain both source backpointers");
 	assert(server.requests.some((request) => request.role === "observer") && server.requests.some((request) => request.role === "librarian"), "Expected observer and librarian requests did not reach the mock server");

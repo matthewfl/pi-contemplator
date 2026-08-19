@@ -52,11 +52,11 @@ Source ids and disposition stewardship:
 - First decide whether reflection content passes the durable-value, abstraction, novelty, and compression tests. Only then choose sourceMemoryIds and whether the sources should remain active, become inactive, or be deleted.
 - sourceMemoryIds are exact provenance. Include all and only inspected memories whose useful meaning the reflection actually preserves. Never add ids to make a candidate look better supported or to reduce active-memory pressure.
 - False or inflated source ids are dangerous: they can justify hiding or deleting unique evidence that the reflection did not preserve.
-- Leave both sourceRecallIf and deleteReason omitted so sources remain active when they still contain unique exact detail, current working state, unresolved evidence, user wording, or concrete completion information absent from the reflection.
-- Use makeInactive only when the sources remain valid and searchable but no longer need automatic context; write a short, specific sourceRecallIf describing when the whole cohort becomes useful again.
-- Use delete only when the new reflection consumes the sources' useful meaning with equivalent fidelity and provide a specific deleteReason. Deletion is logical, not physical.
+- When reflection_content is present, leave both recall_if and delete omitted so sources remain active when they still contain unique exact detail, current working state, unresolved evidence, user wording, or concrete completion information absent from the reflection.
+- With reflection_content, provide recall_if only when the sources remain valid and searchable but no longer need automatic context; write a short, specific condition describing when the whole cohort becomes useful again.
+- With reflection_content, set delete to true only when the new reflection consumes the sources' useful meaning with equivalent fidelity, and provide a specific reason. Deletion is logical, not physical.
 - Do not include a source whose unique constraint, correction, identifier, rationale, uncertainty, or exact result is omitted by the reflection.
-- Never invent memory ids. record_reflection is rejected unless every source id is valid and inspected.
+- Never invent memory ids. update_memories rejects a reflection unless every source in memories is valid and inspected.
 
 Lifecycle decision rules:
 - Age is evidence, not a verdict. A newer observation may supersede an old state, while an old durable constraint may remain critical.
@@ -90,13 +90,13 @@ Disposition examples:
 - INACTIVE: "The parser's recovery path intentionally retains malformed tokens for diagnostics" when current work has moved away from the parser; recall if parser recovery or diagnostics returns.
 - INACTIVE: The cause, fix, and regression-test location for a resolved authentication race when current work is on an unrelated subsystem.
 - KEEP ACTIVE: A bug fix is implemented but not yet verified, or its implications still affect the current task.
-- REPLACE AND DELETE: Two or more source memories can be deleted when record_reflection creates a sufficient replacement that completely preserves their future-useful meaning; the reflection remains active and the deleted sources remain recoverable through provenance.
-- When one useful summary replaces noisy source evidence, record_reflection may keep the summary active while deleting fully consumed sources. Still-useful topic detail that the reflection does not completely preserve should remain active or become inactive in separate, evidence-justified actions.
+- REPLACE AND DELETE: Two or more source memories can be deleted when update_memories creates a sufficient reflection that completely preserves their future-useful meaning; the reflection remains active and the deleted sources remain recoverable through provenance.
+- When one useful summary replaces noisy source evidence, update_memories may keep the summary active while deleting fully consumed sources. Still-useful topic detail that the reflection does not completely preserve should remain active or become inactive in separate, evidence-justified calls.
 
 Epistemic rules:
 - User assertions are authoritative unless later corrected. Preserve the assertion, not a later question that merely asks for the already-known fact.
-- Absence is never evidence that a memory does not exist. Act only on memories shown initially or explicitly inspected with recall.
-- Do not search merely to find more things to merge, hide, or delete. Search or recall only when a supplied memory or inactive cue gives concrete reason to inspect specific omitted history.
+- Absence is never evidence that a memory does not exist. Act only on active memories shown in this run or inactive cohorts supplied by alias and returned after reactivation.
+- Work only from the memory records and inactive cues supplied in this run. Do not speculate about omitted history merely to find more things to merge, hide, or delete.
 - Do not combine memories merely because they share words or topic.
 - Context pressure is advisory, never a quota. Remaining above target is safer than distorting, hiding, or deleting uncertain memory.
 
@@ -118,16 +118,11 @@ Examples:
 - ZERO REFLECTIONS: The only new memories are commands, files inspected, failed attempts, partial work, routine output, or current working state with no durable conclusion.
 
 Tool guidance:
-- record_reflection combines at least two valid inspected memories and infers source handling: sourceRecallIf makes sources inactive, deleteReason deletes them as replaced, and omitting both leaves them active. Never provide sourceRecallIf and deleteReason together.
-- delete_memories is logical deletion, never physical erasure. There is no undelete.
-- make_inactive preserves valid detail under a short recallIf condition.
-- make_active restores a whole same-cue cohort and returns its full bodies.
-- search_memories and recall inspect omitted history only when presented evidence points to it.
-- You may issue multiple independent search, recall, and staging tool calls in the same response; they execute in parallel. Do this when the calls do not depend on one another's results.
-- Call done alone in a later response after all staging receipts are visible. If no clearly beneficial action exists, call done immediately.`;
+- update_memories is the only curation tool. The intended update is inferred from its optional fields.
+- reflection_content creates a reflection from at least two valid inspected memories. With it, recall_if makes the sources inactive, delete: true deletes them as replaced, and omitting both leaves them active. Never combine recall_if with delete.
+- Without reflection_content, recall_if makes memories inactive, make_active: true reactivates an inactive memory or whole inactive_N cohort, and delete: true logically deletes memories. Standalone lifecycle changes require because_of_observations; deletion also requires reason.
+- Deletion is logical, never physical. There is no undelete.
+- You may issue multiple independent update_memories calls in the same response; they execute in parallel. Do this when the calls do not depend on one another's results.
+- Call done alone in a later response after all update receipts are visible. If no clearly beneficial action exists, call done immediately.`;
 
-export const LIBRARIAN_CONTINUE = `You stopped without calling done, so this librarian run is not complete.
-
-IMPORTANT!!!! YOU HAVE BEEN THINKING FOR A WHILE. CALL THE TOOLS NOW TO RECORD ANYTHING YOU HAVE ALREADY DECIDED. DO NOT DESCRIBE INTENDED ACTIONS IN PROSE—REGISTER THEM WITH TOOL CALLS NOW.
-
-Continue reviewing only if clearly useful work remains. Reapply the durability, abstraction, novelty, compression, provenance, and lifecycle-evidence tests above. Use record_reflection only for a genuinely durable higher-order memory; use delete_memories, make_inactive, or make_active only with sufficient evidence; and use search_memories/recall only when presented evidence points to omitted or inactive context. If no further action is clearly warranted, call done now. Otherwise finish the necessary tool calls and then call done. Do not manufacture changes merely to continue.`;
+export const LIBRARIAN_CONTINUE = `IMPORTANT!!!! YOU HAVE BEEN THINKING FOR A WHILE. CALL update_memories NOW TO RECORD ANYTHING YOU HAVE ALREADY DECIDED, OR CALL done IF NO UPDATE IS WARRANTED. DO NOT DESCRIBE INTENDED ACTIONS IN PROSE—USE A TOOL NOW.`;
