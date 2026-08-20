@@ -1,5 +1,7 @@
 # Scaling observational memory for very long sessions
 
+> Historical design document. The reflector/dropper and observation-pool maximum described below were replaced by the citation-based summarizer. See `how-it-works.md` and `configuration.md` for current behavior.
+
 ## Problem statement
 
 A real session running for roughly 43 hours and 700 million lifetime tokens reached approximately:

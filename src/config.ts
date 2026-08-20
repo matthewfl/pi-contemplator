@@ -41,7 +41,7 @@ export interface Config {
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
-	observationsPoolMaxTokens: number;
+	/** Advisory target for total active observation and summary tokens. */
 	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
 	model?: ConfiguredModel;
@@ -81,8 +81,7 @@ export const DEFAULTS: Config = {
 	compactAfterTokens: 81_000,
 	compactAfterTokensMode: "calibrated",
 	compactAfterTokensRatio: 0.68,
-	observationsPoolMaxTokens: 20_000,
-	observationsPoolTargetTokens: 10_000,
+	observationsPoolTargetTokens: 20_000,
 	agentMaxTurns: 16,
 	showWorkerNotifications: true,
 	passive: false,
@@ -177,15 +176,6 @@ function nonNegativeIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value >= 0 ? value : undefined;
 }
 
-function validTargetOrUndefined(value: unknown, maxTokens: number): number | undefined {
-	const target = positiveIntegerOrUndefined(value);
-	return target !== undefined && target < maxTokens ? target : undefined;
-}
-
-function derivedObservationPoolTarget(maxTokens: number): number {
-	return Math.floor(maxTokens / 2);
-}
-
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
 }
@@ -227,7 +217,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observeAfterTokens",
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
-		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
@@ -299,20 +288,10 @@ export function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): C
 	const globalConfig = readNamespacedConfig(globalPath);
 	const projectConfig = readNamespacedConfig(projectPath);
 	const envConfig = readEnvConfig(env);
-	const merged = {
+	return {
 		...DEFAULTS,
-		observationsPoolTargetTokens: undefined,
 		...globalConfig,
 		...projectConfig,
 		...envConfig,
-	};
-	const target = validTargetOrUndefined(
-		merged.observationsPoolTargetTokens,
-		merged.observationsPoolMaxTokens,
-	) ?? derivedObservationPoolTarget(merged.observationsPoolMaxTokens);
-
-	return {
-		...merged,
-		observationsPoolTargetTokens: target,
 	};
 }

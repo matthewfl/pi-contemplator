@@ -79,7 +79,7 @@ try {
 		summarizerEnabled: true, summarizerMinIntervalMinutes: 0, summarizerMaxDelayMinutes: 0,
 		summarizerMinNewMemoryTokens: 1, summarizerMaxPendingMemoryTokens: 1,
 		summarizerPressureTriggerRatio: 1, summarizerSamplingThresholdTokens: 50_000,
-		observationsPoolMaxTokens: 100, observationsPoolTargetTokens: 50,
+		observationsPoolTargetTokens: 50,
 	}));
 	pi = await launchPi(workspace);
 	log("Pi RPC session ready");

@@ -77,7 +77,7 @@ describe("summary graph folding and projection", () => {
 	});
 
 	it("writes a complete compaction archive and restores graph edges from it", () => {
-		const projected = buildCompactionProjection(branch(), "sum-entry", { observationsPoolMaxTokens: 20_000 });
+		const projected = buildCompactionProjection(branch(), "sum-entry");
 		expect(projected.observations).toEqual([]);
 		expect(projected.summaries).toHaveLength(1);
 		expect(projected.details.archive?.observations).toHaveLength(2);

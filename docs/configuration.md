@@ -10,8 +10,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "compactAfterTokens": 81000,
     "compactAfterTokensMode": "calibrated",
     "compactAfterTokensRatio": 0.68,
-    "observationsPoolMaxTokens": 20000,
-    "observationsPoolTargetTokens": 10000,
+    "observationsPoolTargetTokens": 20000,
     "agentMaxTurns": 16,
 
     "summarizerEnabled": true,
@@ -46,8 +45,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `compactAfterTokens` | `81000` | Proactive threshold in `calibrated` mode and fallback in ratio mode. |
 | `compactAfterTokensMode` | `calibrated` | `calibrated` or `ratio`. |
 | `compactAfterTokensRatio` | `0.68` | Context-window fraction in ratio mode; must be between 0 and 1. |
-| `observationsPoolMaxTokens` | `20000` | Visible-memory pressure used by compaction/full-fold behavior. |
-| `observationsPoolTargetTokens` | `10000` | Advisory active-memory target shown to the summarizer; defaults to half of max when omitted. |
+| `observationsPoolTargetTokens` | `20000` | Advisory total active-memory target shown to the summarizer. Changing it requests a new pressure pass immediately, subject to the configured minimum interval. |
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and summarizer. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |
@@ -70,7 +68,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `passive` | `false` | Disables proactive background work while leaving ledger views, tools, and compaction hooks available. |
 | `debugLog` | `false` | Writes structured diagnostics under the observational-memory debug directory. |
 
-Positive count/token settings must be finite positive integers. Summarizer minute settings additionally accept zero. Invalid values are ignored. `observationsPoolTargetTokens` must be below max or it is re-derived.
+Positive count/token settings must be finite positive integers. Summarizer minute settings additionally accept zero. Invalid values are ignored.
 
 ## Summarizer timing examples
 

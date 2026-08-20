@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
-import { createSummarizerStallWatchdog, reconcileSummarizerDirty, shouldScheduleSummarizerFromObserver, summarizerDirtySinceAgentTime, summarizerScheduleDelayMs } from "../src/hooks/consolidation-trigger.js";
+import { createSummarizerStallWatchdog, reconcileSummarizerDirty, registerConsolidationTrigger, shouldScheduleSummarizerFromObserver, summarizerDirtySinceAgentTime, summarizerScheduleDelayMs } from "../src/hooks/consolidation-trigger.js";
 import { newMemoryIdsSinceSummarizerCoverage } from "../src/agents/summarizer/agent.js";
 import type { Entry } from "../src/session-ledger/index.js";
 
 function runtime(): Runtime {
 	const value = new Runtime();
 	value.config = { ...DEFAULTS, summarizerMinIntervalMinutes: 10, summarizerMaxDelayMinutes: 180, summarizerMinNewMemoryTokens: 5_000, summarizerMaxPendingMemoryTokens: 20_000 };
+	value.configLoaded = true;
 	return value;
 }
 
@@ -102,6 +103,33 @@ describe("summarizer scheduling", () => {
 		expect(value.summarizerPendingCount).toBe(1);
 		expect(value.summarizerPendingTokens).toBe(7);
 		expect(value.summarizerDirtySince).toBe(600);
+	});
+
+	it("keeps an explicit target-change pressure pass dirty without new observations", () => {
+		const value = runtime();
+		value.config = { ...value.config, observationsPoolTargetTokens: 5, summarizerPressureTriggerRatio: 1 };
+		value.summarizerLastStartedAt = 0; // minimum interval keeps this test from launching
+		const entries: Entry[] = [{
+			type: "custom",
+			id: "obs-existing",
+			customType: "om.observations.recorded",
+			data: { coversUpToId: "raw", observations: [
+				{ id: "aaaaaaaaaaaa", content: "existing active memory", timestamp: "2026-01-01 00:00", relevance: "low", sourceEntryIds: ["raw"], tokenCount: 12 },
+			] },
+		}];
+		registerConsolidationTrigger({ on: vi.fn() } as any, value);
+		const ctx = { cwd: "/tmp", hasUI: false, model: undefined, modelRegistry: {}, sessionManager: { getBranch: () => entries } };
+
+		value.notifySettingsUpdate(ctx, { observationsPoolTargetTokens: 5 });
+
+		expect(value.summarizerMaintenanceRequested).toBe(true);
+		expect(value.summarizerPendingCount).toBe(1);
+		expect(value.summarizerPendingTokens).toBe(12);
+		expect(value.summarizerDirtySince).toBe(0);
+		expect(value.summarizerInFlight).toBe(false);
+		reconcileSummarizerDirty(value, entries);
+		expect(value.summarizerMaintenanceRequested).toBe(true);
+		expect(value.summarizerPendingTokens).toBe(12);
 	});
 
 	it("reconstructs new observation ids after the latest summary coverage", () => {

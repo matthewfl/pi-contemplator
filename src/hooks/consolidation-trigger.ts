@@ -124,6 +124,29 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 		// new-memory scan at every checkpoint; observer completion marks dirty work.
 		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
+	runtime.setSettingsUpdateListener((ctx, settings) => {
+		const affectsScheduling = settings.summarizerEnabled !== undefined ||
+			settings.observationsPoolTargetTokens !== undefined ||
+			settings.summarizerMinIntervalMinutes !== undefined ||
+			settings.summarizerMaxDelayMinutes !== undefined ||
+			settings.summarizerMinNewMemoryTokens !== undefined ||
+			settings.summarizerMaxPendingMemoryTokens !== undefined ||
+			settings.summarizerPressureTriggerRatio !== undefined;
+		if (!affectsScheduling) return;
+		runtime.ensureConfig(ctx.cwd);
+		if (runtime.config.passive || !runtime.config.summarizerEnabled) return;
+		const entries = ctx.sessionManager.getBranch() as Entry[];
+		const folded = foldLedger(entries);
+		const active = [...folded.activeObservations, ...folded.activeSummaries];
+		const activeTokens = active.reduce((sum, memory) => sum + memory.tokenCount, 0);
+		const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.summarizerPressureTriggerRatio;
+		if (activeTokens >= pressureThreshold) {
+			runtime.requestSummarizerMaintenance(active.length, activeTokens, agentActiveTimeMs(entries));
+		} else if (!runtime.summarizerInFlight) {
+			reconcileSummarizerDirty(runtime, entries);
+		}
+		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
 }
 
 function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sessionFile?: string } {
@@ -215,6 +238,7 @@ export async function runConsolidationPipeline(
 
 	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
+	runtime.lastObserverStartedAt = Date.now();
 	try {
 		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
 			force: options.forceObserver === true,
@@ -225,6 +249,8 @@ export async function runConsolidationPipeline(
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
+	} finally {
+		runtime.lastObserverCompletedAt = Date.now();
 	}
 	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
@@ -279,15 +305,32 @@ export function summarizerDirtySinceAgentTime(entries: Entry[], newIds: Readonly
 
 export function reconcileSummarizerDirty(runtime: Runtime, entries: Entry[]): Set<string> {
 	const newIds = newMemoryIdsSinceSummarizerCoverage(entries);
+	const maintenanceRequested = runtime.summarizerMaintenanceRequested;
+	const priorDirtySince = runtime.summarizerDirtySince;
 	// The ledger coverage marker is authoritative. Replace counters rather than
 	// adding to them so observations captured during an in-flight run cannot be
 	// double-counted or retain the completed run's older dirty timestamp.
 	runtime.clearSummarizerDirty();
-	if (newIds.size > 0) {
+	if (newIds.size > 0 || maintenanceRequested) {
 		const folded = foldLedger(entries);
-		let tokens = 0;
-		for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? 0;
-		runtime.markSummarizerDirty(newIds.size, tokens, summarizerDirtySinceAgentTime(entries, newIds));
+		let newTokens = 0;
+		for (const id of newIds) newTokens += folded.observationsById.get(id)?.tokenCount ?? 0;
+		const active = [...folded.activeObservations, ...folded.activeSummaries];
+		const activeTokens = maintenanceRequested ? active.reduce((sum, memory) => sum + memory.tokenCount, 0) : 0;
+		const dirtySince = maintenanceRequested && priorDirtySince !== undefined
+			? priorDirtySince
+			: newIds.size > 0
+				? summarizerDirtySinceAgentTime(entries, newIds)
+				: agentActiveTimeMs(entries);
+		if (maintenanceRequested) {
+			runtime.requestSummarizerMaintenance(
+				Math.max(newIds.size, active.length),
+				Math.max(newTokens, activeTokens),
+				dirtySince,
+			);
+		} else {
+			runtime.markSummarizerDirty(newIds.size, newTokens, dirtySince);
+		}
 	}
 	return newIds;
 }
@@ -326,6 +369,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		let stalled = false;
 		let disposeStallWatchdog = () => {};
 		const startedAt = Date.now();
+		runtime.lastSummarizerStartedAt = startedAt;
 		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
 		try {
 			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
@@ -389,6 +433,10 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		} finally {
 			disposeStallWatchdog();
 			if (generation === runtime.getContextGeneration()) {
+				runtime.lastSummarizerCompletedAt = Date.now();
+				// A completed pass has honored an explicit target/settings request. A
+				// failed or stalled pass leaves it set so normal checkpoints can retry.
+				if (completed) runtime.summarizerMaintenanceRequested = false;
 				reconcileSummarizerDirty(runtime, ctx.sessionManager.getBranch() as Entry[]);
 				// A durable commit advances coverage. A successful no-op normally waits
 				// for later activity, but if observations arrived after its immutable

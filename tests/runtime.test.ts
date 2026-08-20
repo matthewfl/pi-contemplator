@@ -160,24 +160,12 @@ describe("Runtime V3 behavior", () => {
 		])).toMatchObject({ contemplatorMinTurns: 8 });
 	});
 
-	it("preserves a valid default pool target when only the maximum is overridden", () => {
+	it("accepts an active-memory target without an obsolete maximum constraint", () => {
 		const runtime = new Runtime();
-		runtime.setSessionSettings({ observationsPoolMaxTokens: 15_000 });
+		runtime.setSessionSettings({ observationsPoolTargetTokens: 80_000 });
 
-		expect(runtime.config.observationsPoolMaxTokens).toBe(15_000);
-		expect(runtime.config.observationsPoolTargetTokens).toBe(10_000);
-	});
-
-	it("normalizes invalid observation pool overrides restored from a branch", () => {
-		const runtime = new Runtime();
-		runtime.restoreSessionSettings([
-			{ type: "custom", customType: "om.settings", data: { observationsPoolMaxTokens: 5_000 } },
-			{ type: "custom", customType: "om.settings", data: { observationsPoolTargetTokens: 10_000 } },
-		]);
-
-		expect(runtime.config.observationsPoolMaxTokens).toBe(5_000);
-		expect(runtime.config.observationsPoolTargetTokens).toBe(2_500);
-		expect(runtime.config.observationsPoolTargetTokens).toBeLessThan(runtime.config.observationsPoolMaxTokens);
+		expect(runtime.config.observationsPoolTargetTokens).toBe(80_000);
+		expect(runtime.getSessionSettings().observationsPoolTargetTokens).toBe(80_000);
 	});
 
 	it("keeps compaction flags independent", () => {
@@ -193,11 +181,19 @@ describe("Runtime V3 behavior", () => {
 		runtime.compactInFlight = true;
 		runtime.compactRequested = true;
 		runtime.compactOrigin = "agent-requested";
+		runtime.lastObserverStartedAt = 1;
+		runtime.lastObserverCompletedAt = 2;
+		runtime.lastSummarizerStartedAt = 3;
+		runtime.lastSummarizerCompletedAt = 4;
 
 		runtime.advanceContextGeneration();
 
 		expect(runtime.compactInFlight).toBe(false);
 		expect(runtime.compactRequested).toBe(false);
 		expect(runtime.compactOrigin).toBeUndefined();
+		expect(runtime.lastObserverStartedAt).toBeUndefined();
+		expect(runtime.lastObserverCompletedAt).toBeUndefined();
+		expect(runtime.lastSummarizerStartedAt).toBeUndefined();
+		expect(runtime.lastSummarizerCompletedAt).toBeUndefined();
 	});
 });

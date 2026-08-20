@@ -23,10 +23,6 @@ export type ProjectionDiff = {
 	summariesOnlyInVisible: Summary[];
 };
 
-export type CompactionProjectionConfig = {
-	observationsPoolMaxTokens: number;
-};
-
 export type CompactionProjection = Projection & {
 	fullFold: boolean;
 	details: MemoryDetails;
@@ -69,26 +65,16 @@ export function visibleProjection(entries: Entry[], upToEntryId?: string): Proje
 	return details ? projectionFromMemoryDetails(details) : { observations: [], summaries: [] };
 }
 
-export function latestFullFoldBoundaryId(entries: Entry[]): string | undefined {
-	const entryIds = new Set(entries.map((entry) => entry.id));
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-		if (entry.type !== "compaction" || !isMemoryDetails(entry.details)) continue;
-		if (entry.details.fullFold && entry.firstKeptEntryId && entryIds.has(entry.firstKeptEntryId)) return entry.firstKeptEntryId;
-	}
-	return undefined;
-}
-
 export function buildCompactionProjection(
 	entries: Entry[],
 	firstKeptEntryId: string,
-	config: CompactionProjectionConfig,
 ): CompactionProjection {
 	const durable = foldLedger(entries, { upToEntryId: firstKeptEntryId });
 	const observations = durable.activeObservations;
 	const summaries = durable.activeSummaries;
-	const observationTokens = observations.reduce((total, observation) => total + observation.tokenCount, 0);
-	const fullFold = observationTokens >= config.observationsPoolMaxTokens;
+	// Retained in the v2 detail shape for schema stability. The old observation-
+	// pool pressure mode no longer exists; summarizer consumption controls visibility.
+	const fullFold = false;
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
 		version: 2,

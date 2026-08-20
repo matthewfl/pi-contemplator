@@ -16,25 +16,14 @@ function isConfiguredModel(value: unknown): value is ConfiguredModel {
 	return typeof model.provider === "string" && model.provider.length > 0 && typeof model.id === "string" && model.id.length > 0;
 }
 
-function normalizeSessionSettings(settings: SessionSettings, baseConfig: Config): SessionSettings {
-	const normalized = { ...settings };
-	if (normalized.observationsPoolMaxTokens !== undefined && normalized.observationsPoolMaxTokens < 2) {
-		delete normalized.observationsPoolMaxTokens;
-	}
-	const maxTokens = normalized.observationsPoolMaxTokens ?? baseConfig.observationsPoolMaxTokens;
-	const targetTokens = normalized.observationsPoolTargetTokens ?? baseConfig.observationsPoolTargetTokens;
-	if (normalized.observationsPoolMaxTokens !== undefined && targetTokens >= maxTokens) {
-		normalized.observationsPoolTargetTokens = Math.floor(maxTokens / 2);
-	} else if (normalized.observationsPoolTargetTokens !== undefined && normalized.observationsPoolTargetTokens >= maxTokens) {
-		delete normalized.observationsPoolTargetTokens;
-	}
-	return normalized;
+function normalizeSessionSettings(settings: SessionSettings, _baseConfig: Config): SessionSettings {
+	return { ...settings };
 }
 
 export type SessionSettings = Partial<Pick<Config,
 	| "observeAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
-	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
+	| "observationsPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
 	| "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns"
 	| "summarizerEnabled" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerPressureTriggerRatio" | "summarizerSamplingThresholdTokens"
@@ -64,6 +53,8 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 	modelRegistry: ResolveCtx["modelRegistry"];
 	sessionManager: { getBranch(): readonly unknown[] };
 }
+
+export type SettingsUpdate = Partial<SessionSettings>;
 
 export interface SummarizerRunView {
 	startedAt: number;
@@ -135,7 +126,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
-			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
+			"observationsPoolTargetTokens", "agentMaxTurns",
 			"contemplatorMinNewObservations", "contemplatorMinNewSummaries", "contemplatorMinTurns",
 			"summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes", "summarizerMinNewMemoryTokens", "summarizerMaxPendingMemoryTokens", "summarizerSamplingThresholdTokens",
 		] as const;
@@ -181,9 +172,12 @@ export class Runtime {
 	summarizerLastStartedAt: number | undefined;
 	summarizerPendingTokens = 0;
 	summarizerPendingCount = 0;
+	/** Keep an explicit pressure/settings pass eligible even without new observations. */
+	summarizerMaintenanceRequested = false;
 	summarizerFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
+	private settingsUpdateListener: ((ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
@@ -198,6 +192,11 @@ export class Runtime {
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastSummarizerError: string | undefined;
+	/** Wall-clock worker boundaries for launch-local status diagnostics. */
+	lastObserverStartedAt: number | undefined;
+	lastObserverCompletedAt: number | undefined;
+	lastSummarizerStartedAt: number | undefined;
+	lastSummarizerCompletedAt: number | undefined;
 	/** Most recent summarizer transcript in this extension launch/session context. */
 	lastSummarizerRun: SummarizerRunView | undefined;
 	/** Launch-local liveness and trigger diagnostics published by the contemplator. */
@@ -277,7 +276,12 @@ export class Runtime {
 		this.summarizerLastStartedAt = undefined;
 		this.summarizerPendingTokens = 0;
 		this.summarizerPendingCount = 0;
+		this.summarizerMaintenanceRequested = false;
 		this.summarizerFairness.clear();
+		this.lastObserverStartedAt = undefined;
+		this.lastObserverCompletedAt = undefined;
+		this.lastSummarizerStartedAt = undefined;
+		this.lastSummarizerCompletedAt = undefined;
 		this.lastSummarizerRun = undefined;
 		this.contemplatorState = {
 			running: false,
@@ -334,6 +338,14 @@ export class Runtime {
 		this.agentActivityListener?.(ctx);
 	}
 
+	setSettingsUpdateListener(listener: (ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void): void {
+		this.settingsUpdateListener = listener;
+	}
+
+	notifySettingsUpdate(ctx: MemoryUpdateCtx, settings: SettingsUpdate): void {
+		this.settingsUpdateListener?.(ctx, settings);
+	}
+
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
@@ -353,6 +365,17 @@ export class Runtime {
 			: Math.min(this.summarizerDirtySince, agentActiveTimeMs);
 		this.summarizerPendingCount += Math.max(0, memoryCount);
 		this.summarizerPendingTokens += Math.max(0, memoryTokens);
+	}
+
+	requestSummarizerMaintenance(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
+		this.summarizerMaintenanceRequested = true;
+		this.summarizerDirtySince = this.summarizerDirtySince === undefined
+			? agentActiveTimeMs
+			: Math.min(this.summarizerDirtySince, agentActiveTimeMs);
+		// This request describes the whole active pool, which may overlap the normal
+		// new-observation backlog. Use maxima rather than double-counting it.
+		this.summarizerPendingCount = Math.max(this.summarizerPendingCount, Math.max(0, memoryCount));
+		this.summarizerPendingTokens = Math.max(this.summarizerPendingTokens, Math.max(0, memoryTokens));
 	}
 
 	clearSummarizerDirty(): void {

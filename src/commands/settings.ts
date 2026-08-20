@@ -9,7 +9,7 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerSamplingThresholdTokens";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerSamplingThresholdTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "summarizerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
@@ -20,9 +20,12 @@ function branch(ctx: ExtensionContext): readonly unknown[] {
 	return ctx.sessionManager.getBranch() as readonly unknown[];
 }
 
-function appendSettings(pi: ExtensionAPI, runtime: Runtime, settings: SessionSettings): void {
+function appendSettings(pi: ExtensionAPI, runtime: Runtime, settings: SessionSettings, ctx?: ExtensionContext): void {
 	runtime.setSessionSettings(settings);
 	pi.appendEntry(OM_SETTINGS, { version: 1, ...settings });
+	// Settings that affect worker eligibility should take effect immediately,
+	// rather than waiting for an unrelated observer batch or session restart.
+	if (ctx) runtime.notifySettingsUpdate(ctx, settings);
 }
 
 function hasOverride(settings: SessionSettings, key: string): boolean {
@@ -34,6 +37,11 @@ function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "co
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
 	return hasOverride(runtime.getSessionSettings(), key) ? String(current) : `default (${renderedDefault})`;
+}
+
+function extensionEnabledLabel(runtime: Runtime): string {
+	const enabled = !runtime.config.passive;
+	return hasOverride(runtime.getSessionSettings(), "passive") ? String(enabled) : `${enabled} (default)`;
 }
 
 interface ModelOption extends SelectItem {
@@ -136,18 +144,6 @@ async function editNumber(ctx: ExtensionContext, runtime: Runtime, key: NumberSe
 	return parsed;
 }
 
-function validObservationPoolOverride(ctx: ExtensionContext, runtime: Runtime, key: NumberSetting, value: number): boolean {
-	if (key === "observationsPoolMaxTokens" && value <= runtime.config.observationsPoolTargetTokens) {
-		ctx.ui.notify("Observation pool max must be greater than the current target. Lower the target first.", "warning");
-		return false;
-	}
-	if (key === "observationsPoolTargetTokens" && value >= runtime.config.observationsPoolMaxTokens) {
-		ctx.ui.notify("Observation pool target must be less than the current maximum.", "warning");
-		return false;
-	}
-	return true;
-}
-
 export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	const restoreSettings = (_event: unknown, ctx: ExtensionContext) => {
 		runtime.ensureConfig(ctx.cwd);
@@ -164,16 +160,16 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 		const argument = typeof args === "string" ? args.trim().toLowerCase() : "";
 		if (argument === "on" || argument === "off") {
 			appendSettings(pi, runtime, { contemplatorEnabled: argument === "on" });
-			ctx.ui.notify(`Contemplation: ${argument === "on" ? "enabled" : "disabled"} for this session.`, "info");
+			ctx.ui.notify(`Contemplator: ${argument === "on" ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
 		if (argument === "compaction on" || argument === "compaction off") {
 			appendSettings(pi, runtime, { compactionObserverEnabled: argument.endsWith("on") });
-			ctx.ui.notify(`Compaction observer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
+			ctx.ui.notify(`Observe source during compaction: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
 		if (argument === "summarizer on" || argument === "summarizer off") {
-			appendSettings(pi, runtime, { summarizerEnabled: argument.endsWith("on") });
+			appendSettings(pi, runtime, { summarizerEnabled: argument.endsWith("on") }, ctx);
 			ctx.ui.notify(`Summarizer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
@@ -195,90 +191,86 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 		while (true) {
 			const settings = runtime.getSessionSettings();
 			const choice = await ctx.ui.select("Observational memory settings (session overrides)", [
-				`Contemplation: ${scalarLabel(runtime, "contemplatorEnabled")}`,
-				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
-				`Contemplator messages visible: ${scalarLabel(runtime, "showContemplatorMessages")}`,
+				`Pi-contemplator Enabled: ${extensionEnabledLabel(runtime)}`,
+				`Contemplator enabled: ${scalarLabel(runtime, "contemplatorEnabled")}`,
+				`Contemplator model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
+				`Show contemplator messages: ${scalarLabel(runtime, "showContemplatorMessages")}`,
+				`Contemplator new-observation trigger (count): ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
+				`Contemplator new-summary trigger (count): ${scalarLabel(runtime, "contemplatorMinNewSummaries")}`,
+				`Contemplator response spacing (count): ${scalarLabel(runtime, "contemplatorMinTurns")}`,
 				`Summarizer enabled: ${scalarLabel(runtime, "summarizerEnabled")}`,
-				`Summarizer minimum interval (agent-active minutes): ${scalarLabel(runtime, "summarizerMinIntervalMinutes")}`,
-				`Summarizer maximum delay (agent-active minutes): ${scalarLabel(runtime, "summarizerMaxDelayMinutes")}`,
-				`Summarizer new-memory trigger (tokens): ${scalarLabel(runtime, "summarizerMinNewMemoryTokens")}`,
+				`Active memory target (tokens, advisory): ${scalarLabel(runtime, "observationsPoolTargetTokens")}`,
+				`Summarizer minimum spacing (agent-active minutes): ${scalarLabel(runtime, "summarizerMinIntervalMinutes")}`,
+				`Summarizer maximum backlog age (agent-active minutes): ${scalarLabel(runtime, "summarizerMaxDelayMinutes")}`,
+				`Summarizer normal backlog trigger (tokens): ${scalarLabel(runtime, "summarizerMinNewMemoryTokens")}`,
 				`Summarizer urgent backlog trigger (tokens): ${scalarLabel(runtime, "summarizerMaxPendingMemoryTokens")}`,
-				`Summarizer pressure trigger: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")}`,
-				`Summarizer sampling threshold (tokens): ${scalarLabel(runtime, "summarizerSamplingThresholdTokens")}`,
-				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
+				`Summarizer pool-pressure multiplier: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")}`,
+				`Summarizer input cap before sampling (tokens): ${scalarLabel(runtime, "summarizerSamplingThresholdTokens")}`,
+				`Structural reviewer enabled: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
-				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
-				`Memory worker model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `default (${modelLabel(runtime.getDefaultConfig().model)})`}`,
-				`Observation threshold: ${scalarLabel(runtime, "observeAfterTokens")}`,
-				`Compaction threshold: ${scalarLabel(runtime, "compactAfterTokens")}`,
-				`Compaction mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `default (${runtime.getDefaultConfig().compactAfterTokensMode})`}`,
-				`Compaction ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `default (${runtime.getDefaultConfig().compactAfterTokensRatio})`}`,
-				`Observer chunk limit: ${scalarLabel(runtime, "observerChunkMaxTokens")}`,
-				`Observation pool max: ${scalarLabel(runtime, "observationsPoolMaxTokens")}`,
-				`Observation pool target: ${scalarLabel(runtime, "observationsPoolTargetTokens")}`,
-				`Worker max turns: ${scalarLabel(runtime, "agentMaxTurns")}`,
-				`Contemplation observation trigger: ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
-				`Contemplation summary trigger: ${scalarLabel(runtime, "contemplatorMinNewSummaries")}`,
-				`Contemplation response interval: ${scalarLabel(runtime, "contemplatorMinTurns")}`,
+				`Observe source during compaction: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
+				`Observer and summarizer model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `default (${modelLabel(runtime.getDefaultConfig().model)})`}`,
+				`Observer source backlog trigger (tokens): ${scalarLabel(runtime, "observeAfterTokens")}`,
+				`Observer input cap (tokens): ${scalarLabel(runtime, "observerChunkMaxTokens")}`,
+				`Observer and summarizer max rounds: ${scalarLabel(runtime, "agentMaxTurns")}`,
+				`Automatic compaction trigger: ${scalarLabel(runtime, "compactAfterTokens")}`,
+				`Automatic compaction threshold mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `default (${runtime.getDefaultConfig().compactAfterTokensMode})`}`,
+				`Automatic compaction context ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `default (${runtime.getDefaultConfig().compactAfterTokensRatio})`}`,
 				`Worker notifications: ${scalarLabel(runtime, "showWorkerNotifications")}`,
-				`Passive mode: ${scalarLabel(runtime, "passive")}`,
 				`Debug logging: ${scalarLabel(runtime, "debugLog")}`,
 				"Done",
 			]);
 			if (!choice || choice === "Done") return;
-			if (choice.startsWith("Contemplation:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
-			else if (choice.startsWith("Summarizer enabled:")) appendSettings(pi, runtime, { summarizerEnabled: !runtime.config.summarizerEnabled });
-			else if (choice.startsWith("Contemplator messages visible:")) appendSettings(pi, runtime, { showContemplatorMessages: !runtime.config.showContemplatorMessages });
-			else if (choice.startsWith("Structural reviewer:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
-			else if (choice.startsWith("Compaction observer:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
+			if (choice.startsWith("Pi-contemplator Enabled:")) appendSettings(pi, runtime, { passive: !runtime.config.passive });
+			else if (choice.startsWith("Contemplator enabled:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
+			else if (choice.startsWith("Summarizer enabled:")) appendSettings(pi, runtime, { summarizerEnabled: !runtime.config.summarizerEnabled }, ctx);
+			else if (choice.startsWith("Show contemplator messages:")) appendSettings(pi, runtime, { showContemplatorMessages: !runtime.config.showContemplatorMessages });
+			else if (choice.startsWith("Structural reviewer enabled:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
+			else if (choice.startsWith("Observe source during compaction:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
 			else if (choice.startsWith("Worker notifications:")) appendSettings(pi, runtime, { showWorkerNotifications: !runtime.config.showWorkerNotifications });
-			else if (choice.startsWith("Passive mode:")) appendSettings(pi, runtime, { passive: !runtime.config.passive });
 			else if (choice.startsWith("Debug logging:")) appendSettings(pi, runtime, { debugLog: !runtime.config.debugLog });
-			else if (choice.startsWith("Contemplation model:")) {
-				const model = await chooseModel(ctx, runtime.config.contemplatorModel, "Contemplation model");
+			else if (choice.startsWith("Contemplator model:")) {
+				const model = await chooseModel(ctx, runtime.config.contemplatorModel, "Contemplator model");
 				if (model !== undefined) appendSettings(pi, runtime, { contemplatorModel: model });
 			} else if (choice.startsWith("Structural reviewer model:")) {
 				const model = await chooseModel(ctx, runtime.config.reviewerModel, "Structural reviewer model");
 				if (model !== undefined) appendSettings(pi, runtime, { reviewerModel: model });
-			} else if (choice.startsWith("Memory worker model:")) {
-				const model = await chooseModel(ctx, runtime.config.model, "Memory worker model");
+			} else if (choice.startsWith("Observer and summarizer model:")) {
+				const model = await chooseModel(ctx, runtime.config.model, "Observer and summarizer model");
 				if (model !== undefined) appendSettings(pi, runtime, { model });
-			} else if (choice.startsWith("Compaction mode:")) {
-				const mode = await ctx.ui.select("Compaction threshold mode", ["calibrated", "ratio"]);
+			} else if (choice.startsWith("Automatic compaction threshold mode:")) {
+				const mode = await ctx.ui.select("Automatic compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });
-			} else if (choice.startsWith("Summarizer pressure trigger:")) {
-				const value = await ctx.ui.input(`Summarizer pressure trigger ratio (current: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
+			} else if (choice.startsWith("Summarizer pool-pressure multiplier:")) {
+				const value = await ctx.ui.input(`Summarizer pool-pressure multiplier (current: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
 				const ratio = value === undefined ? undefined : Number(value.trim());
-				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { summarizerPressureTriggerRatio: ratio });
+				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { summarizerPressureTriggerRatio: ratio }, ctx);
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
-			} else if (choice.startsWith("Compaction ratio:")) {
-				const value = await ctx.ui.input(`Compaction ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
+			} else if (choice.startsWith("Automatic compaction context ratio:")) {
+				const value = await ctx.ui.input(`Automatic compaction context ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
 				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0 && ratio < 1) appendSettings(pi, runtime, { compactAfterTokensRatio: ratio });
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a number between 0 and 1.", "warning");
 			} else {
 				const numberChoice: Array<[string, NumberSetting, string]> = [
-					["Observation threshold:", "observeAfterTokens", "Observation threshold"],
-					["Compaction threshold:", "compactAfterTokens", "Compaction threshold"],
-					["Observer chunk limit:", "observerChunkMaxTokens", "Observer chunk limit"],
-					["Observation pool max:", "observationsPoolMaxTokens", "Observation pool max"],
-					["Observation pool target:", "observationsPoolTargetTokens", "Observation pool target"],
-					["Worker max turns:", "agentMaxTurns", "Worker max turns"],
-					["Contemplation observation trigger:", "contemplatorMinNewObservations", "Contemplation observation trigger"],
-					["Contemplation summary trigger:", "contemplatorMinNewSummaries", "Contemplation summary trigger"],
-					["Contemplation response interval:", "contemplatorMinTurns", "Contemplation response interval"],
-					["Summarizer minimum interval (agent-active minutes):", "summarizerMinIntervalMinutes", "Summarizer minimum interval (agent-active minutes)"],
-					["Summarizer maximum delay (agent-active minutes):", "summarizerMaxDelayMinutes", "Summarizer maximum delay (agent-active minutes)"],
-					["Summarizer new-memory trigger (tokens):", "summarizerMinNewMemoryTokens", "Summarizer new-memory token trigger"],
-					["Summarizer urgent backlog trigger (tokens):", "summarizerMaxPendingMemoryTokens", "Summarizer urgent backlog token trigger"],
-					["Summarizer sampling threshold (tokens):", "summarizerSamplingThresholdTokens", "Summarizer sampling threshold (tokens)"],
+					["Observer source backlog trigger (tokens):", "observeAfterTokens", "Observer source backlog trigger (tokens)"],
+					["Observer input cap (tokens):", "observerChunkMaxTokens", "Observer input cap (tokens)"],
+					["Observer and summarizer max rounds:", "agentMaxTurns", "Observer and summarizer max rounds"],
+					["Automatic compaction trigger:", "compactAfterTokens", "Automatic compaction trigger"],
+					["Active memory target (tokens, advisory):", "observationsPoolTargetTokens", "Active memory target (tokens, advisory)"],
+					["Contemplator new-observation trigger (count):", "contemplatorMinNewObservations", "Contemplator new-observation trigger (count)"],
+					["Contemplator new-summary trigger (count):", "contemplatorMinNewSummaries", "Contemplator new-summary trigger (count)"],
+					["Contemplator response spacing (count):", "contemplatorMinTurns", "Contemplator response spacing (count)"],
+					["Summarizer minimum spacing (agent-active minutes):", "summarizerMinIntervalMinutes", "Summarizer minimum spacing (agent-active minutes)"],
+					["Summarizer maximum backlog age (agent-active minutes):", "summarizerMaxDelayMinutes", "Summarizer maximum backlog age (agent-active minutes)"],
+					["Summarizer normal backlog trigger (tokens):", "summarizerMinNewMemoryTokens", "Summarizer normal backlog trigger (tokens)"],
+					["Summarizer urgent backlog trigger (tokens):", "summarizerMaxPendingMemoryTokens", "Summarizer urgent backlog trigger (tokens)"],
+					["Summarizer input cap before sampling (tokens):", "summarizerSamplingThresholdTokens", "Summarizer input cap before sampling (tokens)"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {
 					const value = await editNumber(ctx, runtime, selected[1], selected[2]);
-					if (value !== undefined && validObservationPoolOverride(ctx, runtime, selected[1], value)) {
-						appendSettings(pi, runtime, { [selected[1]]: value } as SessionSettings);
-					}
+					if (value !== undefined) appendSettings(pi, runtime, { [selected[1]]: value } as SessionSettings, ctx);
 				}
 			}
 		}

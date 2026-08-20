@@ -125,8 +125,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
 				`Summarizer backlog: ${summarizerPendingCount.toLocaleString()} memories / ~${summarizerPendingTokens.toLocaleString()} tokens${runtime.summarizerDirtySince === undefined ? " (clean)" : " (dirty)"}`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
-				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
-				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
+				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} tokens`,
+				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
 				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; min ${summarizerMinInterval} active-m / max ${summarizerMaxDelay} active-m / new-token trigger ${summarizerNewTokenTrigger.toLocaleString()} / urgent ${summarizerUrgentTokenTrigger.toLocaleString()} / pressure ${summarizerPressureRatio}× / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
@@ -139,12 +139,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Reviewer model:          ${runtime.config.reviewerModel ? `${runtime.config.reviewerModel.provider}/${runtime.config.reviewerModel.id}` : "current session model"}`,
 			];
 
-			if (runtime.contemplatorState.lastStartedAt !== undefined) {
-				lines.push(`Last contemplator start: ${formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
-			}
-			if (runtime.contemplatorState.lastCompletedAt !== undefined) {
-				lines.push(`Last contemplator end:   ${formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
-			}
+			lines.push(`Last observer start:     ${runtime.lastObserverStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastObserverStartedAt)}`);
+			lines.push(`Last observer end:       ${runtime.lastObserverCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastObserverCompletedAt)}`);
+			lines.push(`Last summarizer start:   ${runtime.lastSummarizerStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastSummarizerStartedAt)}`);
+			lines.push(`Last summarizer end:     ${runtime.lastSummarizerCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastSummarizerCompletedAt)}`);
+			lines.push(`Last contemplator start: ${runtime.contemplatorState.lastStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
+			lines.push(`Last contemplator end:   ${runtime.contemplatorState.lastCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
 
 			if (runtime.agentUsage.runs > 0) {
 				const u = runtime.agentUsage;

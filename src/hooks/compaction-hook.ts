@@ -5,15 +5,7 @@ import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
 import { watchForNativeCompactionResume } from "./compaction-resume.js";
 
-const DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS = 20_000;
 const COMPACTION_STATUS_KEY = "observational-memory-compaction";
-
-function observationsPoolMaxTokens(runtime: Runtime): number {
-	const value = (runtime.config as { observationsPoolMaxTokens?: unknown }).observationsPoolMaxTokens;
-	return typeof value === "number" && Number.isFinite(value) && value > 0
-		? value
-		: DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS;
-}
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event: any, ctx: any) => {
@@ -55,11 +47,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				launchCompactionObserver(pi, runtime, ctx as ConsolidationCtx, branch);
 			}
 			const { firstKeptEntryId, tokensBefore } = preparation;
-			const projection = buildCompactionProjection(
-				branch,
-				firstKeptEntryId,
-				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
-			);
+			const projection = buildCompactionProjection(branch, firstKeptEntryId);
 			const summary = renderSummary(projection.summaries, projection.observations);
 			// Compaction removes older custom entries from the active branch. Keep
 			// session-scoped overrides in the compaction details so they can be
