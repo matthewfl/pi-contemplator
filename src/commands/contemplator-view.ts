@@ -1,3 +1,4 @@
+import type { ContemplatorRunState } from "../runtime.js";
 import type { Entry } from "../session-ledger/index.js";
 
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
@@ -57,7 +58,24 @@ function renderMessage(message: StoredMessage, compacted: boolean): string {
 	return `${DIM}── ${role}${marker} · ~${tokens} tokens ──${RESET}\n${renderContent(message.content) || `${DIM}(empty message)${RESET}`}`;
 }
 
-export function renderContemplator(entries: Entry[]): string {
+function liveStateLine(state: ContemplatorRunState): string {
+	const pending = `${state.pendingObservations} observations / ${state.pendingSummaries} summaries / ${state.pendingReviews} reviews pending`;
+	if (state.running) return `LIVE · running for ${Math.max(0, Math.floor((Date.now() - (state.lastStartedAt ?? Date.now())) / 60_000))}m · ${pending}`;
+	const reason = state.waitingFor === "memories"
+		? "waiting for memory threshold"
+		: state.waitingFor === "responses"
+			? "waiting for response spacing"
+			: state.waitingFor === "ready"
+				? "ready to launch"
+				: state.waitingFor === "disabled"
+					? "disabled"
+					: state.waitingFor === "passive"
+						? "passive mode"
+						: "idle";
+	return `LIVE · ${reason} · ${pending} · ${state.responsesSinceRun} primary responses since last run`;
+}
+
+export function renderContemplator(entries: Entry[], state?: ContemplatorRunState): string {
 	const messages: Array<{ message: StoredMessage; compacted: boolean }> = [];
 	const suggestions: Array<{ suggestion: string; delivered: boolean }> = [];
 	const reviews: Array<{ requestId: string; scope: string; outcome: string; memoryId?: string }> = [];
@@ -102,6 +120,7 @@ export function renderContemplator(entries: Entry[]): string {
 	const totalTokens = messages.reduce((total, item) => total + estimateTokens(item.message), 0);
 	const lines = [
 		`${DIM}CONTEMPLATOR · ${messages.length} messages · ~${totalTokens} estimated tokens${RESET}`,
+		...(state ? [`${DIM}${liveStateLine(state)}${RESET}`] : []),
 		"",
 	];
 	if (messages.length === 0) {

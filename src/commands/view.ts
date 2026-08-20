@@ -106,7 +106,7 @@ export function registerViewCommand(
 			}
 
 			if (mode === "contemplator") {
-				const output = renderContemplator(entries);
+				const output = renderContemplator(entries, runtime.contemplatorState);
 				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
 				ctx.ui.notify(
 					`${output}\n\n${copied ? "Copied /om:view contemplator output to clipboard." : "Warning: failed to copy /om:view contemplator output to clipboard."}`,

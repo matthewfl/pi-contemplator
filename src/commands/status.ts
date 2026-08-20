@@ -35,6 +35,22 @@ function formatDuration(durationMs: number): string {
 	return `${seconds}s`;
 }
 
+function formatRunAge(timestamp: number): string {
+	return `${new Date(timestamp).toLocaleString()} (${formatDuration(Math.max(0, Date.now() - timestamp))} ago)`;
+}
+
+function contemplatorWaitingLabel(waitingFor: Runtime["contemplatorState"]["waitingFor"]): string {
+	switch (waitingFor) {
+		case "memories": return "waiting for memory threshold";
+		case "responses": return "waiting for response spacing";
+		case "ready": return "ready to launch";
+		case "running": return "running";
+		case "disabled": return "disabled";
+		case "passive": return "passive mode";
+		default: return "idle; no pending memories";
+	}
+}
+
 function truncateStatusText(value: string, limit = 1_000): string {
 	return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
@@ -116,11 +132,19 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
+				`Contemplator trigger:     ${runtime.contemplatorState.pendingObservations} observations / ${runtime.contemplatorState.pendingSummaries} summaries / ${runtime.contemplatorState.pendingReviews} reviews pending; ${runtime.contemplatorState.responsesSinceRun} / ${runtime.config.contemplatorMinTurns} primary responses; ${contemplatorWaitingLabel(runtime.contemplatorState.waitingFor)}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
 				`Contemplator messages:   ${runtime.config.showContemplatorMessages ? "visible" : "hidden"}`,
 				`Structural reviewer:     ${runtime.config.reviewerEnabled === false ? "disabled" : "enabled"}`,
 				`Reviewer model:          ${runtime.config.reviewerModel ? `${runtime.config.reviewerModel.provider}/${runtime.config.reviewerModel.id}` : "current session model"}`,
 			];
+
+			if (runtime.contemplatorState.lastStartedAt !== undefined) {
+				lines.push(`Last contemplator start: ${formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
+			}
+			if (runtime.contemplatorState.lastCompletedAt !== undefined) {
+				lines.push(`Last contemplator end:   ${formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
+			}
 
 			if (runtime.agentUsage.runs > 0) {
 				const u = runtime.agentUsage;
@@ -168,22 +192,24 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			}
 			if (latestNotice) lines.push(`Last reviewer notice:  ${truncateStatusText(latestNotice)}`);
 
-			if (runtime.consolidationInFlight || runtime.summarizerInFlight || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
+			if (runtime.consolidationInFlight || runtime.summarizerInFlight || runtime.contemplatorState.running || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
 				lines.push("", "── In flight ──");
 				if (runtime.consolidationInFlight) {
 					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
 					lines.push(`Consolidation: running${phase}`);
 				}
 				if (runtime.summarizerInFlight) lines.push("Summarizer: running");
+				if (runtime.contemplatorState.running) lines.push("Contemplator: running");
 				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
 				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}
 
-			if (runtime.lastObserverError || runtime.lastSummarizerError) {
+			if (runtime.lastObserverError || runtime.lastSummarizerError || runtime.contemplatorState.lastError) {
 				lines.push("", "── Last error ──");
 				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
 				if (runtime.lastSummarizerError) lines.push(`Summarizer: ${runtime.lastSummarizerError}`);
+				if (runtime.contemplatorState.lastError) lines.push(`Contemplator: ${runtime.contemplatorState.lastError}`);
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

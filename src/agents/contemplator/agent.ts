@@ -225,7 +225,10 @@ export class Contemplator {
 	private queuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
 	private latestCtx: MemoryUpdateCtx | undefined;
+	/** Completed primary-model responses since the previous contemplator run. */
 	private turnsSinceRun = 0;
+	/** Used to avoid counting the final turn_end after its assistant message_end. */
+	private assistantResponsesInCurrentTurn = 0;
 	private restoredTipId: string | undefined;
 	/** Start of the unpersisted portion of the current main-agent run. */
 	private agentActiveSince: number | undefined;
@@ -289,7 +292,16 @@ export class Contemplator {
 			this.queuedProbeIds.clear();
 			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
+			this.assistantResponsesInCurrentTurn = 0;
 			this.restoredTipId = undefined;
+			this.runtime.contemplatorState = {
+				running: false,
+				pendingObservations: 0,
+				pendingSummaries: 0,
+				pendingReviews: 0,
+				responsesSinceRun: 0,
+				waitingFor: "idle",
+			};
 		});
 		this.pi.on("session_compact", (_event: any, ctx: ExtensionContext) => {
 			// In-flight invocation messages remain local to flush until its required
@@ -303,10 +315,15 @@ export class Contemplator {
 		});
 		this.pi.on("message_end", (event: any, ctx: ExtensionContext) => {
 			const message = event?.message;
-			// Long-running agents may spend many minutes generating and executing tools
-			// before turn_end. Checkpoint activity at each completed assistant response
-			// so active-time consumers (including summarizer scheduling) can advance.
-			if (message?.role === "assistant") this.persistAgentActivity(ctx);
+			// A Pi turn can contain hours of assistant/tool/model rounds. Count each
+			// completed primary-model response, not only the eventual turn_end, or the
+			// contemplator can remain throttled forever during a long autonomous run.
+			if (message?.role === "assistant") {
+				this.persistAgentActivity(ctx);
+				this.turnsSinceRun++;
+				this.assistantResponsesInCurrentTurn++;
+				this.withDebugContext(ctx, () => this.observeTurn(ctx));
+			}
 			if (message?.role !== "custom" || message.customType !== CONTEMPLATOR_SUGGESTION) return;
 			if (typeof message.details?.probeId !== "string") return;
 			// message_end means Pi has drained the steer into the conversation
@@ -340,7 +357,10 @@ export class Contemplator {
 		});
 		this.pi.on("turn_end", (_event: any, ctx: ExtensionContext) => {
 			this.persistAgentActivity(ctx);
-			this.turnsSinceRun++;
+			// Normally message_end already counted the final assistant response. Keep a
+			// one-response fallback for hosts/tests that emit turn_end without it.
+			if (this.assistantResponsesInCurrentTurn === 0) this.turnsSinceRun++;
+			this.assistantResponsesInCurrentTurn = 0;
 			this.withDebugContext(ctx, () => this.observeTurn(ctx));
 		});
 	}
@@ -370,6 +390,22 @@ export class Contemplator {
 		}, fn);
 	}
 
+	private publishState(
+		waitingFor: typeof this.runtime.contemplatorState.waitingFor,
+		overrides: Partial<typeof this.runtime.contemplatorState> = {},
+	): void {
+		this.runtime.contemplatorState = {
+			...this.runtime.contemplatorState,
+			running: this.running,
+			pendingObservations: this.pending?.observations.length ?? 0,
+			pendingSummaries: this.pending?.summaries.length ?? 0,
+			pendingReviews: this.pending?.reviews.length ?? 0,
+			responsesSinceRun: this.turnsSinceRun,
+			waitingFor,
+			...overrides,
+		};
+	}
+
 	private restore(ctx: MemoryUpdateCtx, resetTracking = false, retainQueuedIds = false, skipUndeliveredRestore = false): void {
 		this.latestCtx = ctx;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -390,6 +426,15 @@ export class Contemplator {
 			this.seenReviewIds = new Set((projection.reviews ?? []).map((item) => item.id));
 			this.pending = undefined;
 			this.turnsSinceRun = 0;
+			this.assistantResponsesInCurrentTurn = 0;
+			this.runtime.contemplatorState = {
+				running: false,
+				pendingObservations: 0,
+				pendingSummaries: 0,
+				pendingReviews: 0,
+				responsesSinceRun: 0,
+				waitingFor: "idle",
+			};
 		}
 		const undeliveredSuggestions = new Map<string, string>();
 		for (const entry of entries) {
@@ -471,10 +516,12 @@ export class Contemplator {
 		this.restore(ctx);
 		this.runtime.ensureConfig(ctx.cwd);
 		if (!this.runtime.config.contemplatorEnabled) {
+			this.publishState("disabled");
 			debugLog("contemplator.skipped", { reason: "disabled" });
 			return;
 		}
 		if (this.runtime.config.passive) {
+			this.publishState("passive");
 			debugLog("contemplator.skipped", { reason: "passive" });
 			return;
 		}
@@ -512,7 +559,10 @@ export class Contemplator {
 				mainAgentActiveTimeMs: agentActiveTimeMs(branchEntries),
 			};
 		}
-		if (!this.pending) return;
+		if (!this.pending) {
+			this.publishState(this.running ? "running" : "idle");
+			return;
+		}
 		// Activity values are cumulative send-time snapshots, not values frozen when
 		// the first memory entered a pending batch. This includes work performed
 		// while that batch waits for its memory/turn thresholds.
@@ -521,6 +571,7 @@ export class Contemplator {
 		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
 		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
+			this.publishState(!enoughMemories ? "memories" : "responses");
 			debugLog("contemplator.waiting", {
 				enoughMemories,
 				turnsSinceRun: this.turnsSinceRun,
@@ -530,6 +581,7 @@ export class Contemplator {
 			});
 			return;
 		}
+		this.publishState(this.running ? "running" : "ready");
 		debugLog("contemplator.triggered", {
 			pendingObservationCount: this.pending.observations.length,
 			pendingSummaryCount: this.pending.summaries.length,
@@ -560,8 +612,10 @@ export class Contemplator {
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
 		let failed = false;
+		let failureMessage: string | undefined;
 		let workerNotified = false;
 		let promptPersisted = false;
+		this.publishState("running", { lastStartedAt: startedAt, lastError: undefined });
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
 			newSummaryCount: update.summaries.length,
@@ -578,6 +632,7 @@ export class Contemplator {
 			});
 			if (!resolved.ok) {
 				failed = true;
+				failureMessage = resolved.reason;
 				debugLog("contemplator.model_unavailable", { reason: resolved.reason });
 				if (sessionGeneration === this.sessionGeneration) {
 					const pending = this.pending as PendingUpdate | undefined;
@@ -741,7 +796,8 @@ export class Contemplator {
 			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration);
 		} catch (error) {
 			failed = true;
-			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
+			failureMessage = error instanceof Error ? error.message : String(error);
+			debugLog("contemplator.error", { errorMessage: failureMessage });
 			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
 				const pending = this.pending as PendingUpdate | undefined;
 				this.pending = {
@@ -756,6 +812,22 @@ export class Contemplator {
 			}
 		} finally {
 			this.running = false;
+			const pendingHasEnoughMemories = this.pending !== undefined && (
+				this.pending.reviews.length > 0 ||
+				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations ||
+				this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries
+			);
+			const waitingFor = !this.pending
+				? "idle"
+				: !pendingHasEnoughMemories
+					? "memories"
+					: this.turnsSinceRun < this.runtime.config.contemplatorMinTurns
+						? "responses"
+						: "ready";
+			this.publishState(waitingFor, {
+				lastCompletedAt: Date.now(),
+				lastError: failureMessage,
+			});
 			debugLog("contemplator.complete", {
 				durationMs: Date.now() - startedAt,
 				historyMessageCount: this.history.length,

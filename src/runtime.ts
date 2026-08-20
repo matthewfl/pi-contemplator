@@ -73,6 +73,19 @@ export interface SummarizerRunView {
 	error?: string;
 }
 
+export interface ContemplatorRunState {
+	running: boolean;
+	pendingObservations: number;
+	pendingSummaries: number;
+	pendingReviews: number;
+	/** Completed primary-model responses since the previous contemplator run. */
+	responsesSinceRun: number;
+	waitingFor: "disabled" | "passive" | "memories" | "responses" | "ready" | "running" | "idle";
+	lastStartedAt?: number;
+	lastCompletedAt?: number;
+	lastError?: string;
+}
+
 export interface LlmUsageTotals {
 	input: number;
 	output: number;
@@ -187,6 +200,15 @@ export class Runtime {
 	lastSummarizerError: string | undefined;
 	/** Most recent summarizer transcript in this extension launch/session context. */
 	lastSummarizerRun: SummarizerRunView | undefined;
+	/** Launch-local liveness and trigger diagnostics published by the contemplator. */
+	contemplatorState: ContemplatorRunState = {
+		running: false,
+		pendingObservations: 0,
+		pendingSummaries: 0,
+		pendingReviews: 0,
+		responsesSinceRun: 0,
+		waitingFor: "idle",
+	};
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
 	/** Accumulate usage from one background LLM call. */
@@ -257,6 +279,14 @@ export class Runtime {
 		this.summarizerPendingCount = 0;
 		this.summarizerFairness.clear();
 		this.lastSummarizerRun = undefined;
+		this.contemplatorState = {
+			running: false,
+			pendingObservations: 0,
+			pendingSummaries: 0,
+			pendingReviews: 0,
+			responsesSinceRun: 0,
+			waitingFor: "idle",
+		};
 	}
 
 	getContextGeneration(): number {

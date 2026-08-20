@@ -62,7 +62,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
 | `contemplatorMinNewObservations` | `8` | Observation trigger component. |
 | `contemplatorMinNewSummaries` | `1` | Summary trigger component. |
-| `contemplatorMinTurns` | `10` | Minimum primary-turn spacing for contemplator updates. |
+| `contemplatorMinTurns` | `10` | Minimum completed primary-model-response spacing for contemplator updates. Tool-using rounds within one long user turn count separately. |
 | `reviewerEnabled` | `true` | Allows scoped structural review requests. |
 | `reviewerModel` | current model | Optional reviewer model override. |
 | `compactionObserverEnabled` | `true` | Runs an asynchronous observer sidecar when compaction begins. |

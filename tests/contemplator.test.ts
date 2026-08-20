@@ -419,6 +419,43 @@ describe("Contemplator lifecycle", () => {
 			.toEqual([5_000, 3_000, 1_000]);
 	});
 
+	it("counts model responses within one long user turn toward contemplator spacing", async () => {
+		const raw = textCustomMessage("raw-long-turn", "autonomous work");
+		const memory = observationsRecordedEntry("obs-long-turn", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-long-turn"] })],
+			coversUpToId: "raw-long-turn",
+		});
+		const harness = setup([]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+
+		// No turn_end occurs: these are two tool-using model rounds in one agent run.
+		harness.fire("message_end", { message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } });
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState).toMatchObject({
+			responsesSinceRun: 1,
+			waitingFor: "responses",
+			pendingObservations: 1,
+		});
+
+		harness.fire("message_end", { message: { role: "assistant", content: [{ type: "toolCall", name: "edit" }] } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect(harness.runtime.contemplatorState.lastStartedAt).toEqual(expect.any(Number));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+		expect(harness.runtime.contemplatorState.responsesSinceRun).toBe(0);
+	});
+
+	it("does not double-count turn_end after an assistant response", () => {
+		const harness = setup();
+		harness.runtime.config = { ...harness.runtime.config, contemplatorEnabled: false };
+		harness.fire("session_start");
+		harness.fire("message_end", { message: { role: "assistant", content: [] } });
+		harness.fire("turn_end");
+
+		expect((harness.contemplator as any).turnsSinceRun).toBe(1);
+	});
+
 	it("rechecks turn throttling before processing updates queued during a run", async () => {
 		const gate = deferred();
 		agentMocks.agentLoop
