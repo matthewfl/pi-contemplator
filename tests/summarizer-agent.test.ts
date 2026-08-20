@@ -79,10 +79,30 @@ describe("summarizer agent", () => {
 	it("retains conservative, citation-driven prompt priorities", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("ONLY information");
 		expect(SUMMARIZER_SYSTEM).toContain("Anything you distort");
-		expect(SUMMARIZER_SYSTEM).toContain("user assertions");
-		expect(SUMMARIZER_SYSTEM).toContain("Prefer no summary");
+		expect(SUMMARIZER_SYSTEM).toContain("User assertions");
+		expect(SUMMARIZER_SYSTEM).toContain("Decision procedure:");
+		expect(SUMMARIZER_SYSTEM).toContain("Consider older memories first");
+		expect(SUMMARIZER_SYSTEM).toContain("the last several uses of that tool may still be active evidence");
+		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips that would make future use easier");
+		expect(SUMMARIZER_SYSTEM).toContain("A citation lets a future agent recall the full source");
+		expect(SUMMARIZER_SYSTEM).toContain("Examples:");
+		expect(SUMMARIZER_SYSTEM).toContain("BAD:");
+		expect(SUMMARIZER_SYSTEM).toContain("GOOD:");
+		expect(SUMMARIZER_SYSTEM).toContain("Tool guidance:");
+		expect(SUMMARIZER_SYSTEM).toContain("Use fix_summary only");
+		expect(SUMMARIZER_SYSTEM).toContain("Call done alone");
+		expect(SUMMARIZER_SYSTEM).toContain("Prefer faithful compression");
 		expect(SUMMARIZER_CONTINUE).toContain("IMPORTANT!!!!");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.9);
+	});
+
+	it("injects the full system prompt only as the system prompt", async () => {
+		await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+			expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM);
+			expect(JSON.stringify(context.messages)).not.toContain(SUMMARIZER_SYSTEM);
+			await tool(context, "done").execute("d1", {});
+			await tool(context, "done").execute("d2", {});
+		}) });
 	});
 
 	it("creates a cited summary, consumes its sources, and double-confirms done", async () => {
@@ -90,6 +110,7 @@ describe("summarizer agent", () => {
 		const result = await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
 			const receipt = await tool(context, "summarize").execute("s", { summaries: [content] });
 			expect(receipt.content[0].text).toContain("summary created successfully");
+			expect(receipt.content[0].text).toContain(`summary created successfully [${hashId(content)}]; memories [${A}, ${B}] are removed from the visible pool`);
 			const first = await tool(context, "done").execute("d1", {});
 			expect(first.details.confirmationRequired).toBe(true);
 			await tool(context, "done").execute("d2", {});
