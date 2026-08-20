@@ -33,7 +33,7 @@ The target is advisory. Input sampling is a separate safety valve: `summarizerSa
 The tools execute sequentially so each receipt is visible before the next mutation:
 
 - `summarize` can mark valid active memories `keep_verbatim` for this run and process multiple candidate summary strings;
-- each summary must use strict square-bracket citations, cite at least two newly consumable pre-run memories, and be no more than 90% of their estimated source tokens;
+- each summary must use strict square-bracket citations, cite at least two newly consumable pre-run memories, and be no more than 80% of their estimated source tokens;
 - a memory already consumed by an earlier accepted candidate, marked keep-verbatim, or created during this run may still be cited, but does not count toward the two-source or reduction checks;
 - `fix_summary` atomically deletes or replaces only a summary created in the current run, updating which sources are consumed; and
 - `done` reports run statistics on its first call and completes on its second consecutive call.

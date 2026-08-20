@@ -45,9 +45,9 @@ function timestampMs(item: SummarizerMemory): number | undefined {
 export function renderSummarizerMemory(item: SummarizerMemory): string {
 	if (item.kind === "observation") {
 		const memory = item.memory;
-		return `[${memory.id}] observation ${memory.timestamp} relevance=${memory.relevance} retention=${observationRetention(memory)} tokens=${memory.tokenCount}: ${memory.content}`;
+		return `[${memory.id}] observation ${memory.timestamp} relevance=${memory.relevance} retention=${observationRetention(memory)}: ${memory.content}`;
 	}
-	return `[${item.memory.id}] summary sources=[${item.memory.sourceMemoryIds.join(", ")}] tokens=${item.memory.tokenCount}: ${item.memory.content}`;
+	return `[${item.memory.id}] summary sources=[${item.memory.sourceMemoryIds.join(", ")}]: ${item.memory.content}`;
 }
 
 function tokenCost(item: SummarizerMemory): number {

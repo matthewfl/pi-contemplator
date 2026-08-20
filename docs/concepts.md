@@ -30,7 +30,7 @@ Each summarizer run starts with fresh model context. It receives the selected ac
 - `fix_summary` atomically replaces or deletes a summary created in the current run; and
 - `done` is called twice: the first call reports the proposed reduction, and the second confirms completion.
 
-It can also use `search_memories` and `recall`. Summary citations are parsed strictly. Unknown ids, unbracketed memory ids, malformed brackets, fewer than two newly consumable sources, or inadequate token reduction reject that candidate with a specific error. Valid candidates from the same call still succeed. Accepted work is committed even if the model reaches its turn/output limit without confirming `done`; an empty run writes no commit.
+It can also use `search_memories` and `recall`. Summary citations are parsed strictly. Unknown cited ids, known memory ids left outside brackets, malformed brackets, fewer than two newly consumable sources, or inadequate token reduction reject that candidate with a specific error. Unknown hash-like prose outside brackets only produces a warning. Valid candidates from the same call still succeed. Accepted work is committed even if the model reaches its turn/output limit without confirming `done`; an empty run writes no commit.
 
 ## Sampling and pressure
 

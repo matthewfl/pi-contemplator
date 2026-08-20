@@ -3,7 +3,7 @@ import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWork
 
 const started = Date.now();
 const log = (text) => console.log(`[summarizer-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observer: 0, summarizer: 0, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false };
+const state = { main: 0, observer: 0, summarizer: 0, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false, firstDoneSummaryCount: undefined };
 let draftId;
 let sourceIds = [];
 
@@ -25,7 +25,11 @@ const server = new ModelServer(async (request, res) => {
 		const operational = toolMessages.filter((message) => !JSON.stringify(message).includes("summarizer-example"));
 		if (operational.length) {
 			const receipt = textOf(operational.at(-1));
-			if (/confirmation is required/i.test(receipt)) return sendSse(res, { tool: { id: `done-confirm-${state.summarizer}`, name: "done", arguments: {} } });
+			if (/confirmation is required/i.test(receipt)) {
+				state.firstDoneSummaryCount = Number(receipt.match(/Current-run summaries:\s*(\d+)/i)?.[1]);
+				assert(Number.isFinite(state.firstDoneSummaryCount), `First done receipt omitted its summary count: ${receipt}`);
+				return sendSse(res, { tool: { id: `done-confirm-${state.summarizer}`, name: "done", arguments: {} } });
+			}
 			if (/ERROR .*not found|summary rejected/i.test(receipt)) {
 				state.corrected = true;
 				return sendSse(res, { tool: { id: `summary-correct-${state.summarizer}`, name: "summarize", arguments: { summaries: [`The implementation evidence establishes one verified durable outcome [${sourceIds.join(", ")}].`] } } });
@@ -86,6 +90,7 @@ try {
 	assert(state.proseOnly && state.requiredSeen, "Prose-only retry did not become required-tool mode");
 	assert(state.malformed && state.corrected, "Malformed summary was not rejected and corrected");
 	assert(state.fixed && state.doneAfterReceipt, "fix_summary/done receipt ordering was not exercised");
+	assert(state.firstDoneSummaryCount === 1, `First done receipt reported ${state.firstDoneSummaryCount} summaries after one accepted fixed draft`);
 	assert(commit.data.summaries.length === 1, "Commit should contain only the final fixed draft");
 	assert(commit.data.summaries[0].id !== draftId, "fix_summary did not replace the content-derived id");
 	assert(commit.data.summaries[0].consumedMemoryIds.length === 2, "Summary did not consume both visible sources");

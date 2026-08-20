@@ -64,7 +64,14 @@ describe("summarizer citation parser", () => {
 		expect(parseSummaryCitations(text, known)).toHaveProperty("error");
 	});
 
-	it("rejects unknown ids atomically", () => {
+	it("allows unknown hash-like prose with a warning but still rejects real memories outside citations", () => {
+		const parsed = parseSummaryCitations(`The placeholder deadbeefdead is ordinary text [${A}, ${B}].`, known);
+		expect(parsed).not.toHaveProperty("error");
+		if (!("error" in parsed)) expect(parsed.warnings).toEqual([expect.stringContaining("deadbeefdead")]);
+		expect(parseSummaryCitations(`The real memory ${A} is unbracketed [${B}, ${C}].`, known)).toMatchObject({ error: expect.stringContaining(A) });
+	});
+
+	it("rejects unknown cited ids atomically", () => {
 		expect(parseSummaryCitations(`Combined [${A}, ${D}].`, known)).toMatchObject({ error: expect.stringContaining(D) });
 	});
 });
@@ -93,13 +100,14 @@ describe("summarizer agent", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("Call done alone");
 		expect(SUMMARIZER_SYSTEM).toContain("Prefer faithful compression");
 		expect(SUMMARIZER_CONTINUE).toContain("IMPORTANT!!!!");
-		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.9);
+		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
 
-	it("injects the full system prompt only as the system prompt", async () => {
-		await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+	it("injects the full system prompt once and defaults reasoning to minimal", async () => {
+		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: fakeLoop(async (_n, context, config) => {
 			expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM);
 			expect(JSON.stringify(context.messages)).not.toContain(SUMMARIZER_SYSTEM);
+			expect(config.reasoning).toBe("minimal");
 			await tool(context, "done").execute("d1", {});
 			await tool(context, "done").execute("d2", {});
 		}) });
@@ -113,6 +121,8 @@ describe("summarizer agent", () => {
 			expect(receipt.content[0].text).toContain(`summary created successfully [${hashId(content)}]; memories [${A}, ${B}] are removed from the visible pool`);
 			const first = await tool(context, "done").execute("d1", {});
 			expect(first.details.confirmationRequired).toBe(true);
+			expect(first.content[0].text).toContain("Current-run summaries: 1");
+			expect(first.content[0].text).toContain("newly consumed memories: 2");
 			await tool(context, "done").execute("d2", {});
 		}) });
 		expect(result.completed).toBe(true);
@@ -129,6 +139,19 @@ describe("summarizer agent", () => {
 		}) });
 		expect(result.commit).toBeUndefined();
 		expect(result.completed).toBe(true);
+	});
+
+	it("rejects boundary-length summaries with keep-verbatim guidance", async () => {
+		const tooLong = `${"detailed wording ".repeat(55)}[${A}, ${B}].`;
+		const result = await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+			const receipt = await tool(context, "summarize").execute("s", { summaries: [tooLong] });
+			expect(receipt.content[0].text).toContain("exceeds the 0.8 reduction limit");
+			expect(receipt.content[0].text).toContain("keep the source memories verbatim instead");
+			const firstDone = await tool(context, "done").execute("d1", {});
+			expect(firstDone.content[0].text).toContain("Current-run summaries: 0");
+			await tool(context, "done").execute("d2", {});
+		}) });
+		expect(result.commit).toBeUndefined();
 	});
 
 	it("processes candidates sequentially and does not double-consume", async () => {

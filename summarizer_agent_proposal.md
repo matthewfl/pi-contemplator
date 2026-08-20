@@ -161,7 +161,7 @@ Citation parsing is deliberately strict:
 - Empty brackets, nested brackets, unmatched brackets, non-ID bracket content, leading/trailing separators, repeated commas with an empty element, extra punctuation, and mixed prose are invalid.
 - Every cited ID must exist in the branch or have been created earlier in this summarizer run.
 - A known memory ID appearing outside a valid citation is rejected as an incorrectly cited ID.
-- A bare 12-character lowercase hexadecimal token outside brackets is also rejected as a likely incorrectly cited or mistyped memory ID.
+- A known memory ID outside brackets is rejected. An unknown 12-character lowercase hexadecimal token outside brackets is allowed as ordinary prose with a warning; merely looking like an ID must not make unrelated text invalid.
 - Citation IDs are deduplicated in first-occurrence order for accounting, although the same citation may appear more than once in prose.
 
 The tool should return the exact malformed span or ID where possible. It must never silently remove or repair citations.
@@ -194,13 +194,13 @@ Other valid citations remain useful provenance but contribute zero toward the tw
 The initial reduction check is:
 
 ```ts
-const SUMMARY_MAX_SOURCE_TOKEN_RATIO = 0.9;
+const SUMMARY_MAX_SOURCE_TOKEN_RATIO = 0.8;
 
 estimateTokens(candidateSummary) <=
   floor(sum(tokenCount for each newlyConsumableSource) * SUMMARY_MAX_SOURCE_TOKEN_RATIO)
 ```
 
-The `0.9` ratio is a source-code constant so it can be tuned after observing real runs. It initially requires at least an estimated 10% reduction rather than accepting a summary that is only one token shorter. Use the memory system's existing token estimator/accounting for both sides. Exact API usage tokens are not available for arbitrary stored strings; characters may be included in diagnostics, but the acceptance calculation should use the same estimate used for memory context accounting.
+The `0.8` ratio is a source-code constant so it can be tuned after observing real runs. It initially requires at least an estimated 20% reduction rather than accepting a boundary-length summary that adds little value. Use the memory system's existing token estimator/accounting for both sides. Exact API usage tokens are not available for arbitrary stored strings; characters may be included in diagnostics, but the acceptance calculation should use the same estimate used for memory context accounting.
 
 ### Warnings
 
@@ -221,7 +221,7 @@ WARNING memory eee8888cccc was already consumed by another summary and contribut
 ERROR invalid memory ids [bbbb5555aaaa, cccc3333dddd] were not found; summary rejected; try again: "first 100 characters..."
 ERROR summary cites only 1 newly consumable memory; at least 2 are required; summary rejected; try again: "first 100 characters..."
 ERROR memory id aaaa1111bbbb is outside citation brackets; use [aaaa1111bbbb]; summary rejected; try again: "first 100 characters..."
-ERROR summary is ~310 tokens but exceeds the 0.9 reduction limit for ~340 newly consumable source tokens; summary rejected; try again: "first 100 characters..."
+ERROR summary is ~310 tokens but exceeds the 0.8 reduction limit for ~340 newly consumable source tokens; if preserving the meaning requires a summary this long, keep the sources verbatim; summary rejected; try again: "first 100 characters..."
 ```
 
 Successful receipts echo the complete submitted summary, its new ID, all cited IDs, the consumed subset, protected/reused citations, estimated source tokens, summary tokens, and estimated reduction. Error previews should be bounded, for example to the first 100 characters.
@@ -288,7 +288,7 @@ Example errors:
 ERROR summary aaaa7777bbbb was not created in this summarizer run and cannot be changed
 ERROR summary aaaa7777bbbb is cited by current-run summary cccc9999dddd; fix or delete the dependent summary first
 ERROR invalid memory ids [bbbb5555aaaa, cccc3333dddd] were not found; existing summary was not changed
-ERROR updated summary exceeds the configured 0.9 source-token ratio; existing summary was not changed
+ERROR updated summary exceeds the configured 0.8 source-token ratio; existing summary was not changed
 ```
 
 ## `done`
@@ -490,7 +490,7 @@ Cover at least:
 - invalid IDs rejecting only their candidate summary;
 - at least two newly consumable sources;
 - keep-verbatim, already-consumed, and current-run-summary citations contributing zero;
-- enforcement of the configurable 0.9 maximum source-token ratio;
+- enforcement of the configurable 0.8 maximum source-token ratio;
 - multiple candidates processed in deterministic order;
 - duplicate citations and duplicate source use;
 - cycle rejection and the defensive content-hash self-reference edge case;
@@ -540,5 +540,5 @@ Run the real Pi harness against the mock provider server and verify:
 2. Valid summaries are committed when the model stops or reaches a limit without `done`; useful partial progress is retained.
 3. `keep_verbatim` is run-local only. A future summarizer may reconsider an older memory.
 4. No librarian-era active/inactive/deleted compatibility layer is required, and the librarian agent directory will be deleted after replacement.
-5. Compression uses the memory system's existing token estimate with a source-code ratio initially set to `0.9`.
+5. Compression uses the memory system's existing token estimate with a source-code ratio initially set to `0.8`.
 6. The last summarizer transcript remains in memory for `/om:view summarizer`; the session ledger stores only final new summaries, source-visibility graph changes, and bounded run metrics.

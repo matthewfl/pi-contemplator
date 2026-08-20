@@ -290,7 +290,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				samplingThresholdTokens: runtime.config.summarizerSamplingThresholdTokens,
 				fairness: runtime.summarizerFairness,
 				maxTurns: runtime.config.agentMaxTurns,
-				thinkingLevel: runtime.config.model?.thinking ?? "low",
+				thinkingLevel: runtime.config.model?.thinking ?? "minimal",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
 					if (generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };

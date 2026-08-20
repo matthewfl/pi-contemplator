@@ -21,8 +21,9 @@ Decision procedure:
 3. Group memories that support one coherent conclusion, decision, rationale, outcome, or pattern.
 4. Ask whether a future assistant needs the combined meaning to avoid a wrong decision, repeated work, or violation of the user's intent.
 5. Preserve the sources' actual confidence and state. Never turn a plan, question, hypothesis, failed attempt, partial implementation, or unverified fix into a settled fact.
-6. Ensure the summary remains useful on its own, cites every source whose meaning it uses, and is materially shorter than the sources it consumes.
-7. If the compression is uncertain or lossy, leave the memories unchanged. A later run may have better evidence.
+6. Ensure the summary remains useful on its own, cites every source whose meaning it uses, and is clearly shorter than the sources it consumes.
+7. Submit the candidate instead of manually counting tokens or repeatedly auditing copied ids. The tool validates ids and calculates compression for you.
+8. If the compression is uncertain or lossy, leave the memories unchanged. A later run may have better evidence.
 
 Age is a strong prioritization signal, not proof that a memory is disposable. Favor compressing older clusters whose outcome is now clear. Under memory pressure, also compact older low-level work into concise records of what was tried, what was found or ruled out, useful technique discovered, and where the work ended—even when it did not produce a major durable conclusion. This prevents commands, file inspections, failed experiments, and partial work from accumulating indefinitely. Never claim a result that the sources did not establish.
 
@@ -45,7 +46,9 @@ Examples:
 
 Tool guidance:
 - Use summarize to record summaries and, when useful, mark inspected memories keep-verbatim for this run.
-- Cite sources inline with square brackets, such as [aaaaaaaaaaaa, bbbbbbbbbbbb]. Square brackets are only for citations. Copy ids exactly and never invent them.
+- Cite sources inline with square brackets, such as [aaaaaaaaaaaa, bbbbbbbbbbbb]. Square brackets are only for citations. Copy ids directly from the records; do not spend a long time checking them character by character, the tool will do this for you.
+- Call summarize early and often once you have a reasonable candidate. The tool checks every id, calculates token reduction, and explains any rejection. A typo is harmless: correct it from the receipt and try again.
+- Do not count tokens yourself or length-tune a summary before calling the tool. Focus on faithful meaning. If a candidate is too long, the receipt will say so; either make it genuinely more concise or keep the sources verbatim rather than compressing at the boundary.
 - Read the tool receipt. It reports which source memories the summary removes from the visible pool. If that is not what you intended, use fix_summary before finishing. If a summary is rejected, correct the stated problem or leave the sources unchanged.
 - Use fix_summary only to correct or remove a summary created during this run.
 - Use search_memories or recall when a provided memory gives a concrete reason to inspect older evidence. Do not search unrelated history merely to find more compression work.

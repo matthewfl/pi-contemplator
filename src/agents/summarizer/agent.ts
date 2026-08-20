@@ -31,7 +31,7 @@ import {
 	type SummarizerSample,
 } from "./sampling.js";
 
-export const SUMMARY_MAX_SOURCE_TOKEN_RATIO = 0.9;
+export const SUMMARY_MAX_SOURCE_TOKEN_RATIO = 0.8;
 export const SUMMARIZER_MAX_INVOCATIONS = 15;
 const SUMMARIZER_MAX_OUTPUT_TOKENS = 256_000;
 const SUMMARIZER_CONTEXT_RESERVE_TOKENS = 4_096;
@@ -87,6 +87,7 @@ export type ParsedSummaryCitations = {
 	content: string;
 	sourceMemoryIds: string[];
 	spans: Array<{ start: number; end: number; text: string }>;
+	warnings: string[];
 };
 
 function unique(values: readonly string[]): string[] {
@@ -102,7 +103,7 @@ function preview(content: string): string {
 	return compact.length <= 100 ? compact : `${compact.slice(0, 100)}…`;
 }
 
-/** Strictly parse square-bracket citation groups and reject floating hash-like ids. */
+/** Strictly parse citations; real memory ids must be bracketed, while unknown hash-like prose only warns. */
 export function parseSummaryCitations(rawContent: string, knownIds: ReadonlySet<string>): ParsedSummaryCitations | { error: string } {
 	const content = rawContent.trim();
 	if (!content) return { error: "summary is empty after trimming" };
@@ -132,12 +133,16 @@ export function parseSummaryCitations(rawContent: string, knownIds: ReadonlySet<
 	}
 	const outside = content.split("").map((char, index) => spans.some((span) => index >= span.start && index < span.end) ? " " : char).join("");
 	for (const id of knownIds) if (outside.includes(id)) return { error: `memory id ${id} is outside citation brackets; use [${id}]` };
-	const floating = outside.match(MEMORY_ID_TOKEN)?.[0];
-	if (floating) return { error: `memory-like id ${floating} is outside citation brackets; use [${floating}]` };
+	const floating = unique(outside.match(MEMORY_ID_TOKEN) ?? []);
 	if (sourceMemoryIds.length === 0) return { error: "summary does not contain any [memory_id] citations" };
 	const unknown = sourceMemoryIds.filter((id) => !knownIds.has(id));
 	if (unknown.length) return { error: `invalid memory id(s) ${unknown.map((id) => `[${id}]`).join(", ")} were not found` };
-	return { content, sourceMemoryIds, spans };
+	return {
+		content,
+		sourceMemoryIds,
+		spans,
+		warnings: floating.map((id) => `text ${id} looks like a memory id but is not a known memory; it was treated as ordinary text because it is outside citation brackets`),
+	};
 }
 
 function latestObservationBatchEntryId(entries: Entry[]): string | undefined {
@@ -294,7 +299,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		if (knownIds().has(id)) return { error: `summary duplicates existing memory [${id}]` };
 		if (parsed.sourceMemoryIds.includes(id)) return { error: `summary cannot cite itself [${id}]` };
 		if (wouldCycle(id, parsed.sourceMemoryIds)) return { error: "summary would introduce a citation cycle" };
-		const warnings: string[] = [];
+		const warnings: string[] = [...parsed.warnings];
 		const consumable: string[] = [];
 		for (const sourceId of parsed.sourceMemoryIds) {
 			const node = nodeFor(sourceId)!;
@@ -309,7 +314,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		const sourceTokens = consumable.reduce((sum, id) => sum + memoryTokenCount(nodeFor(id)!), 0);
 		const tokenCount = estimateStringTokens(parsed.content);
 		const limit = Math.floor(sourceTokens * SUMMARY_MAX_SOURCE_TOKEN_RATIO);
-		if (tokenCount > limit) return { error: `summary is ~${tokenCount} tokens but exceeds the ${SUMMARY_MAX_SOURCE_TOKEN_RATIO} reduction limit of ~${limit} tokens for ~${sourceTokens} newly consumable source tokens` };
+		if (tokenCount > limit) return { error: `summary is ~${tokenCount} tokens but exceeds the ${SUMMARY_MAX_SOURCE_TOKEN_RATIO} reduction limit of ~${limit} tokens for ~${sourceTokens} newly consumable source tokens. If preserving the meaning requires a summary this long, keep the source memories verbatim instead` };
 		return {
 			summary: { id, content: parsed.content, sourceMemoryIds: parsed.sourceMemoryIds, consumedMemoryIds: consumable, tokenCount },
 			sourceTokens,
@@ -504,7 +509,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 	const toolDefinitionTokens = estimateStringTokens(JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
 	const loop = args.agentLoop ?? agentLoop;
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	const thinkingLevel = args.thinkingLevel ?? "low";
+	const thinkingLevel = args.thinkingLevel ?? "minimal";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 
 	const runOnce = async (text: string, requireToolCall: boolean): Promise<void> => {
