@@ -8,7 +8,8 @@
 4. The scheduler coalesces changes until its token threshold, pressure threshold, or maximum cumulative agent-active delay is reached, while respecting a minimum interval and single-flight lock.
 5. A fresh summarizer run receives selected active memories and creates strictly validated citation summaries.
 6. Accepted work appends one atomic `om.summarizer.commit`. Partial useful work is retained even if the run reaches its turn/output limit; an empty run writes no commit.
-7. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
+7. Dirty counters are reconciled from the durable coverage marker when a pass exits, so observations arriving during the run are neither lost nor double-counted.
+8. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
 
 ## Observer coverage
 
@@ -61,4 +62,6 @@ A contemplator probe is persisted as pending but displayed only after Pi accepts
 
 ## Concurrency
 
-Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer is single-flight; reviews are serialized. None blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.
+Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. Aborted work remains dirty and eligible for a later retry.
+
+The compaction observer may record memories alongside compaction, but it only marks summarizer work dirty and never launches a summarizer from inside the compaction sidecar. A later normal activity checkpoint schedules it. Reviews are serialized. None of these workers blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.

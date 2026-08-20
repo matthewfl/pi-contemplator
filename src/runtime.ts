@@ -155,6 +155,11 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	reviewInFlight = false;
 	reviewPromise: Promise<void> | null = null;
+	/**
+	 * Process-local single-flight lock for this session runtime. Every launch path
+	 * must go through launchSummarizerTask; a second summarizer cannot start until
+	 * the tracked promise's finally handler releases this lock.
+	 */
 	summarizerInFlight = false;
 	summarizerPromise: Promise<void> | null = null;
 	/** Cumulative main-agent active time when the current backlog first became dirty. */
@@ -327,6 +332,8 @@ export class Runtime {
 	}
 
 	launchSummarizerTask(ctx: LaunchCtx, work: () => Promise<void>, agentActiveTimeMs: number): Promise<void> | undefined {
+		// This is the authoritative single-flight gate, not merely a UI flag.
+		// Keep it here even though callers also avoid redundant launch attempts.
 		if (this.summarizerInFlight) return undefined;
 		this.summarizerInFlight = true;
 		this.summarizerLastStartedAt = agentActiveTimeMs;

@@ -47,7 +47,10 @@ const server = new ModelServer(async (request, res) => {
 		}
 		if (!state.proseOnly) {
 			state.proseOnly = true;
-			return sendSse(res, { text: "I should summarize these records, but this is only prose." });
+			// Hold the first provider request while the primary agent and observer
+			// continue producing triggers. A broken single-flight gate would start a
+			// second summarizer and overlap another summarizer provider request.
+			return sendSse(res, { delayMs: 400, text: "I should summarize these records, but this is only prose." });
 		}
 		if (request.body.tool_choice === "required") state.requiredSeen = true;
 		else assert(state.requiredSeen, `Initial prose-only retry did not require tool use before a later fresh launch: ${JSON.stringify(request.body.tool_choice)}`);
@@ -88,6 +91,7 @@ try {
 	}
 	const commit = await waitFor(async () => (await pi.rpc.entries()).find((entry) => entry.customType === "om.summarizer.commit" && entry.data?.summaries?.length), "atomic summarizer commit", 40_000);
 	assert(state.proseOnly && state.requiredSeen, "Prose-only retry did not become required-tool mode");
+	assert(server.maxActiveByRole.get("summarizer") === 1, `Concurrent summarizer requests detected: ${server.maxActiveByRole.get("summarizer")}`);
 	assert(state.malformed && state.corrected, "Malformed summary was not rejected and corrected");
 	assert(state.fixed && state.doneAfterReceipt, "fix_summary/done receipt ordering was not exercised");
 	assert(state.firstDoneSummaryCount === 1, `First done receipt reported ${state.firstDoneSummaryCount} summaries after one accepted fixed draft`);

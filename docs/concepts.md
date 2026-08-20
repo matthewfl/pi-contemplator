@@ -2,7 +2,7 @@
 
 ## Durable branch-local memory
 
-The session JSONL ledger is the source of truth. Memory state is derived by folding the current branch, so tree forks naturally inherit only their ancestors. Compaction archives observations, summaries, and their consumption graph, so folded records remain searchable and recallable.
+The session JSONL ledger is the source of truth. Memory state is derived by folding the current branch, so tree forks naturally inherit only their ancestors. Compaction archives observations, summaries, and their consumption graph in `om.folded` details version 2, so folded records remain searchable and recallable. Version 1 reflection/lifecycle compaction details from the unpublished predecessor design are intentionally unsupported rather than silently interpreted as summary graphs.
 
 Memory ids are deterministic 12-character lowercase hexadecimal hashes computed by code.
 

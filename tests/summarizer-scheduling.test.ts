@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
-import { summarizerDirtySinceAgentTime, summarizerScheduleDelayMs } from "../src/hooks/consolidation-trigger.js";
+import { createSummarizerStallWatchdog, reconcileSummarizerDirty, shouldScheduleSummarizerFromObserver, summarizerDirtySinceAgentTime, summarizerScheduleDelayMs } from "../src/hooks/consolidation-trigger.js";
 import { newMemoryIdsSinceSummarizerCoverage } from "../src/agents/summarizer/agent.js";
 import type { Entry } from "../src/session-ledger/index.js";
 
@@ -12,6 +12,56 @@ function runtime(): Runtime {
 }
 
 describe("summarizer scheduling", () => {
+	it("enforces one process-local summarizer run at a time", async () => {
+		const value = runtime();
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => { release = resolve; });
+		let active = 0;
+		let maxActive = 0;
+		const first = value.launchSummarizerTask({ hasUI: false }, async () => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			await held;
+			active--;
+		}, 0);
+		expect(first).toBeDefined();
+		expect(value.launchSummarizerTask({ hasUI: false }, async () => { active++; }, 0)).toBeUndefined();
+		expect(active).toBe(1);
+		release();
+		await first;
+		const next = value.launchSummarizerTask({ hasUI: false }, async () => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			active--;
+		}, 1);
+		expect(next).toBeDefined();
+		await next;
+		expect(maxActive).toBe(1);
+	});
+
+	it("marks compaction-observer work dirty without launching a summarizer inside compaction", () => {
+		expect(shouldScheduleSummarizerFromObserver({ observerOnly: true })).toBe(false);
+		expect(shouldScheduleSummarizerFromObserver({})).toBe(true);
+	});
+
+	it("aborts a stalled run while progress resets the watchdog", () => {
+		vi.useFakeTimers();
+		try {
+			let stalls = 0;
+			const watchdog = createSummarizerStallWatchdog(1_000, () => { stalls++; });
+			vi.advanceTimersByTime(900);
+			watchdog.progress();
+			vi.advanceTimersByTime(900);
+			expect(watchdog.signal.aborted).toBe(false);
+			vi.advanceTimersByTime(100);
+			expect(watchdog.signal.aborted).toBe(true);
+			expect(stalls).toBe(1);
+			watchdog.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("uses cumulative agent-active time and excludes idle wall-clock time", () => {
 		const value = runtime();
 		value.summarizerDirtySince = 0;
@@ -36,6 +86,22 @@ describe("summarizer scheduling", () => {
 		expect(value.summarizerDirtySince).toBe(100);
 		expect(value.summarizerPendingCount).toBe(3);
 		expect(value.summarizerPendingTokens).toBe(30);
+	});
+
+	it("reconciles stale counters exactly from durable coverage", () => {
+		const value = runtime();
+		value.markSummarizerDirty(9, 999, 1);
+		const entries: Entry[] = [
+			{ type: "custom", id: "activity-old", customType: "om.agent.activity", data: { durationMs: 100 } },
+			{ type: "custom", id: "obs-old", customType: "om.observations.recorded", data: { coversUpToId: "activity-old", observations: [{ id: "aaaaaaaaaaaa", content: "covered", timestamp: "2026-01-01 00:00", relevance: "low", sourceEntryIds: ["activity-old"], tokenCount: 3 }] } },
+			{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { coversUpToId: "obs-old" } },
+			{ type: "custom", id: "activity-new", customType: "om.agent.activity", data: { durationMs: 500 } },
+			{ type: "custom", id: "obs-new", customType: "om.observations.recorded", data: { coversUpToId: "activity-new", observations: [{ id: "bbbbbbbbbbbb", content: "uncovered", timestamp: "2026-01-02 00:00", relevance: "low", sourceEntryIds: ["activity-new"], tokenCount: 7 }] } },
+		];
+		expect(reconcileSummarizerDirty(value, entries)).toEqual(new Set(["bbbbbbbbbbbb"]));
+		expect(value.summarizerPendingCount).toBe(1);
+		expect(value.summarizerPendingTokens).toBe(7);
+		expect(value.summarizerDirtySince).toBe(600);
 	});
 
 	it("reconstructs new observation ids after the latest summary coverage", () => {

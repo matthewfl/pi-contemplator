@@ -113,6 +113,26 @@ describe("summarizer agent", () => {
 		}) });
 	});
 
+	it("does not duplicate a prompt when an agent-loop wrapper clones its result", async () => {
+		let invocation = 0;
+		let secondContext: any;
+		const cloningLoop = ((prompts: any[], context: any) => {
+			const current = invocation++;
+			if (current === 1) secondContext = context;
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => {
+					if (current === 1) await finish(context);
+					return [structuredClone(prompts[0])];
+				},
+			};
+		}) as any;
+		await runSummarizer({ ...base, agentLoop: cloningLoop });
+		const firstRunPrompts = secondContext.messages.filter((message: any) => message.role === "user" && JSON.stringify(message).includes("preceding summarize call"));
+		expect(firstRunPrompts).toHaveLength(1);
+		expect(secondContext.messages.filter((message: any) => JSON.stringify(message).includes("summarizer-example"))).toHaveLength(2);
+	});
+
 	it("creates a cited summary, consumes its sources, and double-confirms done", async () => {
 		const content = `The two sources establish one durable result [${A}, ${B}].`;
 		const result = await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {

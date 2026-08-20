@@ -152,7 +152,8 @@ export type MemoryArchive = {
 
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
-	version: 1;
+	/** Version 2 intentionally breaks the unpublished reflections/lifecycle format. */
+	version: 2;
 	fullFold: boolean;
 	/** Visible memories injected by this compaction. */
 	observations: Observation[];
@@ -296,7 +297,10 @@ function isMemoryArchive(value: unknown): value is MemoryArchive {
 
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
-	return value.type === OM_FOLDED && value.version === 1 && typeof value.fullFold === "boolean" &&
+	// No v1 migration is intentional: that format belonged to the unpublished
+	// librarian/reflection design and is not semantically compatible with the
+	// summarizer consumption graph.
+	return value.type === OM_FOLDED && value.version === 2 && typeof value.fullFold === "boolean" &&
 		Array.isArray(value.observations) && value.observations.every(isObservation) &&
 		Array.isArray(value.summaries) && value.summaries.every(isSummary) &&
 		(value.archive === undefined || isMemoryArchive(value.archive)) &&

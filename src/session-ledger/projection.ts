@@ -91,7 +91,7 @@ export function buildCompactionProjection(
 	const fullFold = observationTokens >= config.observationsPoolMaxTokens;
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
-		version: 1,
+		version: 2,
 		fullFold,
 		observations,
 		summaries,

@@ -62,6 +62,8 @@ export type RunSummarizerArgs = {
 export type SummarizerRunResult = {
 	commit?: SummarizerCommitEntryData;
 	completed: boolean;
+	/** Observation-batch boundary in the immutable snapshot reviewed by this run. */
+	reviewedUpToId?: string;
 	sample?: SummarizerSample;
 };
 
@@ -540,6 +542,8 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		history.push(prompt as AgentMessage);
 		args.onMessages?.(history.slice());
 		const stream = loop([prompt], context, config, args.signal, streamSimple);
+		// agentLoop emits message_start/message_end for the supplied prompt, so
+		// seed live checkpoints without our already-pushed copy of that prompt.
 		const liveMessages = history.slice(0, -1);
 		let liveMessageIndex: number | undefined;
 		for await (const event of stream) {
@@ -560,7 +564,11 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 			}
 		}
 		const messages = await stream.result();
-		const returnedMessages = messages[0] === prompt ? messages.slice(1) : messages;
+		// agentLoop's documented result is the per-invocation message list and
+		// always starts with the supplied prompt. We already inserted that prompt
+		// into history, so remove it by contract rather than object identity (a
+		// wrapper may clone the prompt object).
+		const returnedMessages = messages.slice(1);
 		history.push(...returnedMessages);
 		args.onMessages?.(history.slice());
 		if (args.recordUsage) for (const message of messages) if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
@@ -571,7 +579,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		for (let invocation = 1; !completedWithDone && invocation < SUMMARIZER_MAX_INVOCATIONS; invocation++) await runOnce(SUMMARIZER_CONTINUE, true);
 	} catch (error) {
 		debugLog("summarizer.error", { error: error instanceof Error ? error.message : String(error), acceptedSummaries: drafts.size });
-		if (drafts.size === 0) return { completed: false, sample };
+		if (drafts.size === 0) return { completed: false, reviewedUpToId: coversUpToId, sample };
 	}
 	if (!completedWithDone) debugLog("summarizer.incomplete", { acceptedSummaries: drafts.size });
 	if (sample.sampled && args.fairness && (completedWithDone || drafts.size > 0)) for (const item of sample.memories) {
@@ -579,9 +587,10 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		args.fairness.set(item.memory.id, { lastSampledAt: samplingNow, sampleCount: prior.sampleCount + 1 });
 	}
 	const metrics = projectedMetrics();
-	if (metrics.finalDrafts.length === 0) return { completed: completedWithDone, sample };
+	if (metrics.finalDrafts.length === 0) return { completed: completedWithDone, reviewedUpToId: coversUpToId, sample };
 	return {
 		completed: true,
+		reviewedUpToId: coversUpToId,
 		sample,
 		commit: {
 			version: 1,

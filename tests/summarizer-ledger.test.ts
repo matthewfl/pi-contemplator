@@ -81,7 +81,9 @@ describe("summary graph folding and projection", () => {
 		expect(projected.observations).toEqual([]);
 		expect(projected.summaries).toHaveLength(1);
 		expect(projected.details.archive?.observations).toHaveLength(2);
+		expect(projected.details.version).toBe(2);
 		expect(isMemoryDetails(projected.details)).toBe(true);
+		expect(isMemoryDetails({ ...projected.details, version: 1, reflections: [] })).toBe(false);
 		const restored = foldLedger([{ type: "compaction", id: "compact", details: projected.details }]);
 		expect(restored.consumedBySummaryId.get(A)).toBe(S);
 		expect(restored.citedBySummaryIds.get(B)).toEqual([S]);

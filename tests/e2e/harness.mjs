@@ -74,21 +74,31 @@ export class ModelServer {
 		this.requests = [];
 		this.active = 0;
 		this.maxActive = 0;
+		this.activeByRole = new Map();
+		this.maxActiveByRole = new Map();
 	}
 	async handle(req, res) {
 		this.active++;
 		this.maxActive = Math.max(this.maxActive, this.active);
+		let role;
+		let request;
 		try {
 			let raw = "";
 			for await (const chunk of req) raw += chunk;
 			const body = JSON.parse(raw || "{}");
-			const request = { body, role: classify(body), text: JSON.stringify(body.messages ?? []), startedAt: Date.now() };
+			role = classify(body);
+			const roleActive = (this.activeByRole.get(role) ?? 0) + 1;
+			this.activeByRole.set(role, roleActive);
+			this.maxActiveByRole.set(role, Math.max(this.maxActiveByRole.get(role) ?? 0, roleActive));
+			request = { body, role, text: JSON.stringify(body.messages ?? []), startedAt: Date.now() };
 			this.requests.push(request);
 			await this.router(request, res, this);
 		} catch (error) {
 			if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
 			if (!res.writableEnded) res.end(JSON.stringify({ error: { message: String(error) } }));
 		} finally {
+			if (request) request.endedAt = Date.now();
+			if (role) this.activeByRole.set(role, Math.max(0, (this.activeByRole.get(role) ?? 1) - 1));
 			this.active--;
 		}
 	}

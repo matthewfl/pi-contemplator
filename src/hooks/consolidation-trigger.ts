@@ -37,6 +37,36 @@ export type ConsolidationCtx = {
 
 type StageOutcome = "continue" | "abort";
 
+/** Abort only when a summarizer produces no stream/message progress for this long. */
+export const SUMMARIZER_STALL_TIMEOUT_MS = 15 * 60_000;
+
+export function createSummarizerStallWatchdog(
+	timeoutMs: number,
+	onStall: (signal: AbortSignal) => void,
+): { signal: AbortSignal; progress: () => void; dispose: () => void } {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const progress = () => {
+		if (controller.signal.aborted) return;
+		if (timer !== undefined) clearTimeout(timer);
+		timer = setTimeout(() => {
+			timer = undefined;
+			controller.abort(new Error(`summarizer produced no progress for ${Math.round(timeoutMs / 60_000)} minutes`));
+			onStall(controller.signal);
+		}, timeoutMs);
+		(timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+	};
+	progress();
+	return {
+		signal: controller.signal,
+		progress,
+		dispose: () => {
+			if (timer !== undefined) clearTimeout(timer);
+			timer = undefined;
+		},
+	};
+}
+
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
 }
@@ -170,6 +200,10 @@ export type ConsolidationPipelineOptions = {
 	observerOnly?: boolean;
 };
 
+export function shouldScheduleSummarizerFromObserver(options: ConsolidationPipelineOptions): boolean {
+	return options.observerOnly !== true;
+}
+
 export async function runConsolidationPipeline(
 	pi: ExtensionAPI,
 	runtime: Runtime,
@@ -198,9 +232,20 @@ export async function runConsolidationPipeline(
 	if (added.length > 0) {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		runtime.markSummarizerDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0), agentActiveTimeMs(entries));
-		scheduleSummarizer(pi, runtime, ctx);
+		// A compaction observer is a capture sidecar. Preserve its new work as
+		// dirty, but never start a summarizer from inside compaction. The next
+		// normal activity/session checkpoint will reconcile and schedule it.
+		if (shouldScheduleSummarizerFromObserver(options)) scheduleSummarizer(pi, runtime, ctx);
 	}
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
+}
+
+function latestObservationBatchId(entries: Entry[]): string | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED) return entry.id;
+	}
+	return undefined;
 }
 
 function activeMemoryTokens(entries: Entry[]): number {
@@ -232,19 +277,28 @@ export function summarizerDirtySinceAgentTime(entries: Entry[], newIds: Readonly
 	return agentActiveTimeMs(entries);
 }
 
+export function reconcileSummarizerDirty(runtime: Runtime, entries: Entry[]): Set<string> {
+	const newIds = newMemoryIdsSinceSummarizerCoverage(entries);
+	// The ledger coverage marker is authoritative. Replace counters rather than
+	// adding to them so observations captured during an in-flight run cannot be
+	// double-counted or retain the completed run's older dirty timestamp.
+	runtime.clearSummarizerDirty();
+	if (newIds.size > 0) {
+		const folded = foldLedger(entries);
+		let tokens = 0;
+		for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? 0;
+		runtime.markSummarizerDirty(newIds.size, tokens, summarizerDirtySinceAgentTime(entries, newIds));
+	}
+	return newIds;
+}
+
 function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive || !runtime.config.summarizerEnabled) return;
-	if (runtime.summarizerDirtySince === undefined) {
-		const entries = ctx.sessionManager.getBranch() as Entry[];
-		const newIds = newMemoryIdsSinceSummarizerCoverage(entries);
-		if (newIds.size > 0) {
-			const folded = foldLedger(entries);
-			let tokens = 0;
-			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? 0;
-			runtime.markSummarizerDirty(newIds.size, tokens, summarizerDirtySinceAgentTime(entries, newIds));
-		}
-	}
+	// Do not replace the incremental mid-flight backlog while a snapshot is
+	// being processed. The worker reconciles exactly against its coverage when
+	// it exits, whether it succeeds or fails.
+	if (!runtime.summarizerInFlight) reconcileSummarizerDirty(runtime, ctx.sessionManager.getBranch() as Entry[]);
 	scheduleSummarizer(pi, runtime, ctx);
 }
 
@@ -257,9 +311,6 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 	// No wall-clock timer: scheduling is revisited at main-agent activity
 	// checkpoints, so idle time waiting for the user never ages this work.
 	const generation = runtime.getContextGeneration();
-	const capturedCount = runtime.summarizerPendingCount;
-	const capturedTokens = runtime.summarizerPendingTokens;
-	const capturedDirtySince = runtime.summarizerDirtySince;
 	runtime.clearSummarizerDirty();
 	const runId = `summarizer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const sessionMetadata = debugSessionMetadata(ctx);
@@ -270,6 +321,10 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		runId,
 	}, async () => {
 		let completed = false;
+		let coverageAdvanced = false;
+		let reviewedUpToId: string | undefined;
+		let stalled = false;
+		let disposeStallWatchdog = () => {};
 		const startedAt = Date.now();
 		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
 		try {
@@ -281,7 +336,15 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 			}
 			if (generation !== runtime.getContextGeneration()) return;
 			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: summarizer running", "info");
+			const watchdog = createSummarizerStallWatchdog(SUMMARIZER_STALL_TIMEOUT_MS, (signal) => {
+				stalled = true;
+				const reason = signal.reason instanceof Error ? signal.reason.message : "summarizer stalled";
+				debugLog("summarizer.stalled", { reason });
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: ${reason}; cancelling and leaving the backlog eligible for retry`, "warning");
+			});
+			disposeStallWatchdog = watchdog.dispose;
 			const result = await runSummarizer({
+				signal: watchdog.signal,
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
@@ -293,17 +356,22 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				thinkingLevel: runtime.config.model?.thinking ?? "minimal",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
+					watchdog.progress();
 					if (generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };
 				},
 			});
 			if (generation !== runtime.getContextGeneration()) return;
+			reviewedUpToId = result.reviewedUpToId;
 			if (!result.completed) {
-				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "incomplete" };
+				runtime.lastSummarizerRun = stalled
+					? { ...runtime.lastSummarizerRun!, status: "failed", error: "Summarizer stalled and was cancelled; memory remains eligible for retry." }
+					: { ...runtime.lastSummarizerRun!, status: "incomplete" };
 				return;
 			}
 			completed = true;
 			if (result.commit) {
 				pi.appendEntry(OM_SUMMARIZER_COMMIT, result.commit);
+				coverageAdvanced = true;
 				const summary = `${result.commit.summaries.length} summaries consumed ${result.commit.metrics.consumedMemoryCount} memories, reducing visible memory by ~${result.commit.metrics.estimatedTokenReduction.toLocaleString()} tokens.`;
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
 				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
@@ -319,10 +387,17 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 			}
 			throw error;
 		} finally {
-			if (!completed && generation === runtime.getContextGeneration()) runtime.markSummarizerDirty(capturedCount, capturedTokens, capturedDirtySince);
-			if (completed) setTimeout(() => {
-				if (generation === runtime.getContextGeneration()) scheduleSummarizer(pi, runtime, ctx);
-			}, 0);
+			disposeStallWatchdog();
+			if (generation === runtime.getContextGeneration()) {
+				reconcileSummarizerDirty(runtime, ctx.sessionManager.getBranch() as Entry[]);
+				// A durable commit advances coverage. A successful no-op normally waits
+				// for later activity, but if observations arrived after its immutable
+				// snapshot, immediately give the enlarged set another opportunity.
+				const newerObservationsArrived = reviewedUpToId !== undefined && latestObservationBatchId(ctx.sessionManager.getBranch() as Entry[]) !== reviewedUpToId;
+				if (completed && (coverageAdvanced || newerObservationsArrived)) setTimeout(() => {
+					if (generation === runtime.getContextGeneration()) syncAndScheduleSummarizer(pi, runtime, ctx);
+				}, 0);
+			}
 		}
 	}), agentTime);
 }
