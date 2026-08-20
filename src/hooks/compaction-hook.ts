@@ -60,7 +60,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				firstKeptEntryId,
 				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 			);
-			const summary = renderSummary(projection.reflections, projection.observations);
+			const summary = renderSummary(projection.summaries, projection.observations);
 			// Compaction removes older custom entries from the active branch. Keep
 			// session-scoped overrides in the compaction details so they can be
 			// restored after a reload from the surviving branch. Bake the merged

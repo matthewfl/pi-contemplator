@@ -1,28 +1,21 @@
 import {
 	isMemoryDetails,
-	OM_LIBRARIAN_COMMIT,
-	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
-	isReflectionsRecordedEntry,
 	isReviewResultEntry,
+	isSummarizerCommitEntry,
 	type Entry,
+	type MemoryVisibility,
 	type Observation,
-	type Reflection,
 	type ReviewResult,
+	type Summary,
 } from "./types.js";
 import { foldLedger } from "./fold.js";
 
 const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
-export type { Entry, Observation, Reflection };
+export type { Entry, Observation, Summary };
 
-type ObservationLedgerLocation = {
-	entryId: string;
-	entryIndex: number;
-	recordIndex: number;
-};
-
-type ReflectionLedgerLocation = {
+type LedgerLocation = {
 	entryId: string;
 	entryIndex: number;
 	recordIndex: number;
@@ -32,29 +25,31 @@ export type RecalledObservation = {
 	observation: Observation;
 	observationEntryId: string;
 	observationRecordIndex: number;
-	status: "active" | "inactive" | "deleted";
-	deleteReason?: string;
-	recallIf?: string;
+	visibility: MemoryVisibility;
+	consumedBySummaryId?: string;
+	citedBySummaryIds: string[];
 	sourceEntryIds: string[];
 	sourceEntries: Entry[];
 	missingSourceEntryIds: string[];
 	nonSourceEntryIds: string[];
 };
 
-export type RecalledReflection = {
-	reflection: Reflection;
-	reflectionEntryId: string;
-	reflectionRecordIndex: number;
-	status: "active" | "inactive" | "deleted";
-	deleteReason?: string;
-	recallIf?: string;
-	mergedInto: string[];
-	replacedBy: string[];
+export type RecalledSummary = {
+	summary: Summary;
+	summaryEntryId: string;
+	summaryRecordIndex: number;
+	visibility: MemoryVisibility;
+	consumedBySummaryId?: string;
+	citedBySummaryIds: string[];
+	sourceMemoryIds: string[];
+	consumedMemoryIds: string[];
+	missingSourceMemoryIds: string[];
 };
 
 export type RecalledReviewResult = {
 	review: ReviewResult;
 	reviewEntryId: string;
+	citedBySummaryIds: string[];
 };
 
 export type RecallResult =
@@ -62,34 +57,34 @@ export type RecallResult =
 			status: "not_found";
 			memoryId: string;
 			kind: undefined;
-			reflections: [];
+			summaries: [];
 			reviews: [];
 			observations: [];
 			sourceEntries: [];
 			missingSourceEntryIds: [];
 			nonSourceEntryIds: [];
-			missingSupportingObservationIds: [];
+			missingSourceMemoryIds: [];
 			collision: false;
 			partial: false;
 	  }
 	| {
 			status: "found";
 			memoryId: string;
-			kind: "observation" | "reflection" | "review" | "mixed";
-			reflections: RecalledReflection[];
+			kind: "observation" | "summary" | "review" | "mixed";
+			summaries: RecalledSummary[];
 			reviews: RecalledReviewResult[];
 			observations: RecalledObservation[];
 			sourceEntries: Entry[];
 			missingSourceEntryIds: string[];
 			nonSourceEntryIds: string[];
-			missingSupportingObservationIds: string[];
+			missingSourceMemoryIds: string[];
 			collision: boolean;
 			partial: boolean;
 	  };
 
-type IndexedObservation = ObservationLedgerLocation & { observation: Observation };
-type IndexedReflection = ReflectionLedgerLocation & { reflection: Reflection };
-type IndexedReviewResult = { review: ReviewResult; entryId: string };
+type IndexedObservation = LedgerLocation & { observation: Observation };
+type IndexedSummary = LedgerLocation & { summary: Summary };
+type IndexedReviewResult = { review: ReviewResult; entryId: string; entryIndex: number };
 
 function isSourceEntry(entry: Entry): boolean {
 	return SOURCE_TYPES.has(entry.type);
@@ -97,102 +92,85 @@ function isSourceEntry(entry: Entry): boolean {
 
 function uniqueById(entries: Entry[]): Entry[] {
 	const seen = new Set<string>();
-	const result: Entry[] = [];
-	for (const entry of entries) {
-		if (seen.has(entry.id)) continue;
+	return entries.filter((entry) => {
+		if (seen.has(entry.id)) return false;
 		seen.add(entry.id);
-		result.push(entry);
-	}
-	return result;
+		return true;
+	});
 }
 
-function uniqueStrings(values: string[]): string[] {
+function uniqueStrings(values: readonly string[]): string[] {
 	return Array.from(new Set(values));
 }
 
 function indexLedger(entries: Entry[]): {
 	observations: IndexedObservation[];
-	reflections: IndexedReflection[];
+	summaries: IndexedSummary[];
 	reviews: IndexedReviewResult[];
 } {
 	const observations: IndexedObservation[] = [];
-	const reflections: IndexedReflection[] = [];
+	const summaries: IndexedSummary[] = [];
 	const reviews: IndexedReviewResult[] = [];
-	// Deduplicate snapshots/retries of the same record without collapsing true
-	// content-address collisions that point at different source evidence.
 	const observationKeys = new Set<string>();
-	const reflectionKeys = new Set<string>();
-	const observationKey = (observation: Observation) => `${observation.id}:${uniqueStrings(observation.sourceEntryIds).sort().join(",")}`;
-	const reflectionKey = (reflection: Reflection) => `${reflection.id}:${uniqueStrings(reflection.sourceMemoryIds ?? reflection.supportingObservationIds).sort().join(",")}`;
+	const summaryKeys = new Set<string>();
+	const reviewKeys = new Set<string>();
+	const addObservation = (observation: Observation, location: LedgerLocation): void => {
+		const key = `${observation.id}:${uniqueStrings(observation.sourceEntryIds).sort().join(",")}`;
+		if (observationKeys.has(key)) return;
+		observationKeys.add(key);
+		observations.push({ observation, ...location });
+	};
+	const addSummary = (summary: Summary, location: LedgerLocation): void => {
+		const key = `${summary.id}:${summary.sourceMemoryIds.join(",")}:${summary.consumedMemoryIds.join(",")}`;
+		if (summaryKeys.has(key)) return;
+		summaryKeys.add(key);
+		summaries.push({ summary, ...location });
+	};
+	const addReview = (review: ReviewResult, entryId: string, entryIndex: number): void => {
+		if (reviewKeys.has(review.id)) return;
+		reviewKeys.add(review.id);
+		reviews.push({ review, entryId, entryIndex });
+	};
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 		const entry = entries[entryIndex];
-		if (entry.type === "compaction" && isMemoryDetails(entry.details) && entry.details.archive) {
-			entry.details.archive.observations.forEach((observation, recordIndex) => {
-				const key = observationKey(observation);
-				if (observationKeys.has(key)) return;
-				observationKeys.add(key);
-				observations.push({ observation, entryId: entry.id, entryIndex, recordIndex });
-			});
-			entry.details.archive.reflections.forEach((reflection, recordIndex) => {
-				const key = reflectionKey(reflection);
-				if (reflectionKeys.has(key)) return;
-				reflectionKeys.add(key);
-				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
-			});
+		if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
+			const archivedObservations = entry.details.archive?.observations ?? entry.details.observations;
+			const archivedSummaries = entry.details.archive?.summaries ?? entry.details.summaries;
+			archivedObservations.forEach((observation, recordIndex) => addObservation(observation, { entryId: entry.id, entryIndex, recordIndex }));
+			archivedSummaries.forEach((summary, recordIndex) => addSummary(summary, { entryId: entry.id, entryIndex, recordIndex }));
+			for (const review of entry.details.reviews ?? []) addReview(review, entry.id, entryIndex);
 			continue;
 		}
 		if (isObservationsRecordedEntry(entry)) {
-			entry.data.observations.forEach((observation, recordIndex) => {
-				const key = observationKey(observation);
-				if (observationKeys.has(key)) return;
-				observationKeys.add(key);
-				observations.push({ observation, entryId: entry.id, entryIndex, recordIndex });
-			});
+			entry.data.observations.forEach((observation, recordIndex) => addObservation(observation, { entryId: entry.id, entryIndex, recordIndex }));
 			continue;
 		}
-		if (isReflectionsRecordedEntry(entry) || (entry.type === "custom" && entry.customType === OM_LIBRARIAN_COMMIT && entry.data && typeof entry.data === "object" && Array.isArray((entry.data as { reflections?: unknown }).reflections))) {
-			const records = isReflectionsRecordedEntry(entry) ? entry.data.reflections : (entry.data as { reflections: Reflection[] }).reflections;
-			records.forEach((reflection, recordIndex) => {
-				const key = reflectionKey(reflection);
-				if (reflectionKeys.has(key)) return;
-				reflectionKeys.add(key);
-				reflections.push({ reflection, entryId: entry.id, entryIndex, recordIndex });
-			});
+		if (isSummarizerCommitEntry(entry)) {
+			entry.data.summaries.forEach((summary, recordIndex) => addSummary(summary, { entryId: entry.id, entryIndex, recordIndex }));
 			continue;
 		}
-		if (isObservationsDroppedEntry(entry)) continue;
-		if (isReviewResultEntry(entry)) reviews.push({ review: entry.data.result, entryId: entry.id });
+		if (isReviewResultEntry(entry)) addReview(entry.data.result, entry.id, entryIndex);
 	}
-
-	return { observations, reflections, reviews };
+	return { observations, summaries, reviews };
 }
 
-function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
-	const sourceEntryIds = uniqueStrings(observation.sourceEntryIds);
+function resolveObservationSources(entries: Entry[], indexed: IndexedObservation): Omit<RecalledObservation, "visibility" | "consumedBySummaryId" | "citedBySummaryIds"> {
+	const sourceEntryIds = uniqueStrings(indexed.observation.sourceEntryIds);
 	const byId = new Map(entries.map((entry) => [entry.id, entry]));
 	const sourceEntries: Entry[] = [];
 	const missingSourceEntryIds: string[] = [];
 	const nonSourceEntryIds: string[] = [];
-
 	for (const sourceEntryId of sourceEntryIds) {
 		const sourceEntry = byId.get(sourceEntryId);
-		if (!sourceEntry) {
-			missingSourceEntryIds.push(sourceEntryId);
-			continue;
-		}
-		if (!isSourceEntry(sourceEntry)) {
-			nonSourceEntryIds.push(sourceEntryId);
-			continue;
-		}
-		sourceEntries.push(sourceEntry);
+		if (!sourceEntry) missingSourceEntryIds.push(sourceEntryId);
+		else if (!isSourceEntry(sourceEntry)) nonSourceEntryIds.push(sourceEntryId);
+		else sourceEntries.push(sourceEntry);
 	}
-
 	return {
-		observation,
-		observationEntryId: location.entryId,
-		observationRecordIndex: location.recordIndex,
-		status: "active",
+		observation: indexed.observation,
+		observationEntryId: indexed.entryId,
+		observationRecordIndex: indexed.recordIndex,
 		sourceEntryIds,
 		sourceEntries,
 		missingSourceEntryIds,
@@ -205,107 +183,78 @@ function notFound(memoryId: string): RecallResult {
 		status: "not_found",
 		memoryId,
 		kind: undefined,
-		reflections: [],
+		summaries: [],
 		reviews: [],
 		observations: [],
 		sourceEntries: [],
 		missingSourceEntryIds: [],
 		nonSourceEntryIds: [],
-		missingSupportingObservationIds: [],
+		missingSourceMemoryIds: [],
 		collision: false,
 		partial: false,
 	};
 }
 
+/** Recall exactly one graph node plus immediate backward/forward pointers. */
 export function recallMemorySources(entries: Entry[], memoryId: string): RecallResult {
-	const { observations: indexedObservations, reflections: indexedReflections, reviews: indexedReviews } = indexLedger(entries);
+	const indexed = indexLedger(entries);
 	const folded = foldLedger(entries);
-	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
-	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
-	const reviewMatches = indexedReviews.filter(({ review }) => review.id === memoryId);
+	const observationMatches = indexed.observations.filter(({ observation }) => observation.id === memoryId);
+	const summaryMatches = indexed.summaries.filter(({ summary }) => summary.id === memoryId);
+	const reviewMatches = indexed.reviews.filter(({ review }) => review.id === memoryId);
+	if (observationMatches.length === 0 && summaryMatches.length === 0 && reviewMatches.length === 0) return notFound(memoryId);
 
-	if (directObservationMatches.length === 0 && reflectionMatches.length === 0 && reviewMatches.length === 0) return notFound(memoryId);
-
-	const observationsById = new Map<string, IndexedObservation>();
-	for (const indexed of indexedObservations) {
-		if (!observationsById.has(indexed.observation.id)) observationsById.set(indexed.observation.id, indexed);
-	}
-
-	const recalledByKey = new Map<string, RecalledObservation>();
-	const missingSupportingObservationIds: string[] = [];
-
-	function addObservation(indexed: IndexedObservation): void {
-		const key = `${indexed.entryId}:${indexed.recordIndex}`;
-		if (recalledByKey.has(key)) return;
-		const recalled = resolveObservationSources(entries, indexed.observation, indexed);
-		const lifecycle = folded.lifecycleByMemoryId.get(indexed.observation.id);
-		recalled.status = lifecycle?.status ?? "active";
-		recalled.deleteReason = lifecycle?.reason;
-		recalled.recallIf = lifecycle?.recallIf;
-		recalledByKey.set(key, recalled);
-	}
-
-	for (const match of directObservationMatches) addObservation(match);
-
-	const reflectionsById = new Map(indexedReflections.map((indexed) => [indexed.reflection.id, indexed]));
-	const includedReflections = new Map(reflectionMatches.map((indexed) => [indexed.reflection.id, indexed]));
-	for (const { reflection } of reflectionMatches) {
-		for (const sourceId of uniqueStrings(reflection.sourceMemoryIds ?? reflection.supportingObservationIds)) {
-			const sourceReflection = reflectionsById.get(sourceId);
-			if (sourceReflection) {
-				includedReflections.set(sourceReflection.reflection.id, sourceReflection);
-				continue;
-			}
-			const observationId = sourceId;
-			const indexed = observationsById.get(observationId);
-			if (!indexed) {
-				missingSupportingObservationIds.push(observationId);
-				continue;
-			}
-			addObservation(indexed);
-		}
-	}
-
-	const recalledObservations = Array.from(recalledByKey.values());
-	const recalledReflections: RecalledReflection[] = Array.from(includedReflections.values()).map(({ reflection, entryId, recordIndex }) => {
-		const lifecycle = folded.lifecycleByMemoryId.get(reflection.id);
+	const knownMemoryIds = new Set([
+		...folded.observationsById.keys(),
+		...folded.summariesById.keys(),
+		...folded.reviewsById.keys(),
+	]);
+	const observations: RecalledObservation[] = observationMatches.map((match) => {
+		const consumedBySummaryId = folded.consumedBySummaryId.get(match.observation.id);
 		return {
-			reflection,
-			reflectionEntryId: entryId,
-			reflectionRecordIndex: recordIndex,
-			status: lifecycle?.status ?? "active",
-			deleteReason: lifecycle?.reason,
-			recallIf: lifecycle?.recallIf,
-			mergedInto: folded.mergedIntoByMemoryId.get(reflection.id) ?? [],
-			replacedBy: folded.replacedByMemoryId.get(reflection.id) ?? [],
+			...resolveObservationSources(entries, match),
+			visibility: consumedBySummaryId ? "summarized" : "visible",
+			...(consumedBySummaryId ? { consumedBySummaryId } : {}),
+			citedBySummaryIds: folded.citedBySummaryIds.get(match.observation.id) ?? [],
 		};
 	});
-	const recalledReviews: RecalledReviewResult[] = reviewMatches.map(({ review, entryId }) => ({ review, reviewEntryId: entryId }));
-	const sourceEntries = uniqueById(recalledObservations.flatMap((match) => match.sourceEntries));
-	const missingSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.missingSourceEntryIds));
-	const nonSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.nonSourceEntryIds));
-	const uniqueMissingSupportingObservationIds = uniqueStrings(missingSupportingObservationIds);
-	const matchCount = directObservationMatches.length + reflectionMatches.length + reviewMatches.length;
-	const kinds = [directObservationMatches.length > 0, reflectionMatches.length > 0, reviewMatches.length > 0].filter(Boolean).length;
-
+	const summaries: RecalledSummary[] = summaryMatches.map((match) => {
+		const consumedBySummaryId = folded.consumedBySummaryId.get(match.summary.id);
+		return {
+			summary: match.summary,
+			summaryEntryId: match.entryId,
+			summaryRecordIndex: match.recordIndex,
+			visibility: consumedBySummaryId ? "summarized" : "visible",
+			...(consumedBySummaryId ? { consumedBySummaryId } : {}),
+			citedBySummaryIds: folded.citedBySummaryIds.get(match.summary.id) ?? [],
+			sourceMemoryIds: match.summary.sourceMemoryIds,
+			consumedMemoryIds: match.summary.consumedMemoryIds,
+			missingSourceMemoryIds: match.summary.sourceMemoryIds.filter((id) => !knownMemoryIds.has(id)),
+		};
+	});
+	const reviews: RecalledReviewResult[] = reviewMatches.map(({ review, entryId }) => ({
+		review,
+		reviewEntryId: entryId,
+		citedBySummaryIds: folded.citedBySummaryIds.get(review.id) ?? [],
+	}));
+	const sourceEntries = uniqueById(observations.flatMap((match) => match.sourceEntries));
+	const missingSourceEntryIds = uniqueStrings(observations.flatMap((match) => match.missingSourceEntryIds));
+	const nonSourceEntryIds = uniqueStrings(observations.flatMap((match) => match.nonSourceEntryIds));
+	const missingSourceMemoryIds = uniqueStrings(summaries.flatMap((match) => match.missingSourceMemoryIds));
+	const kinds = [observationMatches.length > 0, summaryMatches.length > 0, reviewMatches.length > 0].filter(Boolean).length;
+	const matchCount = observationMatches.length + summaryMatches.length + reviewMatches.length;
 	return {
 		status: "found",
 		memoryId,
-		kind: kinds > 1
-			? "mixed"
-			: reviewMatches.length > 0
-				? "review"
-				: reflectionMatches.length > 0
-					? "reflection"
-					: "observation",
-		reflections: recalledReflections,
-		reviews: recalledReviews,
-		observations: recalledObservations,
+		kind: kinds > 1 ? "mixed" : reviewMatches.length > 0 ? "review" : summaryMatches.length > 0 ? "summary" : "observation",
+		summaries,
+		reviews,
+		observations,
 		sourceEntries,
 		missingSourceEntryIds,
 		nonSourceEntryIds,
-		missingSupportingObservationIds: uniqueMissingSupportingObservationIds,
+		missingSourceMemoryIds,
 		collision: matchCount > 1,
-		partial: missingSourceEntryIds.length > 0 || nonSourceEntryIds.length > 0 || uniqueMissingSupportingObservationIds.length > 0,
+		partial: missingSourceEntryIds.length > 0 || nonSourceEntryIds.length > 0 || missingSourceMemoryIds.length > 0,
 	};
 }

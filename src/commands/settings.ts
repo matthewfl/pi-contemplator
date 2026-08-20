@@ -9,8 +9,8 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens" | "librarianSamplingThresholdTokens";
-type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "librarianEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerSamplingThresholdTokens";
+type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "summarizerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "current session model";
@@ -29,7 +29,7 @@ function hasOverride(settings: SessionSettings, key: string): boolean {
 	return  Object.hasOwn(settings, key);
 }
 
-function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "librarianPressureTriggerRatio"): string {
+function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "summarizerPressureTriggerRatio"): string {
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
@@ -124,7 +124,7 @@ async function chooseModel(ctx: ExtensionContext, current: ConfiguredModel | und
 }
 
 async function editNumber(ctx: ExtensionContext, runtime: Runtime, key: NumberSetting, title: string): Promise<number | undefined> {
-	const permitsZero = key === "librarianMinIntervalMinutes" || key === "librarianMaxDelayMinutes";
+	const permitsZero = key === "summarizerMinIntervalMinutes" || key === "summarizerMaxDelayMinutes";
 	const requirement = permitsZero ? "non-negative integer" : "positive integer";
 	const value = await ctx.ui.input(`${title} (current: ${scalarLabel(runtime, key)})`, `${requirement}; blank cancels`);
 	if (value === undefined || value.trim() === "") return undefined;
@@ -172,9 +172,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			ctx.ui.notify(`Compaction observer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
-		if (argument === "librarian on" || argument === "librarian off") {
-			appendSettings(pi, runtime, { librarianEnabled: argument.endsWith("on") });
-			ctx.ui.notify(`Librarian: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
+		if (argument === "summarizer on" || argument === "summarizer off") {
+			appendSettings(pi, runtime, { summarizerEnabled: argument.endsWith("on") });
+			ctx.ui.notify(`Summarizer: ${argument.endsWith("on") ? "enabled" : "disabled"} for this session.`, "info");
 			return;
 		}
 		if (argument === "reviewer on" || argument === "reviewer off") {
@@ -188,7 +188,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			return;
 		}
 		if (argument) {
-			ctx.ui.notify("Usage: /om:settings [on|off|messages on|messages off|librarian on|librarian off|reviewer on|reviewer off|compaction on|compaction off]", "info");
+			ctx.ui.notify("Usage: /om:settings [on|off|messages on|messages off|summarizer on|summarizer off|reviewer on|reviewer off|compaction on|compaction off]", "info");
 			return;
 		}
 
@@ -198,13 +198,13 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Contemplation: ${scalarLabel(runtime, "contemplatorEnabled")}`,
 				`Contemplation model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
 				`Contemplator messages visible: ${scalarLabel(runtime, "showContemplatorMessages")}`,
-				`Librarian enabled: ${scalarLabel(runtime, "librarianEnabled")}`,
-				`Librarian minimum interval (agent-active minutes): ${scalarLabel(runtime, "librarianMinIntervalMinutes")}`,
-				`Librarian maximum delay (agent-active minutes): ${scalarLabel(runtime, "librarianMaxDelayMinutes")}`,
-				`Librarian new-memory trigger (tokens): ${scalarLabel(runtime, "librarianMinNewMemoryTokens")}`,
-				`Librarian urgent backlog trigger (tokens): ${scalarLabel(runtime, "librarianMaxPendingMemoryTokens")}`,
-				`Librarian pressure trigger: ${scalarLabel(runtime, "librarianPressureTriggerRatio")}`,
-				`Librarian sampling threshold (tokens): ${scalarLabel(runtime, "librarianSamplingThresholdTokens")}`,
+				`Summarizer enabled: ${scalarLabel(runtime, "summarizerEnabled")}`,
+				`Summarizer minimum interval (agent-active minutes): ${scalarLabel(runtime, "summarizerMinIntervalMinutes")}`,
+				`Summarizer maximum delay (agent-active minutes): ${scalarLabel(runtime, "summarizerMaxDelayMinutes")}`,
+				`Summarizer new-memory trigger (tokens): ${scalarLabel(runtime, "summarizerMinNewMemoryTokens")}`,
+				`Summarizer urgent backlog trigger (tokens): ${scalarLabel(runtime, "summarizerMaxPendingMemoryTokens")}`,
+				`Summarizer pressure trigger: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")}`,
+				`Summarizer sampling threshold (tokens): ${scalarLabel(runtime, "summarizerSamplingThresholdTokens")}`,
 				`Structural reviewer: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
 				`Compaction observer: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
@@ -218,7 +218,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Observation pool target: ${scalarLabel(runtime, "observationsPoolTargetTokens")}`,
 				`Worker max turns: ${scalarLabel(runtime, "agentMaxTurns")}`,
 				`Contemplation observation trigger: ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
-				`Contemplation reflection trigger: ${scalarLabel(runtime, "contemplatorMinNewReflections")}`,
+				`Contemplation summary trigger: ${scalarLabel(runtime, "contemplatorMinNewSummaries")}`,
 				`Contemplation turn interval: ${scalarLabel(runtime, "contemplatorMinTurns")}`,
 				`Worker notifications: ${scalarLabel(runtime, "showWorkerNotifications")}`,
 				`Passive mode: ${scalarLabel(runtime, "passive")}`,
@@ -227,7 +227,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			]);
 			if (!choice || choice === "Done") return;
 			if (choice.startsWith("Contemplation:")) appendSettings(pi, runtime, { contemplatorEnabled: !runtime.config.contemplatorEnabled });
-			else if (choice.startsWith("Librarian enabled:")) appendSettings(pi, runtime, { librarianEnabled: !runtime.config.librarianEnabled });
+			else if (choice.startsWith("Summarizer enabled:")) appendSettings(pi, runtime, { summarizerEnabled: !runtime.config.summarizerEnabled });
 			else if (choice.startsWith("Contemplator messages visible:")) appendSettings(pi, runtime, { showContemplatorMessages: !runtime.config.showContemplatorMessages });
 			else if (choice.startsWith("Structural reviewer:")) appendSettings(pi, runtime, { reviewerEnabled: !runtime.config.reviewerEnabled });
 			else if (choice.startsWith("Compaction observer:")) appendSettings(pi, runtime, { compactionObserverEnabled: !runtime.config.compactionObserverEnabled });
@@ -246,10 +246,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else if (choice.startsWith("Compaction mode:")) {
 				const mode = await ctx.ui.select("Compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });
-			} else if (choice.startsWith("Librarian pressure trigger:")) {
-				const value = await ctx.ui.input(`Librarian pressure trigger ratio (current: ${scalarLabel(runtime, "librarianPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
+			} else if (choice.startsWith("Summarizer pressure trigger:")) {
+				const value = await ctx.ui.input(`Summarizer pressure trigger ratio (current: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
 				const ratio = value === undefined ? undefined : Number(value.trim());
-				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { librarianPressureTriggerRatio: ratio });
+				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { summarizerPressureTriggerRatio: ratio });
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
 			} else if (choice.startsWith("Compaction ratio:")) {
 				const value = await ctx.ui.input(`Compaction ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
@@ -265,13 +265,13 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Observation pool target:", "observationsPoolTargetTokens", "Observation pool target"],
 					["Worker max turns:", "agentMaxTurns", "Worker max turns"],
 					["Contemplation observation trigger:", "contemplatorMinNewObservations", "Contemplation observation trigger"],
-					["Contemplation reflection trigger:", "contemplatorMinNewReflections", "Contemplation reflection trigger"],
+					["Contemplation summary trigger:", "contemplatorMinNewSummaries", "Contemplation summary trigger"],
 					["Contemplation turn interval:", "contemplatorMinTurns", "Contemplation turn interval"],
-					["Librarian minimum interval (agent-active minutes):", "librarianMinIntervalMinutes", "Librarian minimum interval (agent-active minutes)"],
-					["Librarian maximum delay (agent-active minutes):", "librarianMaxDelayMinutes", "Librarian maximum delay (agent-active minutes)"],
-					["Librarian new-memory trigger (tokens):", "librarianMinNewMemoryTokens", "Librarian new-memory token trigger"],
-					["Librarian urgent backlog trigger (tokens):", "librarianMaxPendingMemoryTokens", "Librarian urgent backlog token trigger"],
-					["Librarian sampling threshold (tokens):", "librarianSamplingThresholdTokens", "Librarian sampling threshold (tokens)"],
+					["Summarizer minimum interval (agent-active minutes):", "summarizerMinIntervalMinutes", "Summarizer minimum interval (agent-active minutes)"],
+					["Summarizer maximum delay (agent-active minutes):", "summarizerMaxDelayMinutes", "Summarizer maximum delay (agent-active minutes)"],
+					["Summarizer new-memory trigger (tokens):", "summarizerMinNewMemoryTokens", "Summarizer new-memory token trigger"],
+					["Summarizer urgent backlog trigger (tokens):", "summarizerMaxPendingMemoryTokens", "Summarizer urgent backlog token trigger"],
+					["Summarizer sampling threshold (tokens):", "summarizerSamplingThresholdTokens", "Summarizer sampling threshold (tokens)"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));
 				if (selected) {

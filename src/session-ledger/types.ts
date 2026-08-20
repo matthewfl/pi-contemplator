@@ -1,8 +1,6 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
-export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
-export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
-/** Atomic output of one completed librarian pass (new reflections + lifecycle changes + checkpoint). */
-export const OM_LIBRARIAN_COMMIT = "om.librarian.commit";
+/** Atomic output of one summarizer pass: new summaries and their consumption edges. */
+export const OM_SUMMARIZER_COMMIT = "om.summarizer.commit";
 export const OM_REVIEW_REQUEST = "om.review.request";
 export const OM_REVIEW_RESULT = "om.review.result";
 /** Persisted assistant/tool output from a short-lived structural reviewer. */
@@ -20,7 +18,7 @@ export type Relevance = (typeof RELEVANCE_VALUES)[number];
 
 export const RETENTION_VALUES = ["ephemeral", "contextual", "durable"] as const;
 export type Retention = (typeof RETENTION_VALUES)[number];
-export type MemoryStatus = "active" | "inactive" | "deleted";
+export type MemoryVisibility = "visible" | "summarized";
 
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
@@ -43,67 +41,42 @@ export type Observation = {
 	content: string;
 	timestamp: string;
 	relevance: Relevance;
-	/** Optional only for records written before the librarian migration; treat absence as contextual. */
+	/** Missing values safely default to contextual. */
 	retention?: Retention;
 	sourceEntryIds: string[];
 	tokenCount: number;
 };
 
-export type Reflection = {
+/** A durable, cited summary. Its source bodies remain elsewhere in the ledger. */
+export type Summary = {
 	id: string;
 	content: string;
-	/** Legacy observation-only provenance, retained for backwards compatibility. */
-	supportingObservationIds: string[];
-	/** Direct observation/reflection sources for librarian-created higher-order memories. */
-	sourceMemoryIds?: string[];
+	/** Every inline-cited memory id, deduplicated in first-occurrence order. */
+	sourceMemoryIds: string[];
+	/** Sources newly removed from automatic visibility by this summary. */
+	consumedMemoryIds: string[];
 	tokenCount: number;
 };
 
-export type MemoryLifecycleAction =
-	| {
-			type: "makeInactive";
-			memoryIds: string[];
-			recallIf: string;
-			becauseOfMemoryIds: string[];
-			createdAt: number;
-	  }
-	| {
-			type: "makeActive";
-			memoryIds: string[];
-			becauseOfMemoryIds: string[];
-			createdAt: number;
-	  }
-	| {
-			type: "delete";
-			memoryIds: string[];
-			reason: string;
-			becauseOfMemoryIds: string[];
-			replacementMemoryIds: string[];
-			createdAt: number;
-	  };
+export type SummarizerCommitMetrics = {
+	consumedMemoryCount: number;
+	sourceTokens: number;
+	summaryTokens: number;
+	estimatedTokenReduction: number;
+};
 
-export type LibrarianCommitEntryData = {
+export type SummarizerCommitEntryData = {
 	version: 1;
-	reflections: Reflection[];
-	actions: MemoryLifecycleAction[];
-	/** Entry id of the newest observation-record batch included in the run snapshot. */
+	summaries: Summary[];
+	/** Entry id of the newest observation batch included in the run snapshot. */
 	coversUpToId: string;
-	summary: string;
 	createdAt: number;
+	completedWithDone: boolean;
+	metrics: SummarizerCommitMetrics;
 };
 
 export type ObservationsRecordedEntryData = {
 	observations: Observation[];
-	coversUpToId: string;
-};
-
-export type ReflectionsRecordedEntryData = {
-	reflections: Reflection[];
-	coversUpToId: string;
-};
-
-export type ObservationsDroppedEntryData = {
-	observationIds: string[];
 	coversUpToId: string;
 };
 
@@ -171,41 +144,28 @@ export type ReviewResult = WorkflowReviewProposal | SoftwareReviewProposal | Rev
 export type ReviewRequestEntryData = { request: StructuralReviewRequest };
 export type ReviewResultEntryData = { result: ReviewResult };
 
-export type MemoryLifecycleSnapshot = {
-	memoryId: string;
-	status: MemoryStatus;
-	recallIf?: string;
-	reason?: string;
-	becauseOfMemoryIds: string[];
-	replacementMemoryIds: string[];
-	changedAt?: number;
-};
-
+/** Full durable memory state at a compaction boundary. Bodies occur once in this archive. */
 export type MemoryArchive = {
 	observations: Observation[];
-	reflections: Reflection[];
-	lifecycle: MemoryLifecycleSnapshot[];
+	summaries: Summary[];
 };
 
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
 	version: 1;
 	fullFold: boolean;
-	/** Active memories injected by this compaction. */
+	/** Visible memories injected by this compaction. */
 	observations: Observation[];
-	reflections: Reflection[];
-	/** Complete durable memory state at this compaction boundary. */
+	summaries: Summary[];
+	/** Complete durable graph nodes at this compaction boundary. */
 	archive?: MemoryArchive;
-	/** Optional so compactions written before review results remain readable. */
+	/** Reviews remain recallable/searchable but are never automatically injected. */
 	reviews?: ReviewResult[];
 };
 
-export type V3MemoryCustomType =
+export type MemoryCoverageCustomType =
 	| typeof OM_OBSERVATIONS_RECORDED
-	| typeof OM_REFLECTIONS_RECORDED
-	| typeof OM_OBSERVATIONS_DROPPED
-	| typeof OM_REVIEW_REQUEST
-	| typeof OM_REVIEW_RESULT;
+	| typeof OM_SUMMARIZER_COMMIT;
 
 export function isRelevance(value: unknown): value is Relevance {
 	return typeof value === "string" && (RELEVANCE_VALUES as readonly string[]).includes(value);
@@ -220,7 +180,7 @@ export function observationRetention(observation: Observation): Retention {
 }
 
 export function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+	return typeof value === "string" && value.trim().length > 0;
 }
 
 export function isNonEmptyStringArray(value: unknown): value is string[] {
@@ -235,8 +195,16 @@ function isTokenCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object";
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasUniqueMemoryIds(value: unknown, minimum = 0): value is string[] {
+	return Array.isArray(value) && value.length >= minimum && value.every(isMemoryId) && new Set(value).size === value.length;
 }
 
 export function isObservation(value: unknown): value is Observation {
@@ -252,18 +220,12 @@ export function isObservation(value: unknown): value is Observation {
 	);
 }
 
-export function isReflection(value: unknown): value is Reflection {
+export function isSummary(value: unknown): value is Summary {
 	if (!isPlainRecord(value)) return false;
-	const legacySupport = isNonEmptyStringArray(value.supportingObservationIds);
-	const librarianSources = Array.isArray(value.sourceMemoryIds) && value.sourceMemoryIds.length >= 2 && value.sourceMemoryIds.every(isMemoryId);
-	return (
-		isMemoryId(value.id) &&
-		isNonEmptyString(value.content) &&
-		!/\r|\n/.test(value.content) &&
-		Array.isArray(value.supportingObservationIds) && value.supportingObservationIds.every(isMemoryId) &&
-		(legacySupport || librarianSources) &&
-		isTokenCount(value.tokenCount)
-	);
+	if (!isMemoryId(value.id) || !isNonEmptyString(value.content) || !isTokenCount(value.tokenCount)) return false;
+	if (!hasUniqueMemoryIds(value.sourceMemoryIds, 2) || !hasUniqueMemoryIds(value.consumedMemoryIds, 2)) return false;
+	const sourceIds = new Set(value.sourceMemoryIds);
+	return value.consumedMemoryIds.every((id) => sourceIds.has(id));
 }
 
 export function isObservationsRecordedData(value: unknown): value is ObservationsRecordedEntryData {
@@ -276,42 +238,18 @@ export function isObservationsRecordedData(value: unknown): value is Observation
 	);
 }
 
-export function isReflectionsRecordedData(value: unknown): value is ReflectionsRecordedEntryData {
+function isSummarizerCommitMetrics(value: unknown): value is SummarizerCommitMetrics {
 	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	return isCount(value.consumedMemoryCount) && isTokenCount(value.sourceTokens) &&
+		isTokenCount(value.summaryTokens) && isTokenCount(value.estimatedTokenReduction);
 }
 
-export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
+export function isSummarizerCommitData(value: unknown): value is SummarizerCommitEntryData {
 	if (!isPlainRecord(value)) return false;
-	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
-}
-
-export function isMemoryLifecycleAction(value: unknown): value is MemoryLifecycleAction {
-	if (!isPlainRecord(value) || !isNonEmptyStringArray(value.memoryIds) || !value.memoryIds.every(isMemoryId)) return false;
-	if (typeof value.createdAt !== "number" || !Number.isFinite(value.createdAt)) return false;
-	if (value.type === "makeInactive") {
-		return isNonEmptyString(value.recallIf) && isNonEmptyStringArray(value.becauseOfMemoryIds) && value.becauseOfMemoryIds.every(isMemoryId);
-	}
-	if (value.type === "makeActive") {
-		return isNonEmptyStringArray(value.becauseOfMemoryIds) && value.becauseOfMemoryIds.every(isMemoryId);
-	}
-	if (value.type === "delete") {
-		return isNonEmptyString(value.reason) && isNonEmptyStringArray(value.becauseOfMemoryIds) && value.becauseOfMemoryIds.every(isMemoryId) &&
-			Array.isArray(value.replacementMemoryIds) && value.replacementMemoryIds.every(isMemoryId);
-	}
-	return false;
-}
-
-export function isLibrarianCommitData(value: unknown): value is LibrarianCommitEntryData {
-	if (!isPlainRecord(value)) return false;
-	return value.version === 1 && Array.isArray(value.reflections) && value.reflections.every(isReflection) &&
-		Array.isArray(value.actions) && value.actions.every(isMemoryLifecycleAction) &&
-		isNonEmptyString(value.coversUpToId) && isNonEmptyString(value.summary) &&
-		typeof value.createdAt === "number" && Number.isFinite(value.createdAt);
+	return value.version === 1 && Array.isArray(value.summaries) && value.summaries.length > 0 &&
+		value.summaries.every(isSummary) && isNonEmptyString(value.coversUpToId) &&
+		typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
+		typeof value.completedWithDone === "boolean" && isSummarizerCommitMetrics(value.metrics);
 }
 
 function isReviewScope(value: unknown): value is ReviewScope {
@@ -350,36 +288,19 @@ export function isReviewResult(value: unknown): value is ReviewResult {
 		isNonEmptyString(value.preservedBehavior) && isNonEmptyString(value.expectedEffect) && isNonEmptyString(value.uncertainties);
 }
 
-function isMemoryLifecycleSnapshot(value: unknown): value is MemoryLifecycleSnapshot {
-	if (!isPlainRecord(value) || !isMemoryId(value.memoryId)) return false;
-	if (value.status !== "active" && value.status !== "inactive" && value.status !== "deleted") return false;
-	return (value.recallIf === undefined || isNonEmptyString(value.recallIf)) &&
-		(value.reason === undefined || isNonEmptyString(value.reason)) &&
-		Array.isArray(value.becauseOfMemoryIds) && value.becauseOfMemoryIds.every(isMemoryId) &&
-		Array.isArray(value.replacementMemoryIds) && value.replacementMemoryIds.every(isMemoryId) &&
-		(value.changedAt === undefined || (typeof value.changedAt === "number" && Number.isFinite(value.changedAt)));
-}
-
 function isMemoryArchive(value: unknown): value is MemoryArchive {
 	if (!isPlainRecord(value)) return false;
 	return Array.isArray(value.observations) && value.observations.every(isObservation) &&
-		Array.isArray(value.reflections) && value.reflections.every(isReflection) &&
-		Array.isArray(value.lifecycle) && value.lifecycle.every(isMemoryLifecycleSnapshot);
+		Array.isArray(value.summaries) && value.summaries.every(isSummary);
 }
 
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
-	return (
-		value.type === OM_FOLDED &&
-		value.version === 1 &&
-		typeof value.fullFold === "boolean" &&
-		Array.isArray(value.observations) &&
-		value.observations.every(isObservation) &&
-		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection) &&
+	return value.type === OM_FOLDED && value.version === 1 && typeof value.fullFold === "boolean" &&
+		Array.isArray(value.observations) && value.observations.every(isObservation) &&
+		Array.isArray(value.summaries) && value.summaries.every(isSummary) &&
 		(value.archive === undefined || isMemoryArchive(value.archive)) &&
-		(value.reviews === undefined || (Array.isArray(value.reviews) && value.reviews.every(isReviewResult)))
-	);
+		(value.reviews === undefined || (Array.isArray(value.reviews) && value.reviews.every(isReviewResult)));
 }
 
 export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
@@ -390,28 +311,12 @@ export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED && isObservationsRecordedData(entry.data);
 }
 
-export function isReflectionsRecordedEntry(entry: Entry): entry is Entry & {
+export function isSummarizerCommitEntry(entry: Entry): entry is Entry & {
 	type: "custom";
-	customType: typeof OM_REFLECTIONS_RECORDED;
-	data: ReflectionsRecordedEntryData;
+	customType: typeof OM_SUMMARIZER_COMMIT;
+	data: SummarizerCommitEntryData;
 } {
-	return entry.type === "custom" && entry.customType === OM_REFLECTIONS_RECORDED && isReflectionsRecordedData(entry.data);
-}
-
-export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
-	type: "custom";
-	customType: typeof OM_OBSERVATIONS_DROPPED;
-	data: ObservationsDroppedEntryData;
-} {
-	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
-}
-
-export function isLibrarianCommitEntry(entry: Entry): entry is Entry & {
-	type: "custom";
-	customType: typeof OM_LIBRARIAN_COMMIT;
-	data: LibrarianCommitEntryData;
-} {
-	return entry.type === "custom" && entry.customType === OM_LIBRARIAN_COMMIT && isLibrarianCommitData(entry.data);
+	return entry.type === "custom" && entry.customType === OM_SUMMARIZER_COMMIT && isSummarizerCommitData(entry.data);
 }
 
 export function isReviewRequestEntry(entry: Entry): entry is Entry & {
@@ -435,30 +340,13 @@ export function buildObservationsRecordedData(
 	coversUpToId: string,
 ): ObservationsRecordedEntryData | undefined {
 	if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observations, coversUpToId };
+	const candidate = { observations, coversUpToId };
+	return isObservationsRecordedData(candidate) ? candidate : undefined;
 }
 
-export function buildReflectionsRecordedData(
-	reflections: Reflection[],
-	coversUpToId: string,
-): ReflectionsRecordedEntryData | undefined {
-	if (!isNonEmptyString(coversUpToId)) return undefined;
-	// Legacy reflector entries may contain an empty successful-pass checkpoint.
-	// Keep accepting that shape so existing session ledgers remain readable.
-	return { reflections, coversUpToId };
-}
-
-export function buildObservationsDroppedData(
-	observationIds: string[],
-	coversUpToId: string,
-): ObservationsDroppedEntryData | undefined {
-	if (observationIds.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observationIds, coversUpToId };
-}
-
-export function buildLibrarianCommitData(
-	data: Omit<LibrarianCommitEntryData, "version">,
-): LibrarianCommitEntryData | undefined {
-	const candidate: LibrarianCommitEntryData = { version: 1, ...data };
-	return isLibrarianCommitData(candidate) ? candidate : undefined;
+export function buildSummarizerCommitData(
+	data: Omit<SummarizerCommitEntryData, "version">,
+): SummarizerCommitEntryData | undefined {
+	const candidate: SummarizerCommitEntryData = { version: 1, ...data };
+	return isSummarizerCommitData(candidate) ? candidate : undefined;
 }

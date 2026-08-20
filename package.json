@@ -41,7 +41,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
-    "test:e2e": "node tests/e2e/rpc-contemplator.mjs && node tests/e2e/rpc-librarian.mjs && node tests/e2e/rpc-delivery.mjs && node tests/e2e/rpc-restore-review.mjs && node tests/e2e/rpc-compaction.mjs && node tests/e2e/rpc-compaction-resilience.mjs && node tests/e2e/rpc-memory-edges.mjs && node tests/e2e/rpc-routing-isolation.mjs"
+    "test:e2e": "node tests/e2e/rpc-contemplator.mjs && node tests/e2e/rpc-summarizer.mjs && node tests/e2e/rpc-delivery.mjs && node tests/e2e/rpc-restore-review.mjs && node tests/e2e/rpc-compaction.mjs && node tests/e2e/rpc-compaction-resilience.mjs && node tests/e2e/rpc-memory-edges.mjs && node tests/e2e/rpc-routing-isolation.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

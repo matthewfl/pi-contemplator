@@ -43,7 +43,7 @@ const server = new ModelServer(async (request, res) => {
 			assert(id, `Collision search returned no id: ${toolText}`);
 			return sendSse(res, { tool: { id: "recall-collision", name: "recall", arguments: { id } } });
 		}
-		state.recallCollision = /matched multiple observations|"collision":true/.test(toolText) && toolText.includes(MARKER);
+		state.recallCollision = /matched (?:multiple observations|more than one durable record)|"collision":true/.test(toolText) && toolText.includes(MARKER);
 		if (!state.recallCollision) console.error("Recall tool transcript:", toolText);
 		assert(state.recallCollision, `Recall did not safely return all colliding observation sources: ${toolText}`);
 		return sendSse(res, { text: "MEMORY_EDGE_COMPLETE" });

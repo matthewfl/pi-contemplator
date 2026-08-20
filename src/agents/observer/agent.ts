@@ -16,7 +16,7 @@ interface RunObserverArgs {
 	model: Model<any>;
 	apiKey: string;
 	headers?: Record<string, string>;
-	priorReflections: string[];
+	priorSummaries?: string[];
 	priorObservations: string[];
 	chunk: string;
 	allowedSourceEntryIds: string[];
@@ -93,7 +93,7 @@ export function normalizeSourceEntryIds(
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
+	const { model, apiKey, headers, priorSummaries = [], priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -150,13 +150,13 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 	const now = nowTimestamp();
 	const userText = `Current local time: ${now}
 
-CURRENT REFLECTIONS:
-${joinOrEmpty(priorReflections)}
+CURRENT SUMMARIES:
+${joinOrEmpty(priorSummaries)}
 
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current summaries or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;

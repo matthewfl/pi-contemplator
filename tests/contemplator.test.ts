@@ -61,7 +61,7 @@ function setup(initialEntries: TestEntry[] = []) {
 		...runtime.config,
 		contemplatorEnabled: true,
 		contemplatorMinNewObservations: 1,
-		contemplatorMinNewReflections: 1,
+		contemplatorMinNewSummaries: 1,
 		contemplatorMinTurns: 1,
 		passive: false,
 	};
@@ -325,7 +325,7 @@ describe("Contemplator lifecycle", () => {
 		const harness = setup(branchA);
 		harness.fire("session_start");
 		const state = harness.contemplator as any;
-		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], reflections: [] };
+		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], summaries: [] };
 		state.turnsSinceRun = 9;
 		state.seenObservationIds.add("aaaaaaaaaaaa");
 

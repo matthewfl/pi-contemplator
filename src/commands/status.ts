@@ -68,18 +68,15 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const drift = diffProjection(visible, full);
 
 			const visibleObservationTokens = tokenSum(visible.observations);
-			const visibleReflectionTokens = tokenSum(visible.reflections);
-			const activeMemoryTokens = tokenSum([...folded.activeObservations, ...folded.activeReflections]);
+			const visibleSummaryTokens = tokenSum(visible.summaries);
+			const activeMemoryTokens = tokenSum([...folded.activeObservations, ...folded.activeSummaries]);
 			const observationLine = appendSuffixes(
-				`Observations: ${folded.observations.length} recorded / ${folded.deletedObservations.length} deleted / ${folded.inactiveObservations.length} inactive / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
-				[
-					addedSuffix(drift.observationsOnlyInFull.length),
-					removedSuffix(drift.droppedOnlyInFull.length),
-				],
+				`Observations: ${folded.observations.length} recorded / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
+				[addedSuffix(drift.observationsOnlyInFull.length), removedSuffix(drift.observationsOnlyInVisible.length)],
 			);
-			const reflectionLine = appendSuffixes(
-				`Reflections:  ${folded.reflections.length} recorded / ${folded.deletedReflections.length} deleted / ${folded.inactiveReflections.length} inactive / ${folded.activeReflections.length} active / ${visible.reflections.length} visible`,
-				[addedSuffix(drift.reflectionsOnlyInFull.length)],
+			const summaryLine = appendSuffixes(
+				`Summaries:    ${folded.summaries.length} recorded / ${folded.activeSummaries.length} active / ${visible.summaries.length} visible`,
+				[addedSuffix(drift.summariesOnlyInFull.length), removedSuffix(drift.summariesOnlyInVisible.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const compactionProgress = rawTokensSinceLastCompaction(entries);
@@ -94,28 +91,28 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				]
 				: [];
 
-			const librarianPendingCount = runtime.librarianPendingCount ?? 0;
-			const librarianPendingTokens = runtime.librarianPendingTokens ?? 0;
-			const librarianMinInterval = runtime.config.librarianMinIntervalMinutes ?? 10;
-			const librarianMaxDelay = runtime.config.librarianMaxDelayMinutes ?? 180;
-			const librarianNewTokenTrigger = runtime.config.librarianMinNewMemoryTokens ?? 5_000;
-			const librarianUrgentTokenTrigger = runtime.config.librarianMaxPendingMemoryTokens ?? 20_000;
-			const librarianPressureRatio = runtime.config.librarianPressureTriggerRatio ?? 1;
-			const librarianSamplingTokens = runtime.config.librarianSamplingThresholdTokens ?? 40_000;
+			const summarizerPendingCount = runtime.summarizerPendingCount;
+			const summarizerPendingTokens = runtime.summarizerPendingTokens;
+			const summarizerMinInterval = runtime.config.summarizerMinIntervalMinutes;
+			const summarizerMaxDelay = runtime.config.summarizerMaxDelayMinutes;
+			const summarizerNewTokenTrigger = runtime.config.summarizerMinNewMemoryTokens;
+			const summarizerUrgentTokenTrigger = runtime.config.summarizerMaxPendingMemoryTokens;
+			const summarizerPressureRatio = runtime.config.summarizerPressureTriggerRatio;
+			const summarizerSamplingTokens = runtime.config.summarizerSamplingThresholdTokens;
 			const lines = [
 				...passiveLines,
 				"── Memory ──",
 				observationLine,
-				reflectionLine,
+				summaryLine,
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Librarian backlog: ${librarianPendingCount.toLocaleString()} memories / ~${librarianPendingTokens.toLocaleString()} tokens${runtime.librarianDirtySince === undefined ? " (clean)" : " (dirty)"}`,
+				`Summarizer backlog: ${summarizerPendingCount.toLocaleString()} memories / ~${summarizerPendingTokens.toLocaleString()} tokens${runtime.summarizerDirtySince === undefined ? " (clean)" : " (dirty)"}`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
-				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} visible tokens`,
-				`Librarian:               ${runtime.config.librarianEnabled === false ? "disabled" : "enabled"}; min ${librarianMinInterval} active-m / max ${librarianMaxDelay} active-m / new-token trigger ${librarianNewTokenTrigger.toLocaleString()} / urgent ${librarianUrgentTokenTrigger.toLocaleString()} / pressure ${librarianPressureRatio}× / sample above ~${librarianSamplingTokens.toLocaleString()} tokens`,
+				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
+				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; min ${summarizerMinInterval} active-m / max ${summarizerMaxDelay} active-m / new-token trigger ${summarizerNewTokenTrigger.toLocaleString()} / urgent ${summarizerUrgentTokenTrigger.toLocaleString()} / pressure ${summarizerPressureRatio}× / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
@@ -171,22 +168,22 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			}
 			if (latestNotice) lines.push(`Last reviewer notice:  ${truncateStatusText(latestNotice)}`);
 
-			if (runtime.consolidationInFlight || runtime.librarianInFlight || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
+			if (runtime.consolidationInFlight || runtime.summarizerInFlight || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
 				lines.push("", "── In flight ──");
 				if (runtime.consolidationInFlight) {
 					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
 					lines.push(`Consolidation: running${phase}`);
 				}
-				if (runtime.librarianInFlight) lines.push("Librarian: running");
+				if (runtime.summarizerInFlight) lines.push("Summarizer: running");
 				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
 				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}
 
-			if (runtime.lastObserverError || runtime.lastLibrarianError) {
+			if (runtime.lastObserverError || runtime.lastSummarizerError) {
 				lines.push("", "── Last error ──");
 				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
-				if (runtime.lastLibrarianError) lines.push(`Librarian: ${runtime.lastLibrarianError}`);
+				if (runtime.lastSummarizerError) lines.push(`Summarizer: ${runtime.lastSummarizerError}`);
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

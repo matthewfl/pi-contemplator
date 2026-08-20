@@ -36,8 +36,8 @@ export type SessionSettings = Partial<Pick<Config,
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
-	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns"
-	| "librarianEnabled" | "librarianMinIntervalMinutes" | "librarianMaxDelayMinutes" | "librarianMinNewMemoryTokens" | "librarianMaxPendingMemoryTokens" | "librarianPressureTriggerRatio" | "librarianSamplingThresholdTokens"
+	| "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns"
+	| "summarizerEnabled" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerPressureTriggerRatio" | "summarizerSamplingThresholdTokens"
 	| "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
@@ -65,7 +65,7 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 	sessionManager: { getBranch(): readonly unknown[] };
 }
 
-export interface LibrarianRunView {
+export interface SummarizerRunView {
 	startedAt: number;
 	status: "running" | "completed" | "incomplete" | "failed";
 	messages: readonly unknown[];
@@ -118,22 +118,22 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (!source || typeof source !== "object") return;
 		const data = source as Record<string, unknown>;
 		const booleanKeys = [
-			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "librarianEnabled", "debugLog",
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "summarizerEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
-			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
-			"librarianMinIntervalMinutes", "librarianMaxDelayMinutes", "librarianMinNewMemoryTokens", "librarianMaxPendingMemoryTokens", "librarianSamplingThresholdTokens",
+			"contemplatorMinNewObservations", "contemplatorMinNewSummaries", "contemplatorMinTurns",
+			"summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes", "summarizerMinNewMemoryTokens", "summarizerMaxPendingMemoryTokens", "summarizerSamplingThresholdTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
 		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
-		for (const key of ["librarianMinIntervalMinutes", "librarianMaxDelayMinutes"] as const) {
+		for (const key of ["summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes"] as const) {
 			if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] >= 0) restored[key] = data[key];
 		}
 		if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
 		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
-		if (typeof data.librarianPressureTriggerRatio === "number" && Number.isFinite(data.librarianPressureTriggerRatio) && data.librarianPressureTriggerRatio > 0) restored.librarianPressureTriggerRatio = data.librarianPressureTriggerRatio;
+		if (typeof data.summarizerPressureTriggerRatio === "number" && Number.isFinite(data.summarizerPressureTriggerRatio) && data.summarizerPressureTriggerRatio > 0) restored.summarizerPressureTriggerRatio = data.summarizerPressureTriggerRatio;
 		if (data.model === null) restored.model = null;
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;
@@ -155,15 +155,15 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	reviewInFlight = false;
 	reviewPromise: Promise<void> | null = null;
-	librarianInFlight = false;
-	librarianPromise: Promise<void> | null = null;
+	summarizerInFlight = false;
+	summarizerPromise: Promise<void> | null = null;
 	/** Cumulative main-agent active time when the current backlog first became dirty. */
-	librarianDirtySince: number | undefined;
-	/** Cumulative main-agent active time when the previous librarian pass started. */
-	librarianLastStartedAt: number | undefined;
-	librarianPendingTokens = 0;
-	librarianPendingCount = 0;
-	librarianFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
+	summarizerDirtySince: number | undefined;
+	/** Cumulative main-agent active time when the previous summarizer pass started. */
+	summarizerLastStartedAt: number | undefined;
+	summarizerPendingTokens = 0;
+	summarizerPendingCount = 0;
+	summarizerFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private contextGeneration = 0;
@@ -179,9 +179,9 @@ export class Runtime {
 	compactionResumeTimer: ReturnType<typeof setTimeout> | undefined;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
-	lastLibrarianError: string | undefined;
-	/** Most recent librarian transcript in this extension launch/session context. */
-	lastLibrarianRun: LibrarianRunView | undefined;
+	lastSummarizerError: string | undefined;
+	/** Most recent summarizer transcript in this extension launch/session context. */
+	lastSummarizerRun: SummarizerRunView | undefined;
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
 	/** Accumulate usage from one background LLM call. */
@@ -246,12 +246,12 @@ export class Runtime {
 		this.compactionResumeGeneration += 1;
 		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
 		this.compactionResumeTimer = undefined;
-		this.librarianDirtySince = undefined;
-		this.librarianLastStartedAt = undefined;
-		this.librarianPendingTokens = 0;
-		this.librarianPendingCount = 0;
-		this.librarianFairness.clear();
-		this.lastLibrarianRun = undefined;
+		this.summarizerDirtySince = undefined;
+		this.summarizerLastStartedAt = undefined;
+		this.summarizerPendingTokens = 0;
+		this.summarizerPendingCount = 0;
+		this.summarizerFairness.clear();
+		this.lastSummarizerRun = undefined;
 	}
 
 	getContextGeneration(): number {
@@ -312,31 +312,31 @@ export class Runtime {
 		return promise;
 	}
 
-	markLibrarianDirty(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
-		this.librarianDirtySince = this.librarianDirtySince === undefined
+	markSummarizerDirty(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
+		this.summarizerDirtySince = this.summarizerDirtySince === undefined
 			? agentActiveTimeMs
-			: Math.min(this.librarianDirtySince, agentActiveTimeMs);
-		this.librarianPendingCount += Math.max(0, memoryCount);
-		this.librarianPendingTokens += Math.max(0, memoryTokens);
+			: Math.min(this.summarizerDirtySince, agentActiveTimeMs);
+		this.summarizerPendingCount += Math.max(0, memoryCount);
+		this.summarizerPendingTokens += Math.max(0, memoryTokens);
 	}
 
-	clearLibrarianDirty(): void {
-		this.librarianDirtySince = undefined;
-		this.librarianPendingCount = 0;
-		this.librarianPendingTokens = 0;
+	clearSummarizerDirty(): void {
+		this.summarizerDirtySince = undefined;
+		this.summarizerPendingCount = 0;
+		this.summarizerPendingTokens = 0;
 	}
 
-	launchLibrarianTask(ctx: LaunchCtx, work: () => Promise<void>, agentActiveTimeMs: number): Promise<void> | undefined {
-		if (this.librarianInFlight) return undefined;
-		this.librarianInFlight = true;
-		this.librarianLastStartedAt = agentActiveTimeMs;
-		this.lastLibrarianError = undefined;
-		const promise = this.launchTrackedTask(ctx, "librarian", work, (error) => {
-			this.librarianInFlight = false;
-			this.lastLibrarianError = error;
-			if (this.librarianPromise === promise) this.librarianPromise = null;
+	launchSummarizerTask(ctx: LaunchCtx, work: () => Promise<void>, agentActiveTimeMs: number): Promise<void> | undefined {
+		if (this.summarizerInFlight) return undefined;
+		this.summarizerInFlight = true;
+		this.summarizerLastStartedAt = agentActiveTimeMs;
+		this.lastSummarizerError = undefined;
+		const promise = this.launchTrackedTask(ctx, "summarizer", work, (error) => {
+			this.summarizerInFlight = false;
+			this.lastSummarizerError = error;
+			if (this.summarizerPromise === promise) this.summarizerPromise = null;
 		});
-		this.librarianPromise = promise;
+		this.summarizerPromise = promise;
 		return promise;
 	}
 

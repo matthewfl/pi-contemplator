@@ -1,4 +1,4 @@
-import type { LibrarianRunView } from "../runtime.js";
+import type { SummarizerRunView } from "../runtime.js";
 
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
@@ -34,17 +34,17 @@ function estimateTokens(value: unknown): number {
 	return Math.max(1, Math.ceil(JSON.stringify(value).length / 4));
 }
 
-/** Render the most recent launch-local librarian transcript. */
-export function renderLibrarian(run: LibrarianRunView | undefined): string {
-	if (!run) return `${DIM}LIBRARIAN${RESET}\n\n${DIM}Librarian has not run yet during this launch.${RESET}`;
+/** Render the most recent launch-local summarizer transcript. */
+export function renderSummarizer(run: SummarizerRunView | undefined): string {
+	if (!run) return `${DIM}SUMMARIZER${RESET}\n\n${DIM}Summarizer has not run yet during this launch.${RESET}`;
 	const messages = run.messages.filter((message): message is StoredMessage => !!message && typeof message === "object");
 	const totalTokens = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 	const lines = [
-		`${DIM}LIBRARIAN · ${run.status} · ${messages.length} messages · ~${totalTokens.toLocaleString()} estimated tokens${RESET}`,
+		`${DIM}SUMMARIZER · ${run.status} · ${messages.length} messages · ~${totalTokens.toLocaleString()} estimated tokens${RESET}`,
 		`${DIM}Started ${new Date(run.startedAt).toISOString()}${RESET}`,
 		"",
 	];
-	if (messages.length === 0) lines.push(`${DIM}(no librarian messages captured yet)${RESET}`);
+	if (messages.length === 0) lines.push(`${DIM}(no summarizer messages captured yet)${RESET}`);
 	for (const [index, message] of messages.entries()) {
 		if (index > 0) lines.push("");
 		const role = typeof message.role === "string" ? message.role : "unknown";

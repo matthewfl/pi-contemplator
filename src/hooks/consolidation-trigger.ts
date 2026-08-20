@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { newMemoryIdsSinceLibrarianCoverage, runLibrarian } from "../agents/librarian/agent.js";
+import { newMemoryIdsSinceSummarizerCoverage, runSummarizer } from "../agents/summarizer/agent.js";
 import { runObserver } from "../agents/observer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
-	OM_LIBRARIAN_COMMIT,
+	OM_SUMMARIZER_COMMIT,
 	OM_OBSERVATIONS_RECORDED,
 	agentActiveTimeMs,
 	buildObservationsRecordedData,
@@ -16,7 +16,7 @@ import {
 	latestCoverageIndex,
 	observationToSummaryLine,
 	rawTokensSinceObservationCoverage,
-	reflectionToSummaryLine,
+	summaryToSummaryLine,
 	type Entry,
 } from "../session-ledger/index.js";
 
@@ -81,18 +81,18 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	};
 	pi.on("agent_start", (event, ctx) => {
 		launch(event, ctx);
-		syncAndScheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
 	pi.on("turn_end", (event, ctx) => {
 		launch(event, ctx);
-		syncAndScheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
 	runtime.setAgentActivityListener((ctx) => {
 		runtime.ensureConfig(ctx.cwd);
 		// Contemplator calls this only after the elapsed interval is durable, avoiding
 		// any dependence on ordering between Pi event handlers. Do not perform a full
 		// new-memory scan at every checkpoint; observer completion marks dirty work.
-		scheduleLibrarian(pi, runtime, ctx as ConsolidationCtx);
+		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
 }
 
@@ -195,35 +195,32 @@ export async function runConsolidationPipeline(
 	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
 	const added = afterFold.observations.filter((item) => !beforeIds.has(item.id));
-	if (added.length > 0 && typeof (runtime as Runtime & { markLibrarianDirty?: unknown }).markLibrarianDirty === "function") {
+	if (added.length > 0) {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
-		runtime.markLibrarianDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0), agentActiveTimeMs(entries));
-		scheduleLibrarian(pi, runtime, ctx);
+		runtime.markSummarizerDirty(added.length, added.reduce((sum, item) => sum + item.tokenCount, 0), agentActiveTimeMs(entries));
+		scheduleSummarizer(pi, runtime, ctx);
 	}
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
 }
 
 function activeMemoryTokens(entries: Entry[]): number {
 	const folded = foldLedger(entries);
-	return [...folded.activeObservations, ...folded.activeReflections].reduce((sum, item) => sum + item.tokenCount, 0);
+	return [...folded.activeObservations, ...folded.activeSummaries].reduce((sum, item) => sum + item.tokenCount, 0);
 }
 
-export function librarianScheduleDelayMs(runtime: Runtime, activeTokens: number, agentTimeMs: number): number | undefined {
-	if (!runtime.config.librarianEnabled || runtime.librarianDirtySince === undefined) return undefined;
+export function summarizerScheduleDelayMs(runtime: Runtime, activeTokens: number, agentTimeMs: number): number | undefined {
+	if (!runtime.config.summarizerEnabled || runtime.summarizerDirtySince === undefined) return undefined;
 	const minute = 60_000;
-	// A very fast session can fill the active pool before the normal active-time
-	// interval expires. The emergency pending-token threshold therefore bypasses
-	// the minimum interval and makes the next scheduling checkpoint ready now.
-	if (runtime.librarianPendingTokens >= runtime.config.librarianMaxPendingMemoryTokens) return 0;
-	const minimumAt = (runtime.librarianLastStartedAt ?? Number.NEGATIVE_INFINITY) + runtime.config.librarianMinIntervalMinutes * minute;
-	const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.librarianPressureTriggerRatio;
-	const thresholdReady = runtime.librarianPendingTokens >= runtime.config.librarianMinNewMemoryTokens || activeTokens >= pressureThreshold;
-	const maximumAt = runtime.librarianDirtySince + runtime.config.librarianMaxDelayMinutes * minute;
+	if (runtime.summarizerPendingTokens >= runtime.config.summarizerMaxPendingMemoryTokens) return 0;
+	const minimumAt = (runtime.summarizerLastStartedAt ?? Number.NEGATIVE_INFINITY) + runtime.config.summarizerMinIntervalMinutes * minute;
+	const pressureThreshold = runtime.config.observationsPoolTargetTokens * runtime.config.summarizerPressureTriggerRatio;
+	const thresholdReady = runtime.summarizerPendingTokens >= runtime.config.summarizerMinNewMemoryTokens || activeTokens >= pressureThreshold;
+	const maximumAt = runtime.summarizerDirtySince + runtime.config.summarizerMaxDelayMinutes * minute;
 	const desiredAt = thresholdReady ? agentTimeMs : maximumAt;
 	return Math.max(0, Math.max(minimumAt, desiredAt) - agentTimeMs);
 }
 
-export function librarianDirtySinceAgentTime(entries: Entry[], newIds: ReadonlySet<string>): number {
+export function summarizerDirtySinceAgentTime(entries: Entry[], newIds: ReadonlySet<string>): number {
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i];
 		if (entry.type !== "custom" || entry.customType !== OM_OBSERVATIONS_RECORDED || !entry.data || typeof entry.data !== "object") continue;
@@ -235,43 +232,38 @@ export function librarianDirtySinceAgentTime(entries: Entry[], newIds: ReadonlyS
 	return agentActiveTimeMs(entries);
 }
 
-function syncAndScheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
 	runtime.ensureConfig(ctx.cwd);
-	if (runtime.config.passive || !runtime.config.librarianEnabled) return;
-	if (runtime.librarianDirtySince === undefined) {
+	if (runtime.config.passive || !runtime.config.summarizerEnabled) return;
+	if (runtime.summarizerDirtySince === undefined) {
 		const entries = ctx.sessionManager.getBranch() as Entry[];
-		const newIds = newMemoryIdsSinceLibrarianCoverage(entries);
+		const newIds = newMemoryIdsSinceSummarizerCoverage(entries);
 		if (newIds.size > 0) {
 			const folded = foldLedger(entries);
 			let tokens = 0;
-			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? folded.reflectionsById.get(id)?.tokenCount ?? 0;
-			// Reconstruct the active-time age of pending work after reload/session
-			// restore. Starting the clock at restore time would postpone an already-old
-			// backlog by a full maximum delay on every extension launch.
-			runtime.markLibrarianDirty(newIds.size, tokens, librarianDirtySinceAgentTime(entries, newIds));
+			for (const id of newIds) tokens += folded.observationsById.get(id)?.tokenCount ?? 0;
+			runtime.markSummarizerDirty(newIds.size, tokens, summarizerDirtySinceAgentTime(entries, newIds));
 		}
 	}
-	scheduleLibrarian(pi, runtime, ctx);
+	scheduleSummarizer(pi, runtime, ctx);
 }
 
-export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, agentTimeOverride?: number): void {
-	if (runtime.config.passive || !runtime.config.librarianEnabled || runtime.librarianInFlight || runtime.librarianDirtySince === undefined) return;
+export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, agentTimeOverride?: number): void {
+	if (runtime.config.passive || !runtime.config.summarizerEnabled || runtime.summarizerInFlight || runtime.summarizerDirtySince === undefined) return;
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const agentTime = agentTimeOverride ?? agentActiveTimeMs(entries);
-	const remainingActiveTime = librarianScheduleDelayMs(runtime, activeMemoryTokens(entries), agentTime);
+	const remainingActiveTime = summarizerScheduleDelayMs(runtime, activeMemoryTokens(entries), agentTime);
 	if (remainingActiveTime === undefined || remainingActiveTime > 0) return;
-	// Deliberately do not use a wall-clock timer here. Scheduling is revisited at
-	// main-agent activity checkpoints, so time spent waiting for the user cannot
-	// make a normal librarian pass eligible. The urgent token trigger above still
-	// launches immediately when observer output creates a dangerous backlog.
+	// No wall-clock timer: scheduling is revisited at main-agent activity
+	// checkpoints, so idle time waiting for the user never ages this work.
 	const generation = runtime.getContextGeneration();
-	const capturedCount = runtime.librarianPendingCount;
-	const capturedTokens = runtime.librarianPendingTokens;
-	const capturedDirtySince = runtime.librarianDirtySince;
-	runtime.clearLibrarianDirty();
-	const runId = `librarian-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+	const capturedCount = runtime.summarizerPendingCount;
+	const capturedTokens = runtime.summarizerPendingTokens;
+	const capturedDirtySince = runtime.summarizerDirtySince;
+	runtime.clearSummarizerDirty();
+	const runId = `summarizer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const sessionMetadata = debugSessionMetadata(ctx);
-	void runtime.launchLibrarianTask(ctx, async () => withDebugLogContext({
+	void runtime.launchSummarizerTask(ctx, async () => withDebugLogContext({
 		enabled: runtime.config.debugLog === true,
 		cwd: ctx.cwd,
 		...sessionMetadata,
@@ -279,65 +271,57 @@ export function scheduleLibrarian(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	}, async () => {
 		let completed = false;
 		const startedAt = Date.now();
-		runtime.lastLibrarianRun = { startedAt, status: "running", messages: [] };
+		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
 		try {
 			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
 			if (!resolved.ok) {
-				debugLog("librarian.model_unavailable", { reason: resolved.reason });
-				runtime.lastLibrarianRun = { startedAt, status: "failed", messages: [], error: resolved.reason };
+				debugLog("summarizer.model_unavailable", { reason: resolved.reason });
+				runtime.lastSummarizerRun = { startedAt, status: "failed", messages: [], error: resolved.reason };
 				return;
 			}
 			if (generation !== runtime.getContextGeneration()) return;
-			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: librarian running", "info");
-			const result = await runLibrarian({
+			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: summarizer running", "info");
+			const result = await runSummarizer({
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
 				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
 				targetTokens: runtime.config.observationsPoolTargetTokens,
-				samplingThresholdTokens: runtime.config.librarianSamplingThresholdTokens,
-				fairness: runtime.librarianFairness,
+				samplingThresholdTokens: runtime.config.summarizerSamplingThresholdTokens,
+				fairness: runtime.summarizerFairness,
 				maxTurns: runtime.config.agentMaxTurns,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
-					if (generation === runtime.getContextGeneration()) {
-						runtime.lastLibrarianRun = { startedAt, status: "running", messages: messages.slice() };
-					}
+					if (generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };
 				},
 			});
 			if (generation !== runtime.getContextGeneration()) return;
-			if (!result.completed || !result.commit) {
-				runtime.lastLibrarianRun = { ...runtime.lastLibrarianRun!, status: "incomplete" };
+			if (!result.completed) {
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "incomplete" };
 				return;
 			}
-			pi.appendEntry(OM_LIBRARIAN_COMMIT, result.commit);
 			completed = true;
-			runtime.lastLibrarianRun = { ...runtime.lastLibrarianRun!, status: "completed", summary: result.commit.summary };
-			debugLog("librarian.appended", { reflections: result.commit.reflections.length, actions: result.commit.actions.length, sampled: result.sample?.sampled ?? false });
-			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: librarian completed — ${result.commit.reflections.length} reflection${result.commit.reflections.length === 1 ? "" : "s"}, ${result.commit.actions.length} lifecycle action${result.commit.actions.length === 1 ? "" : "s"}`, "info");
-			runtime.notifyMemoryUpdate(ctx);
+			if (result.commit) {
+				pi.appendEntry(OM_SUMMARIZER_COMMIT, result.commit);
+				const summary = `${result.commit.summaries.length} summaries consumed ${result.commit.metrics.consumedMemoryCount} memories, reducing visible memory by ~${result.commit.metrics.estimatedTokenReduction.toLocaleString()} tokens.`;
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
+				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: summarizer completed — ${summary}`, "info");
+				runtime.notifyMemoryUpdate(ctx);
+			} else {
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary: "No safe summaries were created." };
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: summarizer completed — no safe summaries", "info");
+			}
 		} catch (error) {
-			if (generation === runtime.getContextGeneration() && runtime.lastLibrarianRun) {
-				runtime.lastLibrarianRun = {
-					...runtime.lastLibrarianRun,
-					status: "failed",
-					error: error instanceof Error ? error.message : String(error),
-				};
+			if (generation === runtime.getContextGeneration() && runtime.lastSummarizerRun) {
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun, status: "failed", error: error instanceof Error ? error.message : String(error) };
 			}
 			throw error;
 		} finally {
-			if (!completed && generation === runtime.getContextGeneration()) {
-				// Preserve the original age of failed work. markLibrarianDirty takes
-				// the earlier clock if observations arrived while this run was active.
-				runtime.markLibrarianDirty(capturedCount, capturedTokens, capturedDirtySince);
-			}
-			// A failed/incomplete pass retains its original age but retries only after
-			// the next main-agent activity checkpoint; otherwise a zero minimum interval
-			// could spin forever without new evidence. Successful passes may immediately
-			// pick up observations that arrived while they were running.
+			if (!completed && generation === runtime.getContextGeneration()) runtime.markSummarizerDirty(capturedCount, capturedTokens, capturedDirtySince);
 			if (completed) setTimeout(() => {
-				if (generation === runtime.getContextGeneration()) scheduleLibrarian(pi, runtime, ctx);
+				if (generation === runtime.getContextGeneration()) scheduleSummarizer(pi, runtime, ctx);
 			}, 0);
 		}
 	}), agentTime);
@@ -394,7 +378,7 @@ async function runObserverStage(
 	}
 
 	const memory = fullProjection(entries);
-	const priorReflections = memory.reflections.map(reflectionToSummaryLine);
+	const priorSummaries = memory.summaries.map(summaryToSummaryLine);
 	const priorObservations = memory.observations.map(observationToSummaryLine);
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
@@ -407,7 +391,7 @@ async function runObserverStage(
 		coversUpToId,
 		sourceEntryIds,
 		sourceEntryCount: sourceEntryIds.length,
-		priorReflections: priorReflections.length,
+		priorSummaries: priorSummaries.length,
 		priorObservations: priorObservations.length,
 	});
 
@@ -415,7 +399,7 @@ async function runObserverStage(
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,
-		priorReflections,
+		priorSummaries,
 		priorObservations,
 		chunk,
 		allowedSourceEntryIds: sourceEntryIds,

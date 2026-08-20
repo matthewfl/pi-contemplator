@@ -58,20 +58,20 @@ export interface Config {
 	/** Optional model override used only by short-lived structural reviewers. */
 	reviewerModel?: ConfiguredModel;
 	contemplatorMinNewObservations: number;
-	contemplatorMinNewReflections: number;
+	contemplatorMinNewSummaries: number;
 	contemplatorMinTurns: number;
-	/** Delayed stateless memory curator replacing reflector/dropper workers. */
-	librarianEnabled: boolean;
+	/** Delayed stateless loss-aware memory summarizer. */
+	summarizerEnabled: boolean;
 	/** Minimum cumulative main-agent active minutes between normal passes. */
-	librarianMinIntervalMinutes: number;
+	summarizerMinIntervalMinutes: number;
 	/** Maximum cumulative main-agent active minutes before pending work is due. */
-	librarianMaxDelayMinutes: number;
-	librarianMinNewMemoryTokens: number;
+	summarizerMaxDelayMinutes: number;
+	summarizerMinNewMemoryTokens: number;
 	/** Pending new-memory tokens that bypass the minimum run interval. */
-	librarianMaxPendingMemoryTokens: number;
-	librarianPressureTriggerRatio: number;
-	/** Rendered librarian-memory tokens available before pressure-valve sampling. */
-	librarianSamplingThresholdTokens: number;
+	summarizerMaxPendingMemoryTokens: number;
+	summarizerPressureTriggerRatio: number;
+	/** Rendered visible-memory tokens available before pressure-valve sampling. */
+	summarizerSamplingThresholdTokens: number;
 	debugLog: boolean;
 }
 
@@ -90,15 +90,15 @@ export const DEFAULTS: Config = {
 	showContemplatorMessages: true,
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
-	contemplatorMinNewReflections: 1,
+	contemplatorMinNewSummaries: 1,
 	contemplatorMinTurns: 10,
-	librarianEnabled: true,
-	librarianMinIntervalMinutes: 10,
-	librarianMaxDelayMinutes: 180,
-	librarianMinNewMemoryTokens: 5_000,
-	librarianMaxPendingMemoryTokens: 20_000,
-	librarianPressureTriggerRatio: 1,
-	librarianSamplingThresholdTokens: 40_000,
+	summarizerEnabled: true,
+	summarizerMinIntervalMinutes: 10,
+	summarizerMaxDelayMinutes: 180,
+	summarizerMinNewMemoryTokens: 5_000,
+	summarizerMaxPendingMemoryTokens: 20_000,
+	summarizerPressureTriggerRatio: 1,
+	summarizerSamplingThresholdTokens: 50_000,
 	debugLog: false,
 };
 
@@ -230,17 +230,17 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
-		"contemplatorMinNewReflections",
+		"contemplatorMinNewSummaries",
 		"contemplatorMinTurns",
-		"librarianMinNewMemoryTokens",
-		"librarianMaxPendingMemoryTokens",
-		"librarianSamplingThresholdTokens",
+		"summarizerMinNewMemoryTokens",
+		"summarizerMaxPendingMemoryTokens",
+		"summarizerSamplingThresholdTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
 		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
 	}
-	for (const key of ["librarianMinIntervalMinutes", "librarianMaxDelayMinutes"] as const) {
+	for (const key of ["summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes"] as const) {
 		const normalizedValue = nonNegativeIntegerOrUndefined(value[key]);
 		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
 	}
@@ -255,8 +255,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
 	if (typeof value.showContemplatorMessages === "boolean") normalized.showContemplatorMessages = value.showContemplatorMessages;
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
-	if (typeof value.librarianEnabled === "boolean") normalized.librarianEnabled = value.librarianEnabled;
-	if (typeof value.librarianPressureTriggerRatio === "number" && Number.isFinite(value.librarianPressureTriggerRatio) && value.librarianPressureTriggerRatio > 0) normalized.librarianPressureTriggerRatio = value.librarianPressureTriggerRatio;
+	if (typeof value.summarizerEnabled === "boolean") normalized.summarizerEnabled = value.summarizerEnabled;
+	if (typeof value.summarizerPressureTriggerRatio === "number" && Number.isFinite(value.summarizerPressureTriggerRatio) && value.summarizerPressureTriggerRatio > 0) normalized.summarizerPressureTriggerRatio = value.summarizerPressureTriggerRatio;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;

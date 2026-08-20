@@ -41,9 +41,7 @@ export function toolNames(body) {
 export function classify(body) {
 	const tools = toolNames(body);
 	if (tools.has("record_observations")) return "observer";
-	if (tools.has("update_memories") && tools.has("done") && tools.size === 2) return "librarian";
-	if (tools.has("record_reflections")) return "reflector";
-	if (tools.has("drop_observations")) return "dropper";
+	if (tools.has("summarize") && tools.has("fix_summary") && tools.has("done")) return "summarizer";
 	if (tools.has("send_probe")) return "contemplator";
 	if (tools.has("submit_workflow_proposal") || tools.has("submit_software_proposal") || tools.has("review_concluded_no_proposal")) return "reviewer";
 	return "main";
@@ -176,8 +174,8 @@ export function omSettings(overrides = {}) {
 		observeAfterTokens: 1, compactAfterTokens: 1000000,
 		agentMaxTurns: 8, model: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorEnabled: true, contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
-		contemplatorMinNewObservations: 1, contemplatorMinNewReflections: 1, contemplatorMinTurns: 1,
-		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true, librarianEnabled: false,
+		contemplatorMinNewObservations: 1, contemplatorMinNewSummaries: 1, contemplatorMinTurns: 1,
+		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true, summarizerEnabled: false,
 		reviewerModel: { provider: "e2e", id: "mock-model", thinking: "off" }, compactionObserverEnabled: false,
 		debugLog: true, ...overrides,
 	} };

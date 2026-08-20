@@ -14,7 +14,6 @@ const EXTENSION = join(ROOT, "src/index.ts");
 const PROBE_TEXT = "Memory evidence shows repeated assumptions; what direct check would distinguish the current approach from the alternative?";
 const PROBE_RESPONSE_TEXT = "PROBE_RESPONSE_WITH_DIRECT_CHECK_RECORDED_BY_MAIN_AGENT";
 const PROBE_FEEDBACK_OBSERVATION = "The contemplator probe reached the primary agent, which responded with a concrete direct-check acknowledgement.";
-const PIPELINE_REFLECTION_PREFIX = "E2E_LIBRARIAN_CRYSTALLIZED";
 const SLEEP_OUTPUT = "sleep-tool-finished:SCENARIO_SLEEP";
 const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_SLEEP", "SCENARIO_FEEDBACK", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
 const SCENARIO_NAMES = {
@@ -183,8 +182,8 @@ class MockModelServer {
 		const scenario = latestScenario(body);
 		const role = tools.has("record_observations")
 			? "observer"
-			: tools.has("update_memories") && tools.has("done") && tools.size === 2
-				? "librarian"
+			: tools.has("summarize") && tools.has("fix_summary") && tools.has("done")
+				? "summarizer"
 				: tools.has("send_probe")
 						? "contemplator"
 						: tools.has("submit_workflow_proposal") || tools.has("submit_software_proposal") || tools.has("review_concluded_no_proposal")
@@ -224,42 +223,6 @@ class MockModelServer {
 							retention: "contextual",
 							sourceEntryIds: isProbeFeedback ? sourceIds : [sourceIds[0]],
 						}],
-					},
-				},
-			});
-		}
-
-		if (role === "librarian") {
-			const requestText = (body.messages ?? []).map(messageText).join("\n");
-			if (hasToolResult) {
-				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
-				assert(!resultText.includes("Rejected:") && !/invalid arguments|validation/i.test(resultText), `Librarian staging call was rejected: ${resultText}`);
-				return sendSse(res, {
-					delayMs: 150,
-					tool: { id: `librarian-done-${this.requests.length}`, name: "done", arguments: {} },
-				});
-			}
-			const activeSection = requestText.split("ACTIVE MEMORIES").at(-1)?.split("INACTIVE MEMORY GROUPS")[0] ?? "";
-			// Match only rendered top-level active-memory lines. Reflection source
-			// lists may mention inactive memories that were not inspected this run.
-			const memoryIds = [...new Set([...requestText.matchAll(/^\[([a-f0-9]{12})\] (?:observation|reflection)\b/gm)].map((match) => match[1]))];
-			progress(`librarian: inspected ${memoryIds.length} active memory line(s)`);
-			if (memoryIds.length < 2) {
-				return sendSse(res, {
-					delayMs: 200,
-					tool: { id: `librarian-done-empty-${this.requests.length}`, name: "done", arguments: {} },
-				});
-			}
-			const feedbackSuffix = activeSection.includes(PROBE_FEEDBACK_OBSERVATION) ? `: ${PROBE_FEEDBACK_OBSERVATION}` : "";
-			return sendSse(res, {
-				delayMs: 200,
-				tool: {
-					id: `librarian-reflect-${scenario}-${this.requests.length}`,
-					name: "update_memories",
-					arguments: {
-						memories: memoryIds.slice(0, 2),
-						reflection_content: `${PIPELINE_REFLECTION_PREFIX}:${scenario}:${this.requests.length}${feedbackSuffix}`,
-						recall_if: `Recall when revisiting ${scenario ?? "the consolidated work"}`,
 					},
 				},
 			});
@@ -514,15 +477,15 @@ async function run() {
 				compactAfterTokens: 1000000,
 				observationsPoolMaxTokens: 2,
 				observationsPoolTargetTokens: 1,
-				// Librarian lifecycle is exercised in rpc-librarian.mjs. Keeping it
+				// Summary graph behavior is exercised in rpc-summarizer.mjs. Keeping it
 				// isolated avoids perturbing this suite's deliberate probe races.
-				librarianEnabled: false,
+				summarizerEnabled: false,
 				agentMaxTurns: 4,
 				model: { provider: "e2e", id: "mock-model", thinking: "off" },
 				contemplatorEnabled: true,
 				contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
 				contemplatorMinNewObservations: 1,
-				contemplatorMinNewReflections: 1,
+				contemplatorMinNewSummaries: 1,
 				contemplatorMinTurns: 1,
 				showWorkerNotifications: false,
 				showContemplatorMessages: true,
@@ -694,7 +657,7 @@ async function run() {
 		assert(customMessages.filter((entry) => entry.customType === "om.review.proposal").length === 1, "Expected exactly one proposal notice in the main conversation stream");
 		assert(!rpc.events.some((event) => event.type === "extension_error"), "The real Pi harness reported an extension error");
 		assert(server.requests.some((request) => request.role === "observer"), "Observer never reached the mock server");
-		assert(!server.requests.some((request) => request.role === "librarian" || request.role === "reflector" || request.role === "dropper"), "An isolated memory-curation worker unexpectedly reached this probe-race suite");
+		assert(!server.requests.some((request) => request.role === "summarizer"), "An isolated summarizer unexpectedly reached this probe-race suite");
 		assert(server.requests.some((request) => request.role === "contemplator"), "Contemplator never reached the mock server");
 		assert(server.requests.some((request) => request.role === "reviewer"), "Reviewer never reached the mock server");
 

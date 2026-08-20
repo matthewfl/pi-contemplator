@@ -64,7 +64,7 @@ async function passiveMode() {
 		await sleep(500);
 		assert(server.requests.length === 1 && server.requests[0].role === "main", `Passive mode launched workers: ${server.requests.map((r) => r.role).join(",")}`);
 		const entries = await pi.rpc.entries();
-		assert(!entries.some((entry) => /^om\.(observations|reflections|review)/.test(entry.customType ?? "")), "Passive mode persisted worker output");
+		assert(!entries.some((entry) => /^om\.(observations|summarizer|review)/.test(entry.customType ?? "")), "Passive mode persisted worker output");
 		await stopPi(pi); pi = undefined;
 	} finally {
 		if (pi?.child.exitCode === null) pi.child.kill("SIGKILL");

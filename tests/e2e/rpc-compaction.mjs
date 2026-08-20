@@ -243,7 +243,7 @@ async function launchPi({ workspace, project, agentDir, sessions, providerExtens
 			contemplatorEnabled,
 			contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
 			contemplatorMinNewObservations: 1,
-			contemplatorMinNewReflections: 1,
+			contemplatorMinNewSummaries: 1,
 			contemplatorMinTurns: 1,
 			showWorkerNotifications: false,
 			showContemplatorMessages: true,

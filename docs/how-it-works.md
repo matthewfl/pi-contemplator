@@ -2,13 +2,13 @@
 
 ## Event flow
 
-1. `agent_start` and `turn_end` evaluate observer work and synchronize librarian scheduling.
+1. `agent_start`, `turn_end`, and main-agent activity checkpoints evaluate background work.
 2. The observer serializes the oldest uncovered source entries, bounded by its input cap, and appends `om.observations.recorded`.
-3. Newly created memory ids mark the librarian dirty. Repeated ledger occurrences of the same content-addressed memory do not create duplicate librarian work.
-4. The librarian scheduler coalesces changes until its token threshold, pressure threshold, or maximum delay is reached, while respecting the minimum interval and a single-flight lock.
-5. A fresh librarian run receives active memories plus grouped inactive cues. It stages tool actions and must call `done`.
-6. A successful pass appends one atomic `om.librarian.commit`; an incomplete or failed pass appends nothing and restores captured dirty counters.
-7. Memory updates may independently wake the contemplator. Reviewer work runs under its own lock and does not block observer, librarian, contemplator, or primary-agent work.
+3. Newly created memory ids mark the summarizer dirty. Repeated ledger occurrences of the same content-addressed memory do not create duplicate work.
+4. The scheduler coalesces changes until its token threshold, pressure threshold, or maximum cumulative agent-active delay is reached, while respecting a minimum interval and single-flight lock.
+5. A fresh summarizer run receives selected active memories and creates strictly validated citation summaries.
+6. Accepted work appends one atomic `om.summarizer.commit`. Partial useful work is retained even if the run reaches its turn/output limit; an empty run writes no commit.
+7. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
 
 ## Observer coverage
 
@@ -16,35 +16,35 @@ Observer progress is source-addressed by `coversUpToId`. Input is drained oldest
 
 The cap is explicit `observerChunkMaxTokens` when configured, otherwise 20% of the resolved model context window (with a fallback). Empty observer output does not fake coverage, so the range can be retried with later context.
 
-## Librarian scheduling
+## Summarizer scheduling
 
-A dirty librarian backlog tracks newly created memory count, estimated tokens, and first-dirty time. A run becomes eligible when:
+A dirty backlog tracks newly created memory count, estimated tokens, and first-dirty cumulative main-agent active time. A run becomes eligible when:
 
-- pending memory tokens reach `librarianMinNewMemoryTokens`; or
-- active memory reaches `observationsPoolTargetTokens * librarianPressureTriggerRatio`; or
-- `librarianMaxDelayMinutes` elapses.
+- pending memory tokens reach `summarizerMinNewMemoryTokens`; or
+- active memory reaches `observationsPoolTargetTokens * summarizerPressureTriggerRatio`; or
+- `summarizerMaxDelayMinutes` of main-agent active time elapses.
 
-The scheduler normally waits until `librarianMinIntervalMinutes` after the prior start. However, if pending memory reaches `librarianMaxPendingMemoryTokens` (20k by default), it bypasses that wall-clock interval and runs as soon as the librarian's single-flight slot is available. This keeps very high-throughput sessions from filling memory faster than a time-only schedule can react. Zero-minute values are supported for tests or deliberately immediate operation. Updates coalesce while one run is active.
+The scheduler normally waits until `summarizerMinIntervalMinutes` of active time after the prior start. If pending memory reaches `summarizerMaxPendingMemoryTokens` (20k by default), it bypasses that minimum. Scheduling is revisited at activity checkpoints rather than with a wall-clock timer, so time waiting for the user does not age the backlog. Updates coalesce while one run is active.
 
-The active-memory target is advisory. Code does not force the librarian to remove a fixed count. Librarian input sampling is a separate safeguard: `librarianSamplingThresholdTokens` caps rendered memory input at 40,000 tokens by default.
+The target is advisory. Input sampling is a separate safety valve: `summarizerSamplingThresholdTokens` caps rendered memory input at 50,000 tokens by default.
 
-## Librarian transaction
+## Summarizer validation and commit
 
-The librarian starts from a ledger snapshot. All mutation tools stage changes in memory:
+The tools execute sequentially so each receipt is visible before the next mutation:
 
-- `record_reflection` is all-or-nothing and requires at least two valid, inspected sources. Its source disposition is `keepActive`, `makeInactive`, or `delete`; deletion requires a separate reason.
-- lifecycle batch tools accept valid targets even if some target ids are invalid, but shared evidence/dependency validation is all-or-nothing;
-- lifecycle changes require inspected observation evidence that follows the target state;
-- `make_active` expands an inactive alias and returns all restored memory bodies;
-- independent tool calls may execute in parallel, but `done` must be called alone in a later response after receipts are visible.
+- `summarize` can mark valid active memories `keep_verbatim` for this run and process multiple candidate summary strings;
+- each summary must use strict square-bracket citations, cite at least two newly consumable pre-run memories, and be no more than 90% of their estimated source tokens;
+- a memory already consumed by an earlier accepted candidate, marked keep-verbatim, or created during this run may still be cited, but does not count toward the two-source or reduction checks;
+- `fix_summary` atomically deletes or replaces only a summary created in the current run, updating which sources are consumed; and
+- `done` reports run statistics on its first call and completes on its second consecutive call.
 
-Up to three continuation invocations remind a model that stops without `done`. No terminal call means the whole staged transaction is discarded.
+Malformed candidates are rejected individually with actionable errors. Accepted candidates remain staged. If the model stops without `done`, continuation requests require tool use; useful accepted work is still returned and committed when limits are reached.
 
 ## Folding and projection
 
-`foldLedger` reconstructs observations, reflections, lifecycle state, active/inactive/deleted sets, and provenance pointers from legacy records plus librarian commits. Legacy dropper tombstones are interpreted as logical deletions for migration compatibility.
+`foldLedger` reconstructs all observations and summaries, then derives the consumption and citation graph from summarizer commits. Routine and compaction projections inject only unconsumed observations and summaries. Search and recall use the complete durable archive, including consumed records and review outcomes.
 
-Routine and compaction projections include only active memories. Search and recall use the full durable archive. Compaction details preserve the complete memory archive and lifecycle snapshots, allowing inactive and deleted memories to survive old raw-entry folding.
+Compaction details preserve the full memory graph so old raw ledger entries may be folded away without breaking search, recall, or provenance.
 
 ## Compaction
 
@@ -61,4 +61,4 @@ A contemplator probe is persisted as pending but displayed only after Pi accepts
 
 ## Concurrency
 
-Observer/consolidation, librarian, contemplator, and reviewer each have separate tracked tasks. The librarian is single-flight; reviews are serialized. None blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.
+Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer is single-flight; reviews are serialized. None blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.

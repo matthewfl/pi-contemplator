@@ -30,7 +30,7 @@ describe("runObserver", () => {
 	const baseArgs = {
 		model: {} as any,
 		apiKey: "test",
-		priorReflections: [],
+		priorSummaries: [],
 		priorObservations: [],
 		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
 		allowedSourceEntryIds: ["entry-a"],
@@ -49,7 +49,7 @@ describe("runObserver", () => {
 		expect(systemPrompt).toContain("Frame state changes as supersession");
 		expect(systemPrompt).toContain("sourceEntryIds");
 		expect(systemPrompt).toContain("zero observations");
-		expect(systemPrompt).toContain("The librarian considers relevance together with retention");
+		expect(systemPrompt).toContain("The summarizer considers relevance together with retention");
 		expect(systemPrompt).toContain("Retention horizons");
 		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
 		expect(systemPrompt).not.toContain("will NEVER be dropped");

@@ -1,21 +1,15 @@
 import {
-	isLibrarianCommitData,
 	isMemoryDetails,
-	isObservationsDroppedData,
 	isObservationsRecordedData,
-	isReflectionsRecordedData,
-	OM_LIBRARIAN_COMMIT,
-	OM_OBSERVATIONS_DROPPED,
-	OM_OBSERVATIONS_RECORDED,
-	OM_REFLECTIONS_RECORDED,
-	OM_REVIEW_RESULT,
 	isReviewResultEntry,
+	isSummarizerCommitData,
+	OM_OBSERVATIONS_RECORDED,
+	OM_REVIEW_RESULT,
+	OM_SUMMARIZER_COMMIT,
 	type Entry,
-	type MemoryLifecycleAction,
-	type MemoryStatus,
 	type Observation,
-	type Reflection,
 	type ReviewResult,
+	type Summary,
 } from "./types.js";
 
 export type FoldLedgerOptions = {
@@ -23,37 +17,19 @@ export type FoldLedgerOptions = {
 	upToEntryId?: string;
 };
 
-export type MemoryLifecycleState = {
-	status: MemoryStatus;
-	recallIf?: string;
-	reason?: string;
-	becauseOfMemoryIds: string[];
-	replacementMemoryIds: string[];
-	lastAction?: MemoryLifecycleAction["type"] | "legacyDrop";
-	changedAt?: number;
-};
-
 export type FoldedLedger = {
-	/** All first-valid observation records encountered through the fold boundary, including inactive/deleted observations. */
+	/** All first-valid durable observation records through the fold boundary. */
 	observations: Observation[];
 	activeObservations: Observation[];
-	inactiveObservations: Observation[];
-	deletedObservations: Observation[];
-	/** Legacy alias retained for callers and old status output. */
-	droppedObservationIds: Set<string>;
-	/** All first-valid reflection records encountered through the fold boundary. */
-	reflections: Reflection[];
-	activeReflections: Reflection[];
-	inactiveReflections: Reflection[];
-	deletedReflections: Reflection[];
+	/** All first-valid durable summary records through the fold boundary. */
+	summaries: Summary[];
+	activeSummaries: Summary[];
 	observationsById: Map<string, Observation>;
-	reflectionsById: Map<string, Reflection>;
-	memoryStatusById: Map<string, MemoryStatus>;
-	lifecycleByMemoryId: Map<string, MemoryLifecycleState>;
-	/** Direct source -> reflection consolidation pointers. */
-	mergedIntoByMemoryId: Map<string, string[]>;
-	/** Deleted memory -> replacement pointers. */
-	replacedByMemoryId: Map<string, string[]>;
+	summariesById: Map<string, Summary>;
+	/** Source -> every summary that cites it, including non-consuming citations. */
+	citedBySummaryIds: Map<string, string[]>;
+	/** Source -> the first summary that removed it from automatic visibility. */
+	consumedBySummaryId: Map<string, string>;
 	reviews: ReviewResult[];
 	reviewsById: Map<string, ReviewResult>;
 };
@@ -68,88 +44,54 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
 	return entry.type === "custom" && entry.customType === customType;
 }
 
-function appendUnique(map: Map<string, string[]>, key: string, values: readonly string[]): void {
-	const existing = map.get(key) ?? [];
-	const seen = new Set(existing);
-	for (const value of values) if (!seen.has(value)) {
-		seen.add(value);
-		existing.push(value);
+function appendUnique(map: Map<string, string[]>, key: string, value: string): void {
+	const existing = map.get(key);
+	if (!existing) {
+		map.set(key, [value]);
+		return;
 	}
-	map.set(key, existing);
-}
-
-function activeState(): MemoryLifecycleState {
-	return { status: "active", becauseOfMemoryIds: [], replacementMemoryIds: [] };
-}
-
-function applyAction(
-	action: MemoryLifecycleAction,
-	knownIds: Set<string>,
-	states: Map<string, MemoryLifecycleState>,
-	replacedByMemoryId: Map<string, string[]>,
-): void {
-	for (const memoryId of action.memoryIds) {
-		if (!knownIds.has(memoryId)) continue;
-		const prior = states.get(memoryId) ?? activeState();
-		if (action.type === "makeInactive") {
-			if (prior.status !== "active") continue;
-			states.set(memoryId, {
-				status: "inactive",
-				recallIf: action.recallIf,
-				becauseOfMemoryIds: [...action.becauseOfMemoryIds],
-				replacementMemoryIds: prior.replacementMemoryIds,
-				lastAction: action.type,
-				changedAt: action.createdAt,
-			});
-			continue;
-		}
-		if (action.type === "makeActive") {
-			if (prior.status !== "inactive") continue;
-			states.set(memoryId, {
-				status: "active",
-				becauseOfMemoryIds: [...action.becauseOfMemoryIds],
-				replacementMemoryIds: prior.replacementMemoryIds,
-				lastAction: action.type,
-				changedAt: action.createdAt,
-			});
-			continue;
-		}
-		if (prior.status === "deleted") continue;
-		appendUnique(replacedByMemoryId, memoryId, action.replacementMemoryIds);
-		states.set(memoryId, {
-			status: "deleted",
-			reason: action.reason,
-			becauseOfMemoryIds: [...action.becauseOfMemoryIds],
-			replacementMemoryIds: [...action.replacementMemoryIds],
-			lastAction: action.type,
-			changedAt: action.createdAt,
-		});
-	}
+	if (!existing.includes(value)) existing.push(value);
 }
 
 /**
- * Fold valid memory entries from the branch root through the target entry.
+ * Fold the append-only memory graph through a branch boundary.
  *
- * Old V3 reflection/drop records remain readable. New librarian commits are
- * atomic: their reflections are registered before their lifecycle actions are
- * applied, so a source deletion can point at a reflection from the same entry.
+ * Summary bodies occur once. Visibility and forward pointers are derived from
+ * their source/consumption edges. Compaction archives seed the same graph when
+ * older custom records are no longer present on the current branch.
  */
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {
 	const observationsById = new Map<string, Observation>();
-	const reflectionsById = new Map<string, Reflection>();
+	const summariesById = new Map<string, Summary>();
 	const reviewsById = new Map<string, ReviewResult>();
-	const states = new Map<string, MemoryLifecycleState>();
-	const mergedIntoByMemoryId = new Map<string, string[]>();
-	const replacedByMemoryId = new Map<string, string[]>();
-	const legacyDroppedIds = new Set<string>();
+	const citedBySummaryIds = new Map<string, string[]>();
+	const consumedBySummaryId = new Map<string, string>();
 	const endIdx = foldEndIndex(entries, options.upToEntryId);
 
-	const registerReflection = (reflection: Reflection): void => {
-		if (reflectionsById.has(reflection.id)) return;
-		reflectionsById.set(reflection.id, reflection);
-		states.set(reflection.id, activeState());
-		for (const sourceId of reflection.sourceMemoryIds ?? reflection.supportingObservationIds) {
-			appendUnique(mergedIntoByMemoryId, sourceId, [reflection.id]);
+	const registerObservation = (observation: Observation): void => {
+		if (!observationsById.has(observation.id)) observationsById.set(observation.id, observation);
+	};
+	const registerReview = (review: ReviewResult): void => {
+		if (!reviewsById.has(review.id)) reviewsById.set(review.id, review);
+	};
+	const registerSummaryNodes = (summaries: readonly Summary[]): Summary[] => {
+		const newlyRegistered: Summary[] = [];
+		for (const summary of summaries) {
+			if (summariesById.has(summary.id)) continue;
+			summariesById.set(summary.id, summary);
+			newlyRegistered.push(summary);
+		}
+		return newlyRegistered;
+	};
+	const registerSummaryEdges = (summaries: readonly Summary[]): void => {
+		for (const summary of summaries) {
+			for (const sourceId of summary.sourceMemoryIds) appendUnique(citedBySummaryIds, sourceId, summary.id);
+			for (const sourceId of summary.consumedMemoryIds) {
+				// Reviews are deliberately non-consumable. Unknown/corrupt edges also
+				// cannot hide a node. The first valid consumer wins.
+				if (!observationsById.has(sourceId) && !summariesById.has(sourceId)) continue;
+				if (!consumedBySummaryId.has(sourceId)) consumedBySummaryId.set(sourceId, summary.id);
+			}
 		}
 	};
 
@@ -157,104 +99,45 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		const entry = entries[i];
 		if (!entry) continue;
 
-		// Compaction snapshots provide compatibility when older custom records are
-		// no longer on the active branch. Version-1 details contain active records.
 		if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
 			const archivedObservations = entry.details.archive?.observations ?? entry.details.observations;
-			const archivedReflections = entry.details.archive?.reflections ?? entry.details.reflections;
-			for (const observation of archivedObservations) if (!observationsById.has(observation.id)) {
-				observationsById.set(observation.id, observation);
-				states.set(observation.id, activeState());
-			}
-			for (const reflection of archivedReflections) registerReflection(reflection);
-			for (const snapshot of entry.details.archive?.lifecycle ?? []) {
-				if (!observationsById.has(snapshot.memoryId) && !reflectionsById.has(snapshot.memoryId)) continue;
-				states.set(snapshot.memoryId, {
-					status: snapshot.status,
-					recallIf: snapshot.recallIf,
-					reason: snapshot.reason,
-					becauseOfMemoryIds: [...snapshot.becauseOfMemoryIds],
-					replacementMemoryIds: [...snapshot.replacementMemoryIds],
-					changedAt: snapshot.changedAt,
-				});
-				appendUnique(replacedByMemoryId, snapshot.memoryId, snapshot.replacementMemoryIds);
-			}
-			for (const review of entry.details.reviews ?? []) if (!reviewsById.has(review.id)) reviewsById.set(review.id, review);
+			const archivedSummaries = entry.details.archive?.summaries ?? entry.details.summaries;
+			for (const observation of archivedObservations) registerObservation(observation);
+			for (const review of entry.details.reviews ?? []) registerReview(review);
+			const registered = registerSummaryNodes(archivedSummaries);
+			registerSummaryEdges(registered);
 			continue;
 		}
 
 		if (isCustomEntry(entry, OM_OBSERVATIONS_RECORDED)) {
 			if (!isObservationsRecordedData(entry.data)) continue;
-			for (const observation of entry.data.observations) if (!observationsById.has(observation.id)) {
-				observationsById.set(observation.id, observation);
-				states.set(observation.id, activeState());
-			}
+			for (const observation of entry.data.observations) registerObservation(observation);
 			continue;
 		}
 
-		if (isCustomEntry(entry, OM_REFLECTIONS_RECORDED)) {
-			if (!isReflectionsRecordedData(entry.data)) continue;
-			for (const reflection of entry.data.reflections) registerReflection(reflection);
+		if (isCustomEntry(entry, OM_SUMMARIZER_COMMIT)) {
+			if (!isSummarizerCommitData(entry.data)) continue;
+			// Register every node before edges so same-commit citation targets are
+			// addressable. The summarizer itself prevents consuming same-run nodes.
+			const registered = registerSummaryNodes(entry.data.summaries);
+			registerSummaryEdges(registered);
 			continue;
 		}
 
-		if (isCustomEntry(entry, OM_OBSERVATIONS_DROPPED)) {
-			if (!isObservationsDroppedData(entry.data)) continue;
-			for (const observationId of entry.data.observationIds) {
-				legacyDroppedIds.add(observationId);
-				if (!observationsById.has(observationId)) continue;
-				states.set(observationId, {
-					status: "deleted",
-					reason: "Removed from automatic memory by the legacy dropper.",
-					becauseOfMemoryIds: [],
-					replacementMemoryIds: [],
-					lastAction: "legacyDrop",
-				});
-			}
-			continue;
-		}
-
-		if (isCustomEntry(entry, OM_LIBRARIAN_COMMIT)) {
-			if (!isLibrarianCommitData(entry.data)) continue;
-			for (const reflection of entry.data.reflections) registerReflection(reflection);
-			const knownIds = new Set([...observationsById.keys(), ...reflectionsById.keys()]);
-			for (const action of entry.data.actions) applyAction(action, knownIds, states, replacedByMemoryId);
-			continue;
-		}
-
-		if (entry.customType === OM_REVIEW_RESULT && isReviewResultEntry(entry) && !reviewsById.has(entry.data.result.id)) {
-			reviewsById.set(entry.data.result.id, entry.data.result);
-		}
+		if (entry.customType === OM_REVIEW_RESULT && isReviewResultEntry(entry)) registerReview(entry.data.result);
 	}
 
 	const observations = Array.from(observationsById.values());
-	const reflections = Array.from(reflectionsById.values());
-	const status = (id: string): MemoryStatus => states.get(id)?.status ?? "active";
-	const activeObservations = observations.filter((item) => status(item.id) === "active");
-	const inactiveObservations = observations.filter((item) => status(item.id) === "inactive");
-	const deletedObservations = observations.filter((item) => status(item.id) === "deleted");
-	const activeReflections = reflections.filter((item) => status(item.id) === "active");
-	const inactiveReflections = reflections.filter((item) => status(item.id) === "inactive");
-	const deletedReflections = reflections.filter((item) => status(item.id) === "deleted");
-	const droppedObservationIds = new Set(deletedObservations.map((item) => item.id));
-	for (const id of legacyDroppedIds) droppedObservationIds.add(id);
-
+	const summaries = Array.from(summariesById.values());
 	return {
 		observations,
-		activeObservations,
-		inactiveObservations,
-		deletedObservations,
-		droppedObservationIds,
-		reflections,
-		activeReflections,
-		inactiveReflections,
-		deletedReflections,
+		activeObservations: observations.filter((memory) => !consumedBySummaryId.has(memory.id)),
+		summaries,
+		activeSummaries: summaries.filter((memory) => !consumedBySummaryId.has(memory.id)),
 		observationsById,
-		reflectionsById,
-		memoryStatusById: new Map(Array.from(states, ([id, state]) => [id, state.status])),
-		lifecycleByMemoryId: states,
-		mergedIntoByMemoryId,
-		replacedByMemoryId,
+		summariesById,
+		citedBySummaryIds,
+		consumedBySummaryId,
 		reviews: Array.from(reviewsById.values()),
 		reviewsById,
 	};

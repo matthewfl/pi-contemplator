@@ -2,60 +2,47 @@
 
 ## Durable branch-local memory
 
-The session JSONL ledger is the source of truth. Memory state is derived by folding the current branch, so tree forks naturally inherit only their ancestors. Compaction never makes a memory unsearchable: compaction details carry an archive of observations, reflections, and lifecycle state.
+The session JSONL ledger is the source of truth. Memory state is derived by folding the current branch, so tree forks naturally inherit only their ancestors. Compaction archives observations, summaries, and their consumption graph, so folded records remain searchable and recallable.
 
-Memory ids are deterministic 12-character lowercase hexadecimal hashes. The observer and librarian must cite existing ids; code validates ids and lifecycle targets before committing changes.
+Memory ids are deterministic 12-character lowercase hexadecimal hashes computed by code.
 
 ## Observations
 
-The observer converts source-addressed transcript chunks into concise observations. Each observation contains:
+The observer converts source-addressed transcript chunks into concise observations. Each observation contains content, timestamp, relevance, a retention hint, exact source-entry ids, an id, and an estimated token count. Retention is guidance to the summarizer, not an automatic removal rule; omitted retention defaults to `contextual`.
 
-- content and a timestamp;
-- relevance;
-- a retention hint: `ephemeral`, `contextual`, or `durable`;
-- exact source-entry ids;
-- a deterministic id and estimated token count.
+## Summaries and consumption
 
-Retention is advice to the librarian, not an automatic deletion rule. Existing observations without retention are treated as `contextual`.
+A summary is a shorter higher-order memory that cites at least two observations or older summaries inline, such as `[aabbccddeeff, 112233445566]`. It stores all direct source ids plus the subset newly consumed by that summary.
 
-## Reflections
+A consumed memory leaves the automatically injected pool, but is never erased. It remains searchable and recallable. Folding derives both directions of the graph:
 
-A reflection is a higher-order memory made from at least two inspected observations or reflections. It keeps `sourceMemoryIds` backpointers. Reflections are not intrinsically more durable than observations: the librarian may later combine, inactivate, or delete them.
+- `consumedBySummaryId` points from a consumed source to its replacement;
+- `citedBySummaryIds` lists every summary that cites a memory; and
+- each summary's `sourceMemoryIds` points back to its direct evidence.
 
-## Lifecycle states
+A summary created during the current summarizer run may be cited immediately, but cannot itself be consumed until a later run. This prevents a single pass from building an opaque, deep chain.
 
-Every memory is in one of three states:
+## Summarizer
 
-- **active** — injected into routine memory context;
-- **inactive** — omitted from automatic context, but searchable and recallable;
-- **deleted** — logically removed from routine use, but still searchable and recallable with its deletion reason.
+Each summarizer run starts with fresh model context. It receives the selected active observations and summaries, plus explicit instructions that the records are the primary agent's durable memory. It has these mutation tools:
 
-Inactive memories are grouped for librarian input by a short `recallIf` cue. These group aliases are rebuilt for each run and are not durable ids. Reactivating an alias restores the whole same-cue cohort and returns its full bodies to the librarian.
+- `summarize` marks optional ids as run-local `keep_verbatim` and creates one or more validated summaries;
+- `fix_summary` atomically replaces or deletes a summary created in the current run; and
+- `done` is called twice: the first call reports the proposed reduction, and the second confirms completion.
 
-Deletion is never physical erasure. A delete records its reason, evidence ids, and optional replacement ids. Reflection merges and replacements create forward and backward provenance pointers shown by recall.
-
-## Librarian
-
-The librarian replaces the old reflector/dropper pipeline. It is a fresh, mostly stateless agent on every run. Its input contains active memory and compact inactive-cohort cues; deleted memory is not injected.
-
-The librarian has two tools:
-
-- `update_memories` creates reflections and keeps, inactivates, deletes, or reactivates memories according to its supplied fields;
-- `done` confirms that the pass is complete after registered update receipts are visible.
-
-Validated updates are preserved even if the librarian exhausts its rounds without confirming `done`; a run that registers no update and does not finish remains incomplete. The librarian is instructed to defer uncertain changes because future runs will provide later evidence and different samples.
+It can also use `search_memories` and `recall`. Summary citations are parsed strictly. Unknown ids, unbracketed memory ids, malformed brackets, fewer than two newly consumable sources, or inadequate token reduction reject that candidate with a specific error. Valid candidates from the same call still succeed. Accepted work is committed even if the model reaches its turn/output limit without confirming `done`; an empty run writes no commit.
 
 ## Sampling and pressure
 
-When all eligible librarian input fits within `librarianSamplingThresholdTokens` (40,000 tokens by default), the complete set is provided. Sampling begins only above that fixed token boundary and selects at most that budget. Recent/new memories are strongly favored, while every eligible item keeps nonzero probability. Fairness bookkeeping is runtime-only.
+When eligible rendered memory exceeds `summarizerSamplingThresholdTokens` (50,000 by default), the input is sampled back to that budget. New and recent memories are favored while older memories retain a chance of selection. Sampling fairness state is launch-local, not durable.
 
-The librarian sees active token usage, the configured target, and an advisory estimate of how much curation could return the pool toward target. This is guidance, not a hard quota.
+The summarizer also sees active-memory size and the configured target. These are advisory pressure signals, not deterministic removal quotas.
 
 ## Search and recall
 
-`search_memories` searches durable observations, reflections, and review outcomes. Main-agent and contemplator results do not expose whether a non-deleted memory is inactive. Deleted results include their deletion reason.
+`search_memories` searches durable observations, summaries, and review outcomes. Results distinguish visible memories from memories already summarized away.
 
-`recall` returns exact source context, lifecycle metadata where appropriate, provenance links, and collision information. Content-address collisions with different source evidence are preserved rather than collapsed.
+`recall` returns the exact selected record and its immediate graph links. For observations it also recovers exact source chat entries. Content-address collisions with different source evidence are preserved and reported rather than collapsed. Review results are available only through explicit search/recall; they are not injected into routine memory context.
 
 ## Contemplator and reviewer
 
