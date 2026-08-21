@@ -36,7 +36,7 @@ function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "co
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
-	return hasOverride(runtime.getSessionSettings(), key) ? String(current) : `default (${renderedDefault})`;
+	return hasOverride(runtime.getSessionSettings(), key) ? String(current) : `${renderedDefault} (default)`;
 }
 
 function extensionEnabledLabel(runtime: Runtime): string {
@@ -153,7 +153,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 	pi.on("session_tree", restoreSettings);
 
 	pi.registerCommand("om:settings", {
-		description: "Configure observational memory for this session",
+		description: "Configure pi-contemplator for this session",
 		handler: async (args, ctx) => {
 		runtime.ensureConfig(ctx.cwd);
 		runtime.restoreSessionSettings(branch(ctx));
@@ -190,10 +190,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 
 		while (true) {
 			const settings = runtime.getSessionSettings();
-			const choice = await ctx.ui.select("Observational memory settings (session overrides)", [
+			const choice = await ctx.ui.select("pi-contemplator settings (session overrides)", [
 				`Pi-contemplator Enabled: ${extensionEnabledLabel(runtime)}`,
 				`Contemplator enabled: ${scalarLabel(runtime, "contemplatorEnabled")}`,
-				`Contemplator model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `default (${modelLabel(runtime.getDefaultConfig().contemplatorModel)})`}`,
+				`Contemplator model: ${hasOverride(settings, "contemplatorModel") ? modelLabel(runtime.config.contemplatorModel) : `${modelLabel(runtime.getDefaultConfig().contemplatorModel)} (default)`}`,
 				`Show contemplator messages: ${scalarLabel(runtime, "showContemplatorMessages")}`,
 				`Contemplator new-observation trigger (count): ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
 				`Contemplator new-summary trigger (count): ${scalarLabel(runtime, "contemplatorMinNewSummaries")}`,
@@ -207,15 +207,15 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Summarizer pool-pressure multiplier: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")}`,
 				`Summarizer input cap before sampling (tokens): ${scalarLabel(runtime, "summarizerSamplingThresholdTokens")}`,
 				`Structural reviewer enabled: ${scalarLabel(runtime, "reviewerEnabled")}`,
-				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `default (${modelLabel(runtime.getDefaultConfig().reviewerModel)})`}`,
+				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `${modelLabel(runtime.getDefaultConfig().reviewerModel)} (default)`}`,
 				`Observe source during compaction: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
-				`Observer and summarizer model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `default (${modelLabel(runtime.getDefaultConfig().model)})`}`,
+				`Observer and summarizer model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `${modelLabel(runtime.getDefaultConfig().model)} (default)`}`,
 				`Observer source backlog trigger (tokens): ${scalarLabel(runtime, "observeAfterTokens")}`,
 				`Observer input cap (tokens): ${scalarLabel(runtime, "observerChunkMaxTokens")}`,
 				`Observer and summarizer max rounds: ${scalarLabel(runtime, "agentMaxTurns")}`,
 				`Automatic compaction trigger: ${scalarLabel(runtime, "compactAfterTokens")}`,
-				`Automatic compaction threshold mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `default (${runtime.getDefaultConfig().compactAfterTokensMode})`}`,
-				`Automatic compaction context ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `default (${runtime.getDefaultConfig().compactAfterTokensRatio})`}`,
+				`Automatic compaction threshold mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `${runtime.getDefaultConfig().compactAfterTokensMode} (default)`}`,
+				`Automatic compaction context ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `${runtime.getDefaultConfig().compactAfterTokensRatio} (default)`}`,
 				`Worker notifications: ${scalarLabel(runtime, "showWorkerNotifications")}`,
 				`Debug logging: ${scalarLabel(runtime, "debugLog")}`,
 				"Done",

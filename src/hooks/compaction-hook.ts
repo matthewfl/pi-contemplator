@@ -12,7 +12,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					"Observational memory: another compaction is already in progress; cancelling duplicate",
+					"pi-contemplator: another compaction is already in progress; cancelling duplicate",
 					"warning",
 				);
 			}
@@ -29,7 +29,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${pending})`);
 			if (!initiatedByOm) {
 				const continuation = event.willRetry ? "; the interrupted agent run will resume automatically" : "";
-				ctx.ui.notify(`Observational memory: compaction started (${reason})${continuation}`, "info");
+				ctx.ui.notify(`pi-contemplator: compaction started (${reason})${continuation}`, "info");
 			}
 		}
 		event.signal?.addEventListener?.("abort", () => {
@@ -84,6 +84,6 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		let continuation = "";
 		if (event.willRetry) continuation = "; resuming the interrupted agent run";
 		else if (omWillResume) continuation = "; resuming the agent run";
-		ctx.ui.notify(`Observational memory: compaction complete (${reason})${continuation}`, "info");
+		ctx.ui.notify(`pi-contemplator: compaction complete (${reason})${continuation}`, "info");
 	});
 }

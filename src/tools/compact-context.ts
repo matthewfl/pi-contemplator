@@ -20,7 +20,7 @@ export function createCompactContextTool(runtime: Runtime) {
 		promptGuidelines: [
 			"Use compact_context sparingly when either substantial additional work remains and there is not enough context left to complete it, or accumulated past context has become noisy, stale, or distracting enough that you are struggling to focus on the current task or reason about it reliably.",
 			"Do not use compact_context routinely, for short tasks, or merely because the conversation is long; use it for genuine context-capacity pressure or context degradation that is interfering with the work.",
-			"Call compact_context by itself, provide short_continuation_prompt with concrete instructions for the next agent step, and stop the current turn; observational memory will compact the context and automatically resume with those instructions.",
+			"Call compact_context by itself, provide short_continuation_prompt with concrete instructions for the next agent step, and stop the current turn; pi-contemplator will compact the context and automatically resume with those instructions.",
 		],
 		parameters: Type.Object({
 			short_continuation_prompt: Type.String({

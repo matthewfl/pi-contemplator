@@ -42,6 +42,7 @@ export function renderSummarizer(run: SummarizerRunView | undefined): string {
 	const lines = [
 		`${DIM}SUMMARIZER · ${run.status} · ${messages.length} messages · ~${totalTokens.toLocaleString()} estimated tokens${RESET}`,
 		`${DIM}Started ${new Date(run.startedAt).toISOString()}${RESET}`,
+		`${DIM}${run.completedAt === undefined ? "Not completed" : `Ended ${new Date(run.completedAt).toISOString()}`}${RESET}`,
 		"",
 	];
 	if (messages.length === 0) lines.push(`${DIM}(no summarizer messages captured yet)${RESET}`);

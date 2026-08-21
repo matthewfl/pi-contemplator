@@ -98,7 +98,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 		}
 		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
 		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify(`Observational memory: ${stage} skipped — ${cached.reason}`, "warning");
+			ctx.ui.notify(`pi-contemplator: ${stage} skipped — ${cached.reason}`, "warning");
 			runtime.resolveFailureNotified = true;
 		}
 		return undefined;
@@ -379,12 +379,12 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				return;
 			}
 			if (generation !== runtime.getContextGeneration()) return;
-			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: summarizer running", "info");
+			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("pi-contemplator: summarizer running", "info");
 			const watchdog = createSummarizerStallWatchdog(SUMMARIZER_STALL_TIMEOUT_MS, (signal) => {
 				stalled = true;
 				const reason = signal.reason instanceof Error ? signal.reason.message : "summarizer stalled";
 				debugLog("summarizer.stalled", { reason });
-				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: ${reason}; cancelling and leaving the backlog eligible for retry`, "warning");
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: ${reason}; cancelling and leaving the backlog eligible for retry`, "warning");
 			});
 			disposeStallWatchdog = watchdog.dispose;
 			const result = await runSummarizer({
@@ -419,11 +419,11 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				const summary = `${result.commit.summaries.length} summaries consumed ${result.commit.metrics.consumedMemoryCount} memories, reducing visible memory by ~${result.commit.metrics.estimatedTokenReduction.toLocaleString()} tokens.`;
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
 				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
-				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`Observational memory: summarizer completed — ${summary}`, "info");
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: summarizer completed — ${summary}`, "info");
 				runtime.notifyMemoryUpdate(ctx);
 			} else {
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary: "No safe summaries were created." };
-				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("Observational memory: summarizer completed — no safe summaries", "info");
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("pi-contemplator: summarizer completed — no safe summaries", "info");
 			}
 		} catch (error) {
 			if (generation === runtime.getContextGeneration() && runtime.lastSummarizerRun) {
@@ -433,7 +433,9 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		} finally {
 			disposeStallWatchdog();
 			if (generation === runtime.getContextGeneration()) {
-				runtime.lastSummarizerCompletedAt = Date.now();
+				const completedAt = Date.now();
+				runtime.lastSummarizerCompletedAt = completedAt;
+				if (runtime.lastSummarizerRun) runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun, completedAt };
 				// A completed pass has honored an explicit target/settings request. A
 				// failed or stalled pass leaves it set so normal checkpoints can retry.
 				if (completed) runtime.summarizerMaintenanceRequested = false;
@@ -505,7 +507,7 @@ async function runObserverStage(
 	const priorObservations = memory.observations.map(observationToSummaryLine);
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
+		`pi-contemplator: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
 		"info",
 	);
 	debugLog("observer.start", {
@@ -537,7 +539,7 @@ async function runObserverStage(
 	if (!observations || observations.length === 0) {
 		debugLog("observer.empty", { coversUpToId });
 		if (ctx.hasUI) ctx.ui?.notify(
-			"Observational memory: observer returned no observations",
+			"pi-contemplator: observer returned no observations",
 			"warning",
 		);
 		return "continue";
@@ -567,7 +569,7 @@ async function runObserverStage(
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
 	debugLog("observer.appended", { count: observations.length, coversUpToId: effectiveCoversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
+		`pi-contemplator: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
 		"info",
 	);
 	return "continue";

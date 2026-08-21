@@ -139,11 +139,11 @@ describe("Contemplator lifecycle", () => {
 		harness.setEntries([raw, memory]);
 		harness.fire("turn_end");
 
-		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("Observational memory: contemplator completed", "info"));
-		expect(notify).toHaveBeenCalledWith("Observational memory: contemplator running", "info");
+		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator completed", "info"));
+		expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator running", "info");
 		expect(notify.mock.calls.map(([message]) => message)).toEqual([
-			"Observational memory: contemplator running",
-			"Observational memory: contemplator completed",
+			"pi-contemplator: contemplator running",
+			"pi-contemplator: contemplator completed",
 		]);
 	});
 

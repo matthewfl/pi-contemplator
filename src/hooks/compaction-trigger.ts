@@ -35,7 +35,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactOrigin = undefined;
 					if (origin === "agent-requested") runtime.compactRequested = true;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction deferred — agent became busy before compaction",
+						"pi-contemplator: compaction deferred — agent became busy before compaction",
 						"info",
 					);
 					return;
@@ -46,7 +46,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactInFlight = false;
 					runtime.compactOrigin = undefined;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+						"pi-contemplator: compaction skipped — another compaction already ran before deferred compaction",
 						"info",
 					);
 					return;
@@ -57,7 +57,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					const reason = origin === "agent-requested" ? "agent-requested, " : origin === "length-stop" ? "length-stop, " : "";
 					const continuation = resume ? "; the interrupted agent run will resume automatically" : "";
 					ui?.notify(
-						`Observational memory: compaction started (${reason}~${currentTokens.toLocaleString()} tokens)${continuation}`,
+						`pi-contemplator: compaction started (${reason}~${currentTokens.toLocaleString()} tokens)${continuation}`,
 						"info",
 					);
 				}
@@ -74,7 +74,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						runtime.compactOrigin = undefined;
 						if (hasUI) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 						if (error.message !== "Compaction cancelled" && hasUI) {
-							ui?.notify(`Observational memory: ${error.message}`, "error");
+							ui?.notify(`pi-contemplator: ${error.message}`, "error");
 						}
 						if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 					},
@@ -86,7 +86,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) {
 					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
-					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
+					ui?.notify(`pi-contemplator: compact threw: ${msg}`, "error");
 				}
 				if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 			}

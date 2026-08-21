@@ -58,7 +58,7 @@ describe("compaction resume watchdog", () => {
 		}, { deliverAs: "followUp", triggerTurn: true });
 		expect(runtime.compactionResumePending).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: the agent did not acknowledge continuation after compaction",
+			"pi-contemplator: the agent did not acknowledge continuation after compaction",
 			"error",
 		);
 	});
@@ -84,7 +84,7 @@ describe("compaction resume watchdog", () => {
 
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: native compaction did not resume the agent; sending fallback continuation",
+			"pi-contemplator: native compaction did not resume the agent; sending fallback continuation",
 			"warning",
 		);
 

@@ -101,7 +101,7 @@ describe("V3 compaction trigger", () => {
 			"OM compaction: running (proactive)",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction started (~3 tokens)",
+			"pi-contemplator: compaction started (~3 tokens)",
 			"info",
 		);
 	});
@@ -304,7 +304,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction deferred — agent became busy before compaction",
+			"pi-contemplator: compaction deferred — agent became busy before compaction",
 			"info",
 		);
 	});
@@ -319,7 +319,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+			"pi-contemplator: compaction skipped — another compaction already ran before deferred compaction",
 			"info",
 		);
 	});

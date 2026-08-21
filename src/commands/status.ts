@@ -36,7 +36,7 @@ function formatDuration(durationMs: number): string {
 }
 
 function formatRunAge(timestamp: number): string {
-	return `${new Date(timestamp).toLocaleString()} (${formatDuration(Math.max(0, Date.now() - timestamp))} ago)`;
+	return `${new Date(timestamp).toISOString()} (${formatDuration(Math.max(0, Date.now() - timestamp))} ago)`;
 }
 
 function contemplatorWaitingLabel(waitingFor: Runtime["contemplatorState"]["waitingFor"]): string {
@@ -74,7 +74,7 @@ function appendSuffixes(line: string, suffixes: (string | undefined)[]): string 
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
-		description: "Show observational memory status",
+		description: "Show pi-contemplator status",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -122,15 +122,15 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				summaryLine,
 				"",
 				"── Activity ──",
-				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
+				`Observer source backlog: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
 				`Summarizer backlog: ${summarizerPendingCount.toLocaleString()} memories / ~${summarizerPendingTokens.toLocaleString()} tokens${runtime.summarizerDirtySince === undefined ? " (clean)" : " (dirty)"}`,
-				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
+				`Automatic compaction backlog: ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} tokens`,
 				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
 				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; min ${summarizerMinInterval} active-m / max ${summarizerMaxDelay} active-m / new-token trigger ${summarizerNewTokenTrigger.toLocaleString()} / urgent ${summarizerUrgentTokenTrigger.toLocaleString()} / pressure ${summarizerPressureRatio}× / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
-				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
+				`Observe source during compaction: ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
 				`Contemplator trigger:     ${runtime.contemplatorState.pendingObservations} observations / ${runtime.contemplatorState.pendingSummaries} summaries / ${runtime.contemplatorState.pendingReviews} reviews pending; ${runtime.contemplatorState.responsesSinceRun} / ${runtime.config.contemplatorMinTurns} primary responses; ${contemplatorWaitingLabel(runtime.contemplatorState.waitingFor)}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
@@ -139,6 +139,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Reviewer model:          ${runtime.config.reviewerModel ? `${runtime.config.reviewerModel.provider}/${runtime.config.reviewerModel.id}` : "current session model"}`,
 			];
 
+			if (runtime.agentUsage.runs > 0) {
+				const u = runtime.agentUsage;
+				lines.push(`Token usage:            ↑${formatTokens(u.input)} ↓${formatTokens(u.output)}${u.cacheRead ? ` R${formatTokens(u.cacheRead)}` : ""}${u.cacheWrite ? ` W${formatTokens(u.cacheWrite)}` : ""} $${u.cost.toFixed(3)} (${u.runs} call${u.runs === 1 ? "" : "s"})`);
+			}
+
+			lines.push("", "── Last worker runs ──");
 			lines.push(`Last observer start:     ${runtime.lastObserverStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastObserverStartedAt)}`);
 			lines.push(`Last observer end:       ${runtime.lastObserverCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastObserverCompletedAt)}`);
 			lines.push(`Last summarizer start:   ${runtime.lastSummarizerStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastSummarizerStartedAt)}`);
@@ -146,11 +152,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			lines.push(`Last contemplator start: ${runtime.contemplatorState.lastStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
 			lines.push(`Last contemplator end:   ${runtime.contemplatorState.lastCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
 
-			if (runtime.agentUsage.runs > 0) {
-				const u = runtime.agentUsage;
-				lines.push(`Token usage:            ↑${formatTokens(u.input)} ↓${formatTokens(u.output)}${u.cacheRead ? ` R${formatTokens(u.cacheRead)}` : ""}${u.cacheWrite ? ` W${formatTokens(u.cacheWrite)}` : ""} $${u.cost.toFixed(3)} (${u.runs} call${u.runs === 1 ? "" : "s"})`);
-			}
-
+			lines.push("", "── Interventions ──");
 			// Probe stats come from the branch ledger (like /om:view contemplator):
 			// deduped by probeId so restore re-queues don't inflate the count, and
 			// entries without a probeId (sent before probe tracking existed) count
@@ -173,12 +175,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 					probeSuggestions[existingIndex] = { suggestion: data.suggestion };
 				}
 			}
-			if (probeSuggestions.length > 0) {
-				lines.push(`Probes sent:            ${probeSuggestions.length}`);
-				lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
-			}
+			lines.push(`Probes sent:            ${probeSuggestions.length}`);
+			if (probeSuggestions.length > 0) lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
 
-			const latestReview = full.reviews?.at(-1);
+			const reviews = full.reviews ?? [];
+			lines.push(`Reviews completed:      ${reviews.length}`);
+			const latestReview = reviews.at(-1);
 			if (latestReview) {
 				lines.push(`Last review:            [${latestReview.id}] ${latestReview.scope} ${latestReview.outcome}`);
 				if (latestReview.outcome === "proposal") lines.push(`Last review summary:    ${truncateStatusText(latestReview.summary)}`);
@@ -194,13 +196,10 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			if (runtime.consolidationInFlight || runtime.summarizerInFlight || runtime.contemplatorState.running || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
 				lines.push("", "── In flight ──");
-				if (runtime.consolidationInFlight) {
-					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
-					lines.push(`Consolidation: running${phase}`);
-				}
+				if (runtime.consolidationInFlight) lines.push("Observer: running");
 				if (runtime.summarizerInFlight) lines.push("Summarizer: running");
 				if (runtime.contemplatorState.running) lines.push("Contemplator: running");
-				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
+				if (runtime.compactInFlight) lines.push("Automatic compaction: running");
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
 				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}

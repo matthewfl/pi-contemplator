@@ -58,6 +58,7 @@ export type SettingsUpdate = Partial<SessionSettings>;
 
 export interface SummarizerRunView {
 	startedAt: number;
+	completedAt?: number;
 	status: "running" | "completed" | "incomplete" | "failed";
 	messages: readonly unknown[];
 	summary?: string;
@@ -308,7 +309,7 @@ export class Runtime {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
-					`Observational memory: configured model ${configuredModel.provider}/${configuredModel.id} not found, using session model`,
+					`pi-contemplator: configured model ${configuredModel.provider}/${configuredModel.id} not found, using session model`,
 					"warning",
 				);
 			}
@@ -416,7 +417,7 @@ export class Runtime {
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {
 		const message = error instanceof Error ? error.message : String(error);
 		this.lastObserverError = message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
+		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`pi-contemplator: ${phase} failed: ${message}`, "warning");
 		return message;
 	}
 
@@ -434,7 +435,7 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (hasUI && ui) ui.notify(`pi-contemplator: ${label} failed: ${errorMessage}`, "warning");
 			} finally {
 				onFinally(errorMessage);
 			}

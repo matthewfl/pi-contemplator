@@ -53,7 +53,7 @@ function sendResumeMessage(pi: ExtensionAPI, ctx: ResumeCtx, afterFailure: boole
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		ctx.ui?.notify?.(`Observational memory: failed to request continuation: ${message}`, "error");
+		ctx.ui?.notify?.(`pi-contemplator: failed to request continuation: ${message}`, "error");
 	}
 }
 
@@ -72,7 +72,7 @@ function scheduleResumeRetries(
 			if (!isCurrentWatch(runtime, generation)) return;
 			clearResumeWatch(runtime);
 			ctx.ui?.notify?.(
-				"Observational memory: the agent did not acknowledge continuation after compaction",
+				"pi-contemplator: the agent did not acknowledge continuation after compaction",
 				"error",
 			);
 		}, RESUME_RETRY_DELAYS_MS.at(-1));
@@ -82,7 +82,7 @@ function scheduleResumeRetries(
 	runtime.compactionResumeTimer = setTimeout(() => {
 		if (!isCurrentWatch(runtime, generation)) return;
 		ctx.ui?.notify?.(
-			`Observational memory: continuation did not start; retrying (${retryIndex + 1}/${RESUME_RETRY_DELAYS_MS.length})`,
+			`pi-contemplator: continuation did not start; retrying (${retryIndex + 1}/${RESUME_RETRY_DELAYS_MS.length})`,
 			"warning",
 		);
 		sendResumeMessage(pi, ctx, afterFailure, shortContinuationPrompt);
@@ -118,7 +118,7 @@ export function watchForNativeCompactionResume(
 	runtime.compactionResumeTimer = setTimeout(() => {
 		if (!isCurrentWatch(runtime, generation)) return;
 		ctx.ui?.notify?.(
-			"Observational memory: native compaction did not resume the agent; sending fallback continuation",
+			"pi-contemplator: native compaction did not resume the agent; sending fallback continuation",
 			"warning",
 		);
 		sendResumeMessage(pi, ctx, false);

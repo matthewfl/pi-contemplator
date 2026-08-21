@@ -659,7 +659,7 @@ export class Contemplator {
 				contextWindow: selectedModel.contextWindow,
 			});
 			if (this.runtime.config.showWorkerNotifications && ctx.hasUI) {
-				ctx.ui?.notify("Observational memory: contemplator running", "info");
+				ctx.ui?.notify("pi-contemplator: contemplator running", "info");
 				workerNotified = true;
 			}
 			const reviewerEnabled = this.runtime.config.reviewerEnabled;
@@ -835,7 +835,7 @@ export class Contemplator {
 			});
 			if (workerNotified && sessionGeneration === this.sessionGeneration) {
 				ctx.ui?.notify(
-					failed ? "Observational memory: contemplator failed" : "Observational memory: contemplator completed",
+					failed ? "pi-contemplator: contemplator failed" : "pi-contemplator: contemplator completed",
 					failed ? "warning" : "info",
 				);
 			}

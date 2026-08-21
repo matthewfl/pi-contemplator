@@ -75,7 +75,7 @@ export function registerViewCommand(
 
 	pi.registerCommand("om:view", {
 		description:
-			"Print and copy observational memory content (visible, full, memory, contemplator, summarizer, reviewer, or reviews)",
+			"Print and copy pi-contemplator memory content (visible, full, memory, contemplator, summarizer, reviewer, or reviews)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];

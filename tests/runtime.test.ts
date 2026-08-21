@@ -50,7 +50,7 @@ describe("Runtime V3 behavior", () => {
 
 		expect(result).toMatchObject({ ok: true, model: sessionModel });
 		expect(notify).toHaveBeenCalledWith(
-			"Observational memory: configured model anthropic/missing not found, using session model",
+			"pi-contemplator: configured model anthropic/missing not found, using session model",
 			"warning",
 		);
 	});
@@ -118,7 +118,7 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error("observe failed"))).toBe("observe failed");
 
 		expect(runtime.lastObserverError).toBe("observe failed");
-		expect(notify).toHaveBeenCalledWith("Observational memory: observer failed: observe failed", "warning");
+		expect(notify).toHaveBeenCalledWith("pi-contemplator: observer failed: observe failed", "warning");
 	});
 
 	it("restores session overrides retained in compaction details", () => {
