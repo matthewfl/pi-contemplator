@@ -209,9 +209,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Observer source backlog trigger (tokens): ${scalarLabel(runtime, "observeAfterTokens")}`,
 				`Observer input cap (tokens): ${scalarLabel(runtime, "observerChunkMaxTokens")}`,
 				`Observer and summarizer max rounds: ${scalarLabel(runtime, "agentMaxTurns")}`,
-				`Automatic compaction trigger: ${scalarLabel(runtime, "compactAfterTokens")}`,
+				`Automatic compaction source backlog trigger (tokens): ${scalarLabel(runtime, "compactAfterTokens")}`,
 				`Automatic compaction threshold mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `${runtime.getDefaultConfig().compactAfterTokensMode} (default)`}`,
-				`Automatic compaction context ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `${runtime.getDefaultConfig().compactAfterTokensRatio} (default)`}`,
+				`Automatic compaction source-backlog context ratio: ${hasOverride(settings, "compactAfterTokensRatio") ? runtime.config.compactAfterTokensRatio : `${runtime.getDefaultConfig().compactAfterTokensRatio} (default)`}`,
 				`Worker notifications: ${scalarLabel(runtime, "showWorkerNotifications")}`,
 				`Debug logging: ${scalarLabel(runtime, "debugLog")}`,
 				"Done",
@@ -238,7 +238,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				const mode = await ctx.ui.select("Automatic compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });
 			} else if (choice.startsWith("Automatic compaction context ratio:")) {
-				const value = await ctx.ui.input(`Automatic compaction context ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
+				const value = await ctx.ui.input(`Automatic compaction source-backlog context ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
 				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0 && ratio < 1) appendSettings(pi, runtime, { compactAfterTokensRatio: ratio });
 				else if (value !== undefined) ctx.ui.notify("Ratio must be a number between 0 and 1.", "warning");
@@ -247,7 +247,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Observer source backlog trigger (tokens):", "observeAfterTokens", "Observer source backlog trigger (tokens)"],
 					["Observer input cap (tokens):", "observerChunkMaxTokens", "Observer input cap (tokens)"],
 					["Observer and summarizer max rounds:", "agentMaxTurns", "Observer and summarizer max rounds"],
-					["Automatic compaction trigger:", "compactAfterTokens", "Automatic compaction trigger"],
+					["Automatic compaction source backlog trigger (tokens):", "compactAfterTokens", "Automatic compaction source backlog trigger (tokens)"],
 					["New memory pool protection budget (tokens):", "newMemoryPoolMaxTokens", "New memory pool protection budget (tokens)"],
 					["Old memory pool target (tokens, advisory):", "oldMemoryPoolTargetTokens", "Old memory pool target (tokens, advisory)"],
 					["Contemplator new-observation trigger (count):", "contemplatorMinNewObservations", "Contemplator new-observation trigger (count)"],

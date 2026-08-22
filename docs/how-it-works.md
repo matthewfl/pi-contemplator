@@ -51,8 +51,10 @@ Compaction details preserve the full memory graph so old raw ledger entries may 
 
 Proactive compaction is controlled by `compactAfterTokensMode`:
 
-- `calibrated` uses `compactAfterTokens`;
+- `calibrated` uses the `compactAfterTokens` raw source-backlog threshold (81,000 by default);
 - `ratio` uses `floor(contextWindow * compactAfterTokensRatio)`.
+
+Injected observations and summaries do not contribute to this proactive source-backlog counter. They do contribute to the actual model context seen by Pi, so Pi may still invoke its native context-limit compaction earlier when source context plus injected memory approaches the model limit.
 
 Agent-requested compaction resumes with the authored continuation prompt. Proactive maintenance after a normally settled turn does not restart the agent. Failed/too-small compactions retain the fail-safe continuation behavior. A compaction observer can run asynchronously without blocking compaction.
 

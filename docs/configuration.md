@@ -39,9 +39,9 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 |---|---:|---|
 | `observeAfterTokens` | `10000` | Raw source tokens after observer coverage before observation work is due. |
 | `observerChunkMaxTokens` | derived | Maximum estimated observer input. When omitted, uses 20% of the observer model context window, with a 60k fallback. |
-| `compactAfterTokens` | `81000` | Proactive threshold in `calibrated` mode and fallback in ratio mode. |
+| `compactAfterTokens` | `81000` | Raw source-token backlog for proactive compaction in `calibrated` mode and the fallback in ratio mode. Injected observations and summaries do not count toward this backlog. |
 | `compactAfterTokensMode` | `calibrated` | `calibrated` or `ratio`. |
-| `compactAfterTokensRatio` | `0.68` | Context-window fraction in ratio mode; must be between 0 and 1. |
+| `compactAfterTokensRatio` | `0.68` | Context-window fraction used to derive the raw source-backlog threshold in ratio mode; injected memory remains excluded from the compared backlog. Must be between 0 and 1. |
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and summarizer. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |

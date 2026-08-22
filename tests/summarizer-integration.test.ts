@@ -4,7 +4,7 @@ import { computeSessionSettings } from "../src/runtime.js";
 import { renderSummarizer } from "../src/commands/summarizer-view.js";
 import { executeRecall } from "../src/tools/recall-observation.js";
 import { executeSearchMemories } from "../src/tools/search-memories.js";
-import type { Entry } from "../src/session-ledger/index.js";
+import { rawTokensSinceLastCompaction, type Entry } from "../src/session-ledger/index.js";
 
 const branch: Entry[] = [
 	{ type: "message", id: "raw", message: { role: "user", content: "alpha evidence" } },
@@ -17,8 +17,14 @@ const branch: Entry[] = [
 
 describe("summarizer configuration and user tools", () => {
 	it("uses token-pool scheduling and 60k sampling defaults", () => {
-		expect(DEFAULTS).toMatchObject({ summarizerEnabled: true, newMemoryPoolMaxTokens: 40_000, oldMemoryPoolTargetTokens: 40_000, summarizerRetriggerTokens: 2_000, summarizerSamplingThresholdTokens: 60_000 });
+		expect(DEFAULTS).toMatchObject({ compactAfterTokens: 81_000, summarizerEnabled: true, newMemoryPoolMaxTokens: 40_000, oldMemoryPoolTargetTokens: 40_000, summarizerRetriggerTokens: 2_000, summarizerSamplingThresholdTokens: 60_000 });
 		expect(DEFAULTS).not.toHaveProperty("librarianEnabled");
+	});
+
+	it("excludes injected memory entries from the proactive compaction source backlog", () => {
+		const source: Entry = { type: "message", id: "source", message: { role: "user", content: "small source message" } };
+		const injected: Entry = { type: "custom", id: "memory", customType: "om.observations.recorded", data: { observations: [{ content: "x".repeat(100_000) }] } };
+		expect(rawTokensSinceLastCompaction([source, injected])).toBe(rawTokensSinceLastCompaction([source]));
 	});
 
 	it("restores summarizer session settings through compaction snapshots and live entries", () => {
