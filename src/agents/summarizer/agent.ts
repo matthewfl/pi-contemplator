@@ -310,6 +310,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 			else if (drafts.has(sourceId)) warnings.push(`memory [${sourceId}] is a current-run summary and remains verbatim until a future run`);
 			else if (keepVerbatim.has(sourceId)) warnings.push(`memory [${sourceId}] was marked keep verbatim and contributes no consumption`);
 			else if (consumedOwner.has(sourceId)) warnings.push(`memory [${sourceId}] was already used in a summary and contributes no additional savings`);
+			else if (folded.consumedBySummaryId.has(sourceId)) warnings.push(`memory [${sourceId}] was already summarized by [${folded.consumedBySummaryId.get(sourceId)}] and is no longer visible; it contributes provenance but no additional savings`);
 			else if (!oldPoolIds.has(sourceId)) warnings.push(`memory [${sourceId}] is not in the eligible old pool and remains visible`);
 			else consumable.push(sourceId);
 		}

@@ -45,7 +45,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and summarizer. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |
-| `newMemoryPoolMaxTokens` | `40000` | Strict whole-memory cap for the newest protected memories. Older memories overflow into the old pool. |
+| `newMemoryPoolMaxTokens` | `40000` | Token budget for the newest protected memories. Whole memories are not split, and the newest memory is always protected even when it alone exceeds the budget. |
 | `oldMemoryPoolTargetTokens` | `40000` | Advisory old-pool target. The summarizer runs only on old memories after this is exceeded. |
 | `summarizerRetriggerTokens` | `2000` | If a pass leaves the old pool above target, require this much additional old-pool growth before another pass. |
 | `summarizerSamplingThresholdTokens` | `60000` | Rendered old-memory input cap. Above it, inverse-length sampling favors compactable groups of small memories. |

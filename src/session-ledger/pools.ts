@@ -30,7 +30,9 @@ export function chronologicalMemories(observations: readonly Observation[], summ
 /**
  * Derive accounting-only pools from active memory. Pool membership is not
  * persisted: the newest whole-memory suffix fitting the configured token cap
- * is protected, and every older record is summarizer-eligible.
+ * is protected, and every older record is summarizer-eligible. Because records
+ * are indivisible, the newest record is always protected even when it alone
+ * exceeds the cap.
  */
 export function partitionMemoryPools(
 	observations: readonly Observation[],
@@ -43,7 +45,8 @@ export function partitionMemoryPools(
 	let newTokens = 0;
 	for (let index = memories.length - 1; index >= 0; index--) {
 		const tokens = memories[index].memory.tokenCount;
-		if (newTokens + tokens > cap) break;
+		const isNewest = index === memories.length - 1;
+		if (!isNewest && newTokens + tokens > cap) break;
 		newTokens += tokens;
 		boundary = index;
 	}

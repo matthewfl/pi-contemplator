@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
-import { createSummarizerStallWatchdog, currentMemoryPools, nextSummarizerTriggerTokens, registerConsolidationTrigger, shouldScheduleSummarizerFromObserver, summarizerTriggerTokens } from "../src/hooks/consolidation-trigger.js";
+import { createSummarizerStallWatchdog, currentMemoryPools, nextSummarizerTriggerTokens, registerConsolidationTrigger, scheduleSummarizer, shouldScheduleSummarizerFromObserver, summarizerTriggerAfterRun, summarizerTriggerTokens } from "../src/hooks/consolidation-trigger.js";
 import { newMemoryIdsSinceSummarizerCoverage } from "../src/agents/summarizer/agent.js";
 import type { Entry } from "../src/session-ledger/index.js";
 
@@ -93,6 +93,25 @@ describe("summarizer scheduling", () => {
 		expect(summarizerTriggerTokens(value)).toBe(57);
 		value.advanceContextGeneration();
 		expect(summarizerTriggerTokens(value)).toBe(40);
+	});
+
+	it("advances only successful passes and preserves failed-pass eligibility", () => {
+		expect(summarizerTriggerAfterRun(true, undefined, 40, 55, 2)).toBe(57);
+		expect(summarizerTriggerAfterRun(false, undefined, 40, 55, 2)).toBeUndefined();
+		expect(summarizerTriggerAfterRun(false, 48, 40, 55, 2)).toBe(48);
+	});
+
+	it("does not raise the live threshold when model resolution fails", async () => {
+		const value = runtime();
+		value.config = { ...value.config, newMemoryPoolMaxTokens: 1, oldMemoryPoolTargetTokens: 10, summarizerRetriggerTokens: 2 };
+		value.summarizerNextTriggerTokens = 12;
+		(value as any).resolveModel = async () => ({ ok: false, reason: "no model" });
+		const entries = memoryEntries([20, 20]);
+		const ctx = { cwd: "/tmp", hasUI: false, model: undefined, modelRegistry: {}, sessionManager: { getBranch: () => entries } };
+		scheduleSummarizer({ appendEntry: vi.fn() } as any, value, ctx);
+		await value.summarizerPromise;
+		expect(value.summarizerNextTriggerTokens).toBe(12);
+		expect(value.lastSummarizerRun?.status).toBe("failed");
 	});
 
 	it("resets the threshold cycle when pool settings change", () => {

@@ -22,10 +22,14 @@ describe("memory pool accounting", () => {
 		expect(pools).toMatchObject({ oldTokens: 25, newTokens: 40, totalTokens: 65 });
 	});
 
-	it("keeps an oversized newest memory out of the strictly bounded new pool", () => {
-		const pools = partitionMemoryPools([observation("aaaaaaaaaaaa", "2026-01-01T00:00:00Z", 41)], [], 40);
-		expect(pools.new).toEqual([]);
+	it("always protects an oversized newest memory despite the nominal token cap", () => {
+		const pools = partitionMemoryPools([
+			observation("aaaaaaaaaaaa", "2026-01-01T00:00:00Z", 20),
+			observation("bbbbbbbbbbbb", "2026-01-02T00:00:00Z", 41),
+		], [], 40);
+		expect(pools.new.map((item) => item.memory.id)).toEqual(["bbbbbbbbbbbb"]);
 		expect(pools.old.map((item) => item.memory.id)).toEqual(["aaaaaaaaaaaa"]);
+		expect(pools).toMatchObject({ newTokens: 41, oldTokens: 20 });
 	});
 
 	it("interleaves summaries by their effective source timestamp", () => {

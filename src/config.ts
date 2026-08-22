@@ -41,7 +41,7 @@ export interface Config {
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
-	/** Strict whole-memory token cap for the protected newest-memory suffix. */
+	/** Token budget for the protected newest-memory suffix; newest record always fits whole. */
 	newMemoryPoolMaxTokens: number;
 	/** Advisory token target for older summarizer-eligible memory. */
 	oldMemoryPoolTargetTokens: number;

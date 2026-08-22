@@ -121,7 +121,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Summarizer trigger:      old pool ~${pools.oldTokens.toLocaleString()} / ${summarizerTrigger.toLocaleString()} tokens (${pct(pools.oldTokens, summarizerTrigger)}%)`,
 				`Automatic compaction backlog: ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} tokens`,
-				`New memory pool:         ~${pools.newTokens.toLocaleString()} / ${runtime.config.newMemoryPoolMaxTokens.toLocaleString()} maximum tokens (${pct(pools.newTokens, runtime.config.newMemoryPoolMaxTokens)}%)`,
+				`New memory pool:         ~${pools.newTokens.toLocaleString()} / ${runtime.config.newMemoryPoolMaxTokens.toLocaleString()} protection-budget tokens (${pct(pools.newTokens, runtime.config.newMemoryPoolMaxTokens)}%; newest memory always protected whole)`,
 				`Old memory pool:         ~${pools.oldTokens.toLocaleString()} / ${runtime.config.oldMemoryPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(pools.oldTokens, runtime.config.oldMemoryPoolTargetTokens)}%)`,
 				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
 				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; retrigger after +${runtime.config.summarizerRetriggerTokens.toLocaleString()} old-pool tokens / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,

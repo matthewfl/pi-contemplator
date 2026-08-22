@@ -18,7 +18,7 @@ The cap is explicit `observerChunkMaxTokens` when configured, otherwise 20% of t
 
 ## Summarizer scheduling
 
-Pool membership is accounting-only state derived from the active ledger; no pool marker is persisted. By default, the newest 40,000 tokens are protected as the new pool. Everything older is the old pool, whose advisory target is also 40,000 tokens. Whole memories are never split across the boundary.
+Pool membership is accounting-only state derived from the active ledger; no pool marker is persisted. By default, the newest 40,000 tokens are protected as the new pool. Everything older is the old pool, whose advisory target is also 40,000 tokens. Whole memories are never split across the boundary, and the newest memory is always protected even if it alone exceeds the new-pool budget.
 
 A run starts when the old pool strictly exceeds its current trigger. The initial trigger is `oldMemoryPoolTargetTokens`. After a pass:
 
@@ -62,6 +62,6 @@ A contemplator probe is persisted as pending but displayed only after Pi accepts
 
 ## Concurrency
 
-Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. After any exit, the old pool remains durable and the next token threshold is derived from its current size.
+Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. A successful pass derives its next threshold from the current old-pool size; failed, stalled, incomplete, or no-model launches preserve the prior threshold so the backlog remains eligible at the next activity checkpoint.
 
 The compaction observer may record memories alongside compaction, but it never launches a summarizer from inside the compaction sidecar. A later normal activity checkpoint re-evaluates the pools. Reviews are serialized. None of these workers blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.

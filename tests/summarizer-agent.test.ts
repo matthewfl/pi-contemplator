@@ -8,6 +8,7 @@ const A = "aaaaaaaaaaaa";
 const B = "bbbbbbbbbbbb";
 const C = "cccccccccccc";
 const D = "dddddddddddd";
+const E = "eeeeeeeeeeee";
 
 function branch(): Entry[] {
 	return [
@@ -16,7 +17,8 @@ function branch(): Entry[] {
 			type: "custom", id: "obs", customType: "om.observations.recorded",
 			data: {
 				coversUpToId: "raw",
-				observations: [A, B, C, D].map((id, index) => ({
+				// E is the protected newest memory; A-D remain eligible for tests.
+				observations: [A, B, C, D, E].map((id, index) => ({
 					id, content: `Durable source ${index + 1} with enough detailed evidence to compress safely.`, timestamp: `2026-01-0${index + 1} 10:00`, relevance: "high", retention: "contextual", sourceEntryIds: ["raw"], tokenCount: 100,
 				})),
 			},
@@ -184,6 +186,30 @@ describe("summarizer agent", () => {
 			await finish(context);
 		}) });
 		expect(result.commit?.summaries.map((summary) => summary.consumedMemoryIds)).toEqual([[A, B], [C, D]]);
+	});
+
+	it("describes recalled, previously consumed sources as summarized and no longer visible", async () => {
+		const priorContent = `Prior result [${A}, ${B}].`;
+		const priorId = hashId(priorContent);
+		const consumedBranch = (): Entry[] => [
+			...branch(),
+			{
+				type: "custom", id: "prior-summary", customType: "om.summarizer.commit",
+				data: {
+					version: 1,
+					summaries: [{ id: priorId, content: priorContent, timestamp: "2026-01-02 10:00", sourceMemoryIds: [A, B], consumedMemoryIds: [A, B], tokenCount: 10 }],
+					coversUpToId: "obs", createdAt: 1, completedWithDone: true,
+					metrics: { consumedMemoryCount: 2, sourceTokens: 200, summaryTokens: 10, estimatedTokenReduction: 190 },
+				},
+			},
+		];
+		await runSummarizer({ ...base, getBranch: consumedBranch, agentLoop: fakeLoop(async (_n, context) => {
+			await tool(context, "recall").execute("r", { id: A });
+			const receipt = await tool(context, "summarize").execute("s", { summaries: [`Current result with prior provenance [${A}, ${C}, ${D}].`] });
+			expect(receipt.content[0].text).toContain(`memory [${A}] was already summarized by [${priorId}] and is no longer visible`);
+			expect(receipt.content[0].text).not.toContain(`memory [${A}] is not in the eligible old pool and remains visible`);
+			await finish(context);
+		}) });
 	});
 
 	it("atomically fixes a draft, releasing omitted sources and assigning a new id", async () => {

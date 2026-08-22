@@ -34,7 +34,7 @@ It can also use `search_memories` and `recall`. Summary citations are parsed str
 
 ## New and old memory pools
 
-The pools are computed from active memory and are not persisted. Observations and summaries are ordered by timestamp; a summary's timestamp is the newest timestamp among its cited sources. The newest whole-memory suffix fitting `newMemoryPoolMaxTokens` (40,000 by default) is protected as new memory. Everything older is the old pool and is eligible for summarization.
+The pools are computed from active memory and are not persisted. Observations and summaries are ordered by timestamp; a summary's timestamp is the newest timestamp among its cited sources. The newest whole-memory suffix fitting `newMemoryPoolMaxTokens` (40,000 by default) is protected as new memory. Memories are indivisible, so an oversized newest memory is still protected even though the new pool temporarily exceeds its budget. Everything older is the old pool and is eligible for summarization.
 
 The summarizer starts when old memory exceeds its current trigger, initially `oldMemoryPoolTargetTokens` (40,000 by default). A pass that remains above target advances the next trigger by `summarizerRetriggerTokens` (2,000 by default), avoiding immediate churn without introducing a time gate.
 

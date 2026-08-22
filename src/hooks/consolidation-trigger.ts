@@ -265,6 +265,19 @@ export function nextSummarizerTriggerTokens(targetTokens: number, postRunOldToke
 		: Math.max(targetTokens, postRunOldTokens + retriggerTokens);
 }
 
+/** Failed/incomplete launches must remain eligible at the prior threshold. */
+export function summarizerTriggerAfterRun(
+	successfullyCompleted: boolean,
+	currentTriggerTokens: number | undefined,
+	targetTokens: number,
+	postRunOldTokens: number,
+	retriggerTokens: number,
+): number | undefined {
+	return successfullyCompleted
+		? nextSummarizerTriggerTokens(targetTokens, postRunOldTokens, retriggerTokens)
+		: currentTriggerTokens;
+}
+
 function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
 	runtime.ensureConfig(ctx.cwd);
 	scheduleSummarizer(pi, runtime, ctx);
@@ -285,6 +298,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		runId,
 	}, async () => {
 		let stalled = false;
+		let successfullyCompleted = false;
 		let disposeStallWatchdog = () => {};
 		const startedAt = Date.now();
 		runtime.lastSummarizerStartedAt = startedAt;
@@ -331,12 +345,14 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 			}
 			if (result.commit) {
 				pi.appendEntry(OM_SUMMARIZER_COMMIT, result.commit);
+				successfullyCompleted = true;
 				const summary = `${result.commit.summaries.length} summaries consumed ${result.commit.metrics.consumedMemoryCount} memories, reducing visible memory by ~${result.commit.metrics.estimatedTokenReduction.toLocaleString()} tokens.`;
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
 				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
 				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: summarizer completed — ${summary}`, "info");
 				runtime.notifyMemoryUpdate(ctx);
 			} else {
+				successfullyCompleted = true;
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary: "No safe summaries were created." };
 				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("pi-contemplator: summarizer completed — no safe summaries", "info");
 			}
@@ -353,7 +369,9 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				if (runtime.lastSummarizerRun) runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun, completedAt };
 				const postRunPools = currentMemoryPools(runtime, ctx.sessionManager.getBranch() as Entry[]);
 				const target = runtime.config.oldMemoryPoolTargetTokens;
-				runtime.summarizerNextTriggerTokens = nextSummarizerTriggerTokens(
+				runtime.summarizerNextTriggerTokens = summarizerTriggerAfterRun(
+					successfullyCompleted,
+					runtime.summarizerNextTriggerTokens,
 					target,
 					postRunPools.oldTokens,
 					runtime.config.summarizerRetriggerTokens,
