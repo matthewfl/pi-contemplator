@@ -86,9 +86,11 @@ describe("summarizer agent", () => {
 	it("retains conservative, citation-driven prompt priorities", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("ONLY information");
 		expect(SUMMARIZER_SYSTEM).toContain("Anything you distort");
-		expect(SUMMARIZER_SYSTEM).toContain("User assertions");
+		expect(SUMMARIZER_SYSTEM).toContain("Memories of user intent should almost never leave visible context");
+		expect(SUMMARIZER_SYSTEM).toContain("Keep recent memories verbatim");
 		expect(SUMMARIZER_SYSTEM).toContain("Decision procedure:");
-		expect(SUMMARIZER_SYSTEM).toContain("Consider older memories first");
+		expect(SUMMARIZER_SYSTEM).toContain("Work from the oldest eligible memories forward");
+		expect(SUMMARIZER_SYSTEM).toContain("coverage stewardship");
 		expect(SUMMARIZER_SYSTEM).toContain("the last several uses of that tool may still be active evidence");
 		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips that would make future use easier");
 		expect(SUMMARIZER_SYSTEM).toContain("A citation lets a future agent recall the full source");
