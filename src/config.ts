@@ -41,8 +41,10 @@ export interface Config {
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
-	/** Advisory target for total active observation and summary tokens. */
-	observationsPoolTargetTokens: number;
+	/** Strict whole-memory token cap for the protected newest-memory suffix. */
+	newMemoryPoolMaxTokens: number;
+	/** Advisory token target for older summarizer-eligible memory. */
+	oldMemoryPoolTargetTokens: number;
 	agentMaxTurns: number;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
@@ -61,17 +63,11 @@ export interface Config {
 	contemplatorMinNewSummaries: number;
 	/** Minimum completed primary-model responses between contemplator runs. */
 	contemplatorMinTurns: number;
-	/** Delayed stateless loss-aware memory summarizer. */
+	/** Stateless loss-aware summarizer for the old memory pool. */
 	summarizerEnabled: boolean;
-	/** Minimum cumulative main-agent active minutes between normal passes. */
-	summarizerMinIntervalMinutes: number;
-	/** Maximum cumulative main-agent active minutes before pending work is due. */
-	summarizerMaxDelayMinutes: number;
-	summarizerMinNewMemoryTokens: number;
-	/** Pending new-memory tokens that bypass the minimum run interval. */
-	summarizerMaxPendingMemoryTokens: number;
-	summarizerPressureTriggerRatio: number;
-	/** Rendered visible-memory tokens available before pressure-valve sampling. */
+	/** Additional old-pool tokens required before retrying an above-target pool. */
+	summarizerRetriggerTokens: number;
+	/** Rendered old-memory tokens available before pressure-valve sampling. */
 	summarizerSamplingThresholdTokens: number;
 	debugLog: boolean;
 }
@@ -81,7 +77,8 @@ export const DEFAULTS: Config = {
 	compactAfterTokens: 81_000,
 	compactAfterTokensMode: "calibrated",
 	compactAfterTokensRatio: 0.68,
-	observationsPoolTargetTokens: 20_000,
+	newMemoryPoolMaxTokens: 40_000,
+	oldMemoryPoolTargetTokens: 40_000,
 	agentMaxTurns: 16,
 	showWorkerNotifications: true,
 	passive: false,
@@ -93,12 +90,8 @@ export const DEFAULTS: Config = {
 	contemplatorMinNewSummaries: 1,
 	contemplatorMinTurns: 10,
 	summarizerEnabled: true,
-	summarizerMinIntervalMinutes: 10,
-	summarizerMaxDelayMinutes: 180,
-	summarizerMinNewMemoryTokens: 5_000,
-	summarizerMaxPendingMemoryTokens: 20_000,
-	summarizerPressureTriggerRatio: 1,
-	summarizerSamplingThresholdTokens: 50_000,
+	summarizerRetriggerTokens: 2_000,
+	summarizerSamplingThresholdTokens: 60_000,
 	debugLog: false,
 };
 
@@ -172,10 +165,6 @@ function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
 }
 
-function nonNegativeIntegerOrUndefined(value: unknown): number | undefined {
-	return Number.isInteger(value) && typeof value === "number" && value >= 0 ? value : undefined;
-}
-
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
 }
@@ -217,21 +206,17 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observeAfterTokens",
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
-		"observationsPoolTargetTokens",
+		"newMemoryPoolMaxTokens",
+		"oldMemoryPoolTargetTokens",
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
 		"contemplatorMinNewSummaries",
 		"contemplatorMinTurns",
-		"summarizerMinNewMemoryTokens",
-		"summarizerMaxPendingMemoryTokens",
+		"summarizerRetriggerTokens",
 		"summarizerSamplingThresholdTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
-		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
-	}
-	for (const key of ["summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes"] as const) {
-		const normalizedValue = nonNegativeIntegerOrUndefined(value[key]);
 		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
 	}
 	if (isCompactAfterTokensMode(value.compactAfterTokensMode)) {
@@ -246,7 +231,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.showContemplatorMessages === "boolean") normalized.showContemplatorMessages = value.showContemplatorMessages;
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
 	if (typeof value.summarizerEnabled === "boolean") normalized.summarizerEnabled = value.summarizerEnabled;
-	if (typeof value.summarizerPressureTriggerRatio === "number" && Number.isFinite(value.summarizerPressureTriggerRatio) && value.summarizerPressureTriggerRatio > 0) normalized.summarizerPressureTriggerRatio = value.summarizerPressureTriggerRatio;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;

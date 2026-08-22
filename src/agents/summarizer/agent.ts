@@ -10,8 +10,11 @@ import type { LlmUsageInput } from "../../runtime.js";
 import {
 	foldLedger,
 	isMemoryDetails,
+	latestMemoryTimestamp,
+	partitionMemoryPools,
 	OM_OBSERVATIONS_RECORDED,
 	OM_SUMMARIZER_COMMIT,
+	type ActiveMemory,
 	type Entry,
 	type Observation,
 	type ReviewResult,
@@ -26,7 +29,6 @@ import { SUMMARIZER_CONTINUE, SUMMARIZER_SYSTEM } from "./prompts.js";
 import {
 	renderSummarizerMemory,
 	sampleSummarizerMemories,
-	type SamplingFairness,
 	type SummarizerMemory,
 	type SummarizerSample,
 } from "./sampling.js";
@@ -46,9 +48,11 @@ export type RunSummarizerArgs = {
 	apiKey: string;
 	headers?: Record<string, string>;
 	getBranch: () => Entry[];
+	/** Target size for the old, summarizer-eligible memory pool. */
 	targetTokens: number;
+	/** Strict whole-memory token cap for the protected newest-memory suffix. */
+	newPoolMaxTokens: number;
 	samplingThresholdTokens?: number;
-	fairness?: Map<string, SamplingFairness>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -193,16 +197,16 @@ function memoryTokenCount(node: MemoryNode): number {
 }
 
 function buildPrompt(sample: SummarizerSample, args: {
-	activeCount: number;
-	activeTokens: number;
-	targetTokens: number;
+	oldCount: number;
+	oldTokens: number;
 	newCount: number;
 	newTokens: number;
+	targetTokens: number;
 }): string {
-	const pressure = args.activeTokens > args.targetTokens
-		? `WHOLE-POOL MEMORY PRESSURE ADVISORY: the visible pool is ~${(args.activeTokens - args.targetTokens).toLocaleString()} tokens above the configured target. This describes the whole pool, including records absent from a sampled run. Never compensate by compressing visible records unsafely.`
-		: "The whole visible pool is at or below its configured token target.";
-	const metadata = `SUMMARIZER RUN\nVisible memories this run: ${sample.memories.length.toLocaleString()} selected from ${args.activeCount.toLocaleString()} visible memories.\nWhole visible pool: ~${args.activeTokens.toLocaleString()} tokens; configured target: ~${args.targetTokens.toLocaleString()}.\nNew observations since prior successful summary pass: ${args.newCount.toLocaleString()} / ~${args.newTokens.toLocaleString()} tokens.\nInput: ~${sample.selectedTokens.toLocaleString()} / ${sample.budgetTokens.toLocaleString()} token cap (${sample.sampled ? `sampled from ~${sample.eligibleTokens.toLocaleString()} tokens` : "complete set; sampling not used"}).\n${pressure}`;
+	const pressure = args.oldTokens > args.targetTokens
+		? `OLD-POOL MEMORY PRESSURE: the summarizer-eligible old pool is ~${(args.oldTokens - args.targetTokens).toLocaleString()} tokens above its configured target. Make safe progress on repetitive and low-value old history first.`
+		: "The old pool is at or below its configured target.";
+	const metadata = `SUMMARIZER RUN\nOld memories shown this run: ${sample.memories.length.toLocaleString()} selected from ${args.oldCount.toLocaleString()} eligible old memories.\nOld pool: ~${args.oldTokens.toLocaleString()} tokens; configured old-pool target: ~${args.targetTokens.toLocaleString()}.\nProtected new pool (not provided and not consumable): ${args.newCount.toLocaleString()} memories / ~${args.newTokens.toLocaleString()} tokens.\nInput: ~${sample.selectedTokens.toLocaleString()} / ${sample.budgetTokens.toLocaleString()} token cap (${sample.sampled ? `sampled from ~${sample.eligibleTokens.toLocaleString()} old-pool tokens` : "complete old pool; sampling not used"}).\n${pressure}`;
 	const records = sample.memories.length ? sample.memories.map(renderSummarizerMemory).join("\n") : "(none)";
 	return [
 		metadata,
@@ -244,20 +248,17 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 	const coversUpToId = latestObservationBatchEntryId(snapshot);
 	if (!coversUpToId) return { completed: false };
 	const folded = foldLedger(snapshot);
-	const activeMemories: SummarizerMemory[] = [
-		...folded.activeObservations.map((memory) => ({ kind: "observation" as const, memory })),
-		...folded.activeSummaries.map((memory) => ({ kind: "summary" as const, memory })),
-	];
-	const activeIds = new Set(activeMemories.map((item) => item.memory.id));
-	const newMemoryIds = newMemoryIdsSinceSummarizerCoverage(snapshot);
-	const samplingNow = args.now ?? Date.now();
+	const pools = partitionMemoryPools(
+		folded.activeObservations,
+		folded.activeSummaries,
+		args.newPoolMaxTokens,
+	);
+	const oldMemories: SummarizerMemory[] = pools.old;
+	const oldPoolIds = new Set(oldMemories.map((item) => item.memory.id));
 	const sample = sampleSummarizerMemories({
-		memories: activeMemories,
+		memories: oldMemories,
 		samplingThresholdTokens: args.samplingThresholdTokens,
-		newMemoryIds,
-		fairness: args.fairness,
 		random: args.random,
-		now: samplingNow,
 	});
 	const availableIds = new Set(sample.memories.map((item) => item.memory.id));
 	const memoryById = new Map<string, MemoryNode>();
@@ -309,7 +310,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 			else if (drafts.has(sourceId)) warnings.push(`memory [${sourceId}] is a current-run summary and remains verbatim until a future run`);
 			else if (keepVerbatim.has(sourceId)) warnings.push(`memory [${sourceId}] was marked keep verbatim and contributes no consumption`);
 			else if (consumedOwner.has(sourceId)) warnings.push(`memory [${sourceId}] was already used in a summary and contributes no additional savings`);
-			else if (!activeIds.has(sourceId)) warnings.push(`memory [${sourceId}] was already summarized away and contributes provenance but no consumption`);
+			else if (!oldPoolIds.has(sourceId)) warnings.push(`memory [${sourceId}] is not in the eligible old pool and remains visible`);
 			else consumable.push(sourceId);
 		}
 		if (consumable.length < 2) return { error: `summary cites only ${consumable.length} newly consumable memor${consumable.length === 1 ? "y" : "ies"}; at least 2 are required` };
@@ -317,8 +318,16 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		const tokenCount = estimateStringTokens(parsed.content);
 		const limit = Math.floor(sourceTokens * SUMMARY_MAX_SOURCE_TOKEN_RATIO);
 		if (tokenCount > limit) return { error: `summary is ~${tokenCount} tokens but exceeds the ${SUMMARY_MAX_SOURCE_TOKEN_RATIO} reduction limit of ~${limit} tokens for ~${sourceTokens} newly consumable source tokens. If preserving the meaning requires a summary this long, keep the source memories verbatim instead` };
+		const timestampSources = parsed.sourceMemoryIds
+			.map(nodeFor)
+			.filter((node): node is Exclude<MemoryNode, { kind: "review" }> => node !== undefined && node.kind !== "review")
+			.map((node): ActiveMemory => node.kind === "observation"
+				? { kind: "observation", memory: node.memory }
+				: { kind: "summary", memory: node.memory });
+		const timestamp = latestMemoryTimestamp(timestampSources);
+		if (!timestamp) return { error: "summary has no timestamped observation or summary source" };
 		return {
-			summary: { id, content: parsed.content, sourceMemoryIds: parsed.sourceMemoryIds, consumedMemoryIds: consumable, tokenCount },
+			summary: { id, content: parsed.content, timestamp, sourceMemoryIds: parsed.sourceMemoryIds, consumedMemoryIds: consumable, tokenCount },
 			sourceTokens,
 			warnings,
 		};
@@ -362,7 +371,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 			for (const id of unique(params.keep_verbatim ?? [])) {
 				if (!memoryById.has(id) && !drafts.has(id)) lines.push(`ERROR memory [${id}] was not found; double-check the copied id`);
 				else if (!availableIds.has(id)) lines.push(`ERROR memory [${id}] was not provided, searched, or recalled in this run`);
-				else if (!activeIds.has(id) && !drafts.has(id)) lines.push(`ERROR memory [${id}] is already summarized away and cannot be marked keep verbatim`);
+				else if (!oldPoolIds.has(id) && !drafts.has(id)) lines.push(`ERROR memory [${id}] is not in the eligible old pool and does not need run-local keep-verbatim bookkeeping`);
 				else if (consumedOwner.has(id)) lines.push(`ERROR memory [${id}] is already consumed by current-run summary [${consumedOwner.get(id)}]; fix or delete that summary first`);
 				else if (keepVerbatim.has(id)) lines.push(`memory [${id}] was already marked keep verbatim`);
 				else {
@@ -436,8 +445,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		const consumed = unique(finalDrafts.flatMap((summary) => summary.consumedMemoryIds));
 		const sourceTokens = consumed.reduce((sum, id) => sum + memoryTokenCount(nodeFor(id)!), 0);
 		const summaryTokens = finalDrafts.reduce((sum, summary) => sum + summary.tokenCount, 0);
-		const activeTokens = activeMemories.reduce((sum, item) => sum + item.memory.tokenCount, 0);
-		return { finalDrafts, consumed, sourceTokens, summaryTokens, reduction: Math.max(0, sourceTokens - summaryTokens), projectedTokens: Math.max(0, activeTokens - sourceTokens + summaryTokens), projectedCount: activeMemories.length - consumed.length + finalDrafts.length };
+		return { finalDrafts, consumed, sourceTokens, summaryTokens, reduction: Math.max(0, sourceTokens - summaryTokens), projectedTokens: Math.max(0, pools.oldTokens - sourceTokens + summaryTokens), projectedCount: oldMemories.length - consumed.length + finalDrafts.length };
 	};
 
 	const doneTool: AgentTool<typeof DoneSchema> = {
@@ -489,9 +497,13 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 	};
 	const tools: AgentTool<any>[] = [summarizeTool, fixSummaryTool, doneTool, searchTool, recallTool];
 
-	const activeTokens = activeMemories.reduce((sum, item) => sum + item.memory.tokenCount, 0);
-	const newTokens = activeMemories.filter((item) => newMemoryIds.has(item.memory.id)).reduce((sum, item) => sum + item.memory.tokenCount, 0);
-	const initialPrompt = buildPrompt(sample, { activeCount: activeMemories.length, activeTokens, targetTokens: args.targetTokens, newCount: newMemoryIds.size, newTokens });
+	const initialPrompt = buildPrompt(sample, {
+		oldCount: pools.old.length,
+		oldTokens: pools.oldTokens,
+		newCount: pools.new.length,
+		newTokens: pools.newTokens,
+		targetTokens: args.targetTokens,
+	});
 	const timestamp = args.now ?? Date.now();
 	const history: AgentMessage[] = [
 		{ role: "user", content: [{ type: "text", text: initialPrompt }], timestamp },
@@ -582,10 +594,6 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		if (drafts.size === 0) return { completed: false, reviewedUpToId: coversUpToId, sample };
 	}
 	if (!completedWithDone) debugLog("summarizer.incomplete", { acceptedSummaries: drafts.size });
-	if (sample.sampled && args.fairness && (completedWithDone || drafts.size > 0)) for (const item of sample.memories) {
-		const prior = args.fairness.get(item.memory.id) ?? { sampleCount: 0 };
-		args.fairness.set(item.memory.id, { lastSampledAt: samplingNow, sampleCount: prior.sampleCount + 1 });
-	}
 	const metrics = projectedMetrics();
 	if (metrics.finalDrafts.length === 0) return { completed: completedWithDone, reviewedUpToId: coversUpToId, sample };
 	return {

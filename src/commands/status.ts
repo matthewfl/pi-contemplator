@@ -6,6 +6,7 @@ import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
+	partitionMemoryPools,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	visibleProjection,
@@ -85,7 +86,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			const visibleObservationTokens = tokenSum(visible.observations);
 			const visibleSummaryTokens = tokenSum(visible.summaries);
-			const activeMemoryTokens = tokenSum([...folded.activeObservations, ...folded.activeSummaries]);
+			const pools = partitionMemoryPools(folded.activeObservations, folded.activeSummaries, runtime.config.newMemoryPoolMaxTokens);
 			const observationLine = appendSuffixes(
 				`Observations: ${folded.observations.length} recorded / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
 				[addedSuffix(drift.observationsOnlyInFull.length), removedSuffix(drift.observationsOnlyInVisible.length)],
@@ -107,13 +108,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				]
 				: [];
 
-			const summarizerPendingCount = runtime.summarizerPendingCount;
-			const summarizerPendingTokens = runtime.summarizerPendingTokens;
-			const summarizerMinInterval = runtime.config.summarizerMinIntervalMinutes;
-			const summarizerMaxDelay = runtime.config.summarizerMaxDelayMinutes;
-			const summarizerNewTokenTrigger = runtime.config.summarizerMinNewMemoryTokens;
-			const summarizerUrgentTokenTrigger = runtime.config.summarizerMaxPendingMemoryTokens;
-			const summarizerPressureRatio = runtime.config.summarizerPressureTriggerRatio;
+			const summarizerTrigger = runtime.summarizerNextTriggerTokens ?? runtime.config.oldMemoryPoolTargetTokens;
 			const summarizerSamplingTokens = runtime.config.summarizerSamplingThresholdTokens;
 			const lines = [
 				...passiveLines,
@@ -123,12 +118,13 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"",
 				"── Activity ──",
 				`Observer source backlog: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Summarizer backlog: ${summarizerPendingCount.toLocaleString()} memories / ~${summarizerPendingTokens.toLocaleString()} tokens${runtime.summarizerDirtySince === undefined ? " (clean)" : " (dirty)"}`,
+				`Summarizer trigger:      old pool ~${pools.oldTokens.toLocaleString()} / ${summarizerTrigger.toLocaleString()} tokens (${pct(pools.oldTokens, summarizerTrigger)}%)`,
 				`Automatic compaction backlog: ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} tokens`,
-				`Active memory pool:      ~${activeMemoryTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(activeMemoryTokens, runtime.config.observationsPoolTargetTokens)}%)`,
+				`New memory pool:         ~${pools.newTokens.toLocaleString()} / ${runtime.config.newMemoryPoolMaxTokens.toLocaleString()} maximum tokens (${pct(pools.newTokens, runtime.config.newMemoryPoolMaxTokens)}%)`,
+				`Old memory pool:         ~${pools.oldTokens.toLocaleString()} / ${runtime.config.oldMemoryPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(pools.oldTokens, runtime.config.oldMemoryPoolTargetTokens)}%)`,
 				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
-				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; min ${summarizerMinInterval} active-m / max ${summarizerMaxDelay} active-m / new-token trigger ${summarizerNewTokenTrigger.toLocaleString()} / urgent ${summarizerUrgentTokenTrigger.toLocaleString()} / pressure ${summarizerPressureRatio}× / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
+				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; retrigger after +${runtime.config.summarizerRetriggerTokens.toLocaleString()} old-pool tokens / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Observe source during compaction: ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,

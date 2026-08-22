@@ -10,16 +10,13 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "compactAfterTokens": 81000,
     "compactAfterTokensMode": "calibrated",
     "compactAfterTokensRatio": 0.68,
-    "observationsPoolTargetTokens": 20000,
     "agentMaxTurns": 16,
 
     "summarizerEnabled": true,
-    "summarizerMinIntervalMinutes": 10,
-    "summarizerMaxDelayMinutes": 180,
-    "summarizerMinNewMemoryTokens": 5000,
-    "summarizerMaxPendingMemoryTokens": 20000,
-    "summarizerPressureTriggerRatio": 1,
-    "summarizerSamplingThresholdTokens": 50000,
+    "newMemoryPoolMaxTokens": 40000,
+    "oldMemoryPoolTargetTokens": 40000,
+    "summarizerRetriggerTokens": 2000,
+    "summarizerSamplingThresholdTokens": 60000,
 
     "contemplatorEnabled": true,
     "showContemplatorMessages": true,
@@ -45,16 +42,13 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `compactAfterTokens` | `81000` | Proactive threshold in `calibrated` mode and fallback in ratio mode. |
 | `compactAfterTokensMode` | `calibrated` | `calibrated` or `ratio`. |
 | `compactAfterTokensRatio` | `0.68` | Context-window fraction in ratio mode; must be between 0 and 1. |
-| `observationsPoolTargetTokens` | `20000` | Advisory total active-memory target shown to the summarizer. Changing it requests a new pressure pass immediately, subject to the configured minimum interval. |
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
 | `model` | current model | Optional `{ provider, id, thinking }` override for observer and summarizer. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |
-| `summarizerMinIntervalMinutes` | `10` | Normal minimum cumulative agent-active time between summarizer starts. Zero is valid. |
-| `summarizerMaxDelayMinutes` | `180` | Maximum cumulative main-agent active-time delay after new memory. Zero is valid. |
-| `summarizerMinNewMemoryTokens` | `5000` | Pending new-memory tokens that make a pass ready before max delay, while still respecting the normal minimum interval. |
-| `summarizerMaxPendingMemoryTokens` | `20000` | Urgent pending-memory threshold. At or above this value, the summarizer bypasses the minimum interval and starts at the next activity checkpoint. |
-| `summarizerPressureTriggerRatio` | `1` | Active-token ratio against `observationsPoolTargetTokens` that makes a pass ready. |
-| `summarizerSamplingThresholdTokens` | `50000` | Rendered memory-input token budget. Sampling starts only when eligible input exceeds this count and samples back down to this budget. |
+| `newMemoryPoolMaxTokens` | `40000` | Strict whole-memory cap for the newest protected memories. Older memories overflow into the old pool. |
+| `oldMemoryPoolTargetTokens` | `40000` | Advisory old-pool target. The summarizer runs only on old memories after this is exceeded. |
+| `summarizerRetriggerTokens` | `2000` | If a pass leaves the old pool above target, require this much additional old-pool growth before another pass. |
+| `summarizerSamplingThresholdTokens` | `60000` | Rendered old-memory input cap. Above it, inverse-length sampling favors compactable groups of small memories. |
 | `contemplatorEnabled` | `true` | Enables contemplator updates. |
 | `contemplatorModel` | current model | Optional model override for the contemplator. |
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
@@ -66,40 +60,37 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `compactionObserverEnabled` | `true` | Runs an asynchronous observer sidecar when compaction begins. |
 | `showWorkerNotifications` | `true` | Shows routine observer, summarizer, and contemplator progress notifications. |
 | `passive` | `false` | Disables proactive background work while leaving ledger views, tools, and compaction hooks available. |
-| `debugLog` | `false` | Writes structured diagnostics under the observational-memory debug directory. |
+| `debugLog` | `false` | Writes structured diagnostics under the pi-contemplator debug directory. |
 
-Positive count/token settings must be finite positive integers. Summarizer minute settings additionally accept zero. Invalid values are ignored.
+Positive count/token settings must be finite positive integers. Invalid values are ignored.
 
-## Summarizer timing examples
+## Memory-pool examples
 
-Conservative, low-frequency curation:
-
-```json
-{
-  "observational-memory": {
-    "summarizerMinIntervalMinutes": 60,
-    "summarizerMaxDelayMinutes": 360,
-    "summarizerMinNewMemoryTokens": 10000
-  }
-}
-```
-
-Responsive curation for a high-volume session:
+Keep more recent working context verbatim while retaining the default old-pool target:
 
 ```json
 {
   "observational-memory": {
-    "summarizerMinIntervalMinutes": 10,
-    "summarizerMaxDelayMinutes": 60,
-    "summarizerMinNewMemoryTokens": 2500,
-    "summarizerMaxPendingMemoryTokens": 20000,
-    "summarizerPressureTriggerRatio": 0.9,
-    "summarizerSamplingThresholdTokens": 50000
+    "newMemoryPoolMaxTokens": 60000,
+    "oldMemoryPoolTargetTokens": 40000
   }
 }
 ```
 
-These settings schedule opportunities, not mandatory condensation. The summarizer can safely commit no changes.
+Compress old history more aggressively in a high-volume session:
+
+```json
+{
+  "observational-memory": {
+    "newMemoryPoolMaxTokens": 40000,
+    "oldMemoryPoolTargetTokens": 25000,
+    "summarizerRetriggerTokens": 1000,
+    "summarizerSamplingThresholdTokens": 60000
+  }
+}
+```
+
+The pool boundary and trigger threshold are derived in memory from the durable ledger; they are not additional ledger records. The old-pool target schedules an opportunity, not mandatory condensation—the summarizer may safely commit no changes.
 
 ## Models
 
@@ -116,7 +107,7 @@ Agent model overrides use:
 - `/om:settings` opens the settings UI.
 - `/om:settings summarizer on|off` toggles summarizer runs.
 - `/om:settings messages on|off` controls visibility, not delivery, of contemplator cards.
-- `/om:status` reports visible/summarized counts, active memory tokens, summarizer backlog/timing, and worker state.
+- `/om:status` reports visible/summarized counts, new/old memory pools, the next summarizer threshold, and worker state.
 - `/om:view`, `/om:view full`, `/om:view contemplator`, `/om:view summarizer`, and `/om:view reviewer` inspect memory and private transcripts. The summarizer view is launch-local because summarizer transcripts are not persisted to the ledger.
 
 ## Environment

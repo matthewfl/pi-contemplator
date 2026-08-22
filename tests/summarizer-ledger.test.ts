@@ -27,7 +27,7 @@ function observation(id: string, content: string): Observation {
 }
 
 function summary(overrides: Partial<Summary> = {}): Summary {
-	return { id: S, content: `Combined evidence [${A}, ${B}].`, sourceMemoryIds: [A, B], consumedMemoryIds: [A, B], tokenCount: 6, ...overrides };
+	return { id: S, content: `Combined evidence [${A}, ${B}].`, timestamp: "2026-01-01 10:00", sourceMemoryIds: [A, B], consumedMemoryIds: [A, B], tokenCount: 6, ...overrides };
 }
 
 function commit(value = summary()): Entry {
@@ -96,7 +96,8 @@ describe("summary graph folding and projection", () => {
 		const projection = fullProjection(entries);
 		expect(projection.reviews).toEqual([review()]);
 		const rendered = renderSummary(projection.summaries, projection.observations);
-		expect(rendered).toContain("## Summaries");
+		expect(rendered).toContain("## Memories (chronological)");
+		expect(rendered).toContain("use the recall tool");
 		expect(rendered).not.toContain("No durable change");
 	});
 });

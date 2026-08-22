@@ -4,12 +4,11 @@
 
 1. `agent_start`, `turn_end`, and main-agent activity checkpoints evaluate background work.
 2. The observer serializes the oldest uncovered source entries, bounded by its input cap, and appends `om.observations.recorded`.
-3. Newly created memory ids mark the summarizer dirty. Repeated ledger occurrences of the same content-addressed memory do not create duplicate work.
-4. The scheduler coalesces changes until its token threshold, pressure threshold, or maximum cumulative agent-active delay is reached, while respecting a minimum interval and single-flight lock.
-5. A fresh summarizer run receives selected active memories and creates strictly validated citation summaries.
-6. Accepted work appends one atomic `om.summarizer.commit`. Partial useful work is retained even if the run reaches its turn/output limit; an empty run writes no commit.
-7. Dirty counters are reconciled from the durable coverage marker when a pass exits, so observations arriving during the run are neither lost nor double-counted.
-8. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
+3. Active observations and summaries are sorted chronologically. The newest whole-memory suffix fitting `newMemoryPoolMaxTokens` is the protected new pool; the older prefix is the summarizer-eligible old pool.
+4. When the old pool exceeds its current token trigger, a fresh single-flight summarizer run receives only old memories and creates strictly validated citation summaries.
+5. Accepted work appends one atomic `om.summarizer.commit`. Partial useful work is retained even if the run reaches its turn/output limit; an empty run writes no commit.
+6. If the pass reaches the old-pool target, the next trigger resets to the target. Otherwise it advances to the post-run old-pool size plus the configured retrigger growth.
+7. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
 
 ## Observer coverage
 
@@ -19,15 +18,16 @@ The cap is explicit `observerChunkMaxTokens` when configured, otherwise 20% of t
 
 ## Summarizer scheduling
 
-A dirty backlog tracks newly created memory count, estimated tokens, and first-dirty cumulative main-agent active time. A run becomes eligible when:
+Pool membership is accounting-only state derived from the active ledger; no pool marker is persisted. By default, the newest 40,000 tokens are protected as the new pool. Everything older is the old pool, whose advisory target is also 40,000 tokens. Whole memories are never split across the boundary.
 
-- pending memory tokens reach `summarizerMinNewMemoryTokens`; or
-- active memory reaches `observationsPoolTargetTokens * summarizerPressureTriggerRatio`; or
-- `summarizerMaxDelayMinutes` of main-agent active time elapses.
+A run starts when the old pool strictly exceeds its current trigger. The initial trigger is `oldMemoryPoolTargetTokens`. After a pass:
 
-The scheduler normally waits until `summarizerMinIntervalMinutes` of active time after the prior start. If pending memory reaches `summarizerMaxPendingMemoryTokens` (20k by default), it bypasses that minimum. Scheduling is revisited at activity checkpoints rather than with a wall-clock timer, so time waiting for the user does not age the backlog. Updates coalesce while one run is active.
+- if old memory is at or below the target, the next trigger resets to the target;
+- otherwise the next trigger is `postRunOldTokens + summarizerRetriggerTokens` (2,000 by default).
 
-The target is advisory. Input sampling is a separate safety valve: `summarizerSamplingThresholdTokens` caps rendered memory input at 50,000 tokens by default.
+There are no wall-clock or agent-time scheduling gates. The in-memory next-trigger value is re-evaluated at main-agent activity checkpoints and is safely recomputed after restart. Updates coalesce while one run is active.
+
+Only old memories are eligible and shown to the summarizer. Input sampling is a separate escape valve: when rendered old memory exceeds `summarizerSamplingThresholdTokens` (60,000 by default), weighted sampling back to that budget uses weight proportional to inverse memory length. In normal operation the 40,000-token target should make sampling uncommon.
 
 ## Summarizer validation and commit
 
@@ -62,6 +62,6 @@ A contemplator probe is persisted as pending but displayed only after Pi accepts
 
 ## Concurrency
 
-Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. Aborted work remains dirty and eligible for a later retry.
+Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. After any exit, the old pool remains durable and the next token threshold is derived from its current size.
 
-The compaction observer may record memories alongside compaction, but it only marks summarizer work dirty and never launches a summarizer from inside the compaction sidecar. A later normal activity checkpoint schedules it. Reviews are serialized. None of these workers blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.
+The compaction observer may record memories alongside compaction, but it never launches a summarizer from inside the compaction sidecar. A later normal activity checkpoint re-evaluates the pools. Reviews are serialized. None of these workers blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.

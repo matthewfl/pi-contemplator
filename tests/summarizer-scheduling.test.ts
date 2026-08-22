@@ -1,15 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
-import { createSummarizerStallWatchdog, reconcileSummarizerDirty, registerConsolidationTrigger, shouldScheduleSummarizerFromObserver, summarizerDirtySinceAgentTime, summarizerScheduleDelayMs } from "../src/hooks/consolidation-trigger.js";
+import { createSummarizerStallWatchdog, currentMemoryPools, nextSummarizerTriggerTokens, registerConsolidationTrigger, shouldScheduleSummarizerFromObserver, summarizerTriggerTokens } from "../src/hooks/consolidation-trigger.js";
 import { newMemoryIdsSinceSummarizerCoverage } from "../src/agents/summarizer/agent.js";
 import type { Entry } from "../src/session-ledger/index.js";
 
 function runtime(): Runtime {
 	const value = new Runtime();
-	value.config = { ...DEFAULTS, summarizerMinIntervalMinutes: 10, summarizerMaxDelayMinutes: 180, summarizerMinNewMemoryTokens: 5_000, summarizerMaxPendingMemoryTokens: 20_000 };
+	value.config = { ...DEFAULTS };
 	value.configLoaded = true;
 	return value;
+}
+
+function observation(id: string, timestamp: string, tokenCount: number) {
+	return { id, content: `memory ${id}`, timestamp, relevance: "low", retention: "contextual", sourceEntryIds: ["raw"], tokenCount };
+}
+
+function memoryEntries(tokenCounts: number[]): Entry[] {
+	return [{
+		type: "custom", id: "obs", customType: "om.observations.recorded",
+		data: { coversUpToId: "raw", observations: tokenCounts.map((tokens, index) => observation(String(index + 1).repeat(12), `2026-01-0${index + 1} 00:00`, tokens)) },
+	}];
 }
 
 describe("summarizer scheduling", () => {
@@ -24,9 +35,9 @@ describe("summarizer scheduling", () => {
 			maxActive = Math.max(maxActive, active);
 			await held;
 			active--;
-		}, 0);
+		});
 		expect(first).toBeDefined();
-		expect(value.launchSummarizerTask({ hasUI: false }, async () => { active++; }, 0)).toBeUndefined();
+		expect(value.launchSummarizerTask({ hasUI: false }, async () => { active++; })).toBeUndefined();
 		expect(active).toBe(1);
 		release();
 		await first;
@@ -34,13 +45,13 @@ describe("summarizer scheduling", () => {
 			active++;
 			maxActive = Math.max(maxActive, active);
 			active--;
-		}, 1);
+		});
 		expect(next).toBeDefined();
 		await next;
 		expect(maxActive).toBe(1);
 	});
 
-	it("marks compaction-observer work dirty without launching a summarizer inside compaction", () => {
+	it("does not launch a summarizer from the compaction observer sidecar", () => {
 		expect(shouldScheduleSummarizerFromObserver({ observerOnly: true })).toBe(false);
 		expect(shouldScheduleSummarizerFromObserver({})).toBe(true);
 	});
@@ -63,91 +74,46 @@ describe("summarizer scheduling", () => {
 		}
 	});
 
-	it("uses cumulative agent-active time and excludes idle wall-clock time", () => {
+	it("derives a strict newest 40-token pool and an older eligible prefix", () => {
 		const value = runtime();
-		value.summarizerDirtySince = 0;
-		value.summarizerLastStartedAt = 0;
-		value.summarizerPendingTokens = 6_000;
-		expect(summarizerScheduleDelayMs(value, 0, 5 * 60_000)).toBe(5 * 60_000);
-		expect(summarizerScheduleDelayMs(value, 0, 10 * 60_000)).toBe(0);
+		value.config = { ...value.config, newMemoryPoolMaxTokens: 40 };
+		const pools = currentMemoryPools(value, memoryEntries([20, 20, 20, 20]));
+		expect(pools.old.map((item) => item.memory.id)).toEqual(["111111111111", "222222222222"]);
+		expect(pools.new.map((item) => item.memory.id)).toEqual(["333333333333", "444444444444"]);
+		expect(pools).toMatchObject({ oldTokens: 40, newTokens: 40, totalTokens: 80 });
 	});
 
-	it("lets an urgent token backlog bypass the minimum interval", () => {
+	it("uses the target initially and an in-memory retrigger threshold afterward", () => {
 		const value = runtime();
-		value.summarizerDirtySince = 0;
-		value.summarizerLastStartedAt = 9 * 60_000;
-		value.summarizerPendingTokens = 20_000;
-		expect(summarizerScheduleDelayMs(value, 0, 9 * 60_000)).toBe(0);
+		value.config = { ...value.config, oldMemoryPoolTargetTokens: 40, summarizerRetriggerTokens: 2 };
+		expect(summarizerTriggerTokens(value)).toBe(40);
+		expect(nextSummarizerTriggerTokens(40, 40, 2)).toBe(40);
+		expect(nextSummarizerTriggerTokens(40, 55, 2)).toBe(57);
+		value.summarizerNextTriggerTokens = 57;
+		expect(summarizerTriggerTokens(value)).toBe(57);
+		value.advanceContextGeneration();
+		expect(summarizerTriggerTokens(value)).toBe(40);
 	});
 
-	it("preserves the original dirty timestamp across repeated marks", () => {
+	it("resets the threshold cycle when pool settings change", () => {
 		const value = runtime();
-		value.markSummarizerDirty(1, 10, 100);
-		value.markSummarizerDirty(2, 20, 500);
-		expect(value.summarizerDirtySince).toBe(100);
-		expect(value.summarizerPendingCount).toBe(3);
-		expect(value.summarizerPendingTokens).toBe(30);
-	});
-
-	it("reconciles stale counters exactly from durable coverage", () => {
-		const value = runtime();
-		value.markSummarizerDirty(9, 999, 1);
-		const entries: Entry[] = [
-			{ type: "custom", id: "activity-old", customType: "om.agent.activity", data: { durationMs: 100 } },
-			{ type: "custom", id: "obs-old", customType: "om.observations.recorded", data: { coversUpToId: "activity-old", observations: [{ id: "aaaaaaaaaaaa", content: "covered", timestamp: "2026-01-01 00:00", relevance: "low", sourceEntryIds: ["activity-old"], tokenCount: 3 }] } },
-			{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { coversUpToId: "obs-old" } },
-			{ type: "custom", id: "activity-new", customType: "om.agent.activity", data: { durationMs: 500 } },
-			{ type: "custom", id: "obs-new", customType: "om.observations.recorded", data: { coversUpToId: "activity-new", observations: [{ id: "bbbbbbbbbbbb", content: "uncovered", timestamp: "2026-01-02 00:00", relevance: "low", sourceEntryIds: ["activity-new"], tokenCount: 7 }] } },
-		];
-		expect(reconcileSummarizerDirty(value, entries)).toEqual(new Set(["bbbbbbbbbbbb"]));
-		expect(value.summarizerPendingCount).toBe(1);
-		expect(value.summarizerPendingTokens).toBe(7);
-		expect(value.summarizerDirtySince).toBe(600);
-	});
-
-	it("keeps an explicit target-change pressure pass dirty without new observations", () => {
-		const value = runtime();
-		value.config = { ...value.config, observationsPoolTargetTokens: 5, summarizerPressureTriggerRatio: 1 };
-		value.summarizerLastStartedAt = 0; // minimum interval keeps this test from launching
-		const entries: Entry[] = [{
-			type: "custom",
-			id: "obs-existing",
-			customType: "om.observations.recorded",
-			data: { coversUpToId: "raw", observations: [
-				{ id: "aaaaaaaaaaaa", content: "existing active memory", timestamp: "2026-01-01 00:00", relevance: "low", sourceEntryIds: ["raw"], tokenCount: 12 },
-			] },
-		}];
+		value.summarizerNextTriggerTokens = 80;
+		const entries = memoryEntries([10]);
 		registerConsolidationTrigger({ on: vi.fn() } as any, value);
 		const ctx = { cwd: "/tmp", hasUI: false, model: undefined, modelRegistry: {}, sessionManager: { getBranch: () => entries } };
-
-		value.notifySettingsUpdate(ctx, { observationsPoolTargetTokens: 5 });
-
-		expect(value.summarizerMaintenanceRequested).toBe(true);
-		expect(value.summarizerPendingCount).toBe(1);
-		expect(value.summarizerPendingTokens).toBe(12);
-		expect(value.summarizerDirtySince).toBe(0);
+		value.notifySettingsUpdate(ctx, { newMemoryPoolMaxTokens: 50 });
+		expect(value.summarizerNextTriggerTokens).toBeUndefined();
 		expect(value.summarizerInFlight).toBe(false);
-		reconcileSummarizerDirty(value, entries);
-		expect(value.summarizerMaintenanceRequested).toBe(true);
-		expect(value.summarizerPendingTokens).toBe(12);
 	});
 
-	it("reconstructs new observation ids after the latest summary coverage", () => {
+	it("retains durable observation coverage reconstruction for commit provenance", () => {
 		const entries: Entry[] = [
 			{ type: "message", id: "raw-1" },
-			{ type: "custom", id: "obs-1", customType: "om.observations.recorded", data: { coversUpToId: "raw-1", observations: [{ id: "aaaaaaaaaaaa", content: "old", timestamp: "2026-01-01 00:00", relevance: "low", sourceEntryIds: ["raw-1"], tokenCount: 1 }] } },
-			{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { version: 1, summaries: [{ id: "cccccccccccc", content: "summary [aaaaaaaaaaaa, bbbbbbbbbbbb]", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 1 }], coversUpToId: "obs-1", createdAt: 1, completedWithDone: true, metrics: { consumedMemoryCount: 2, sourceTokens: 2, summaryTokens: 1, estimatedTokenReduction: 1 } } },
+			{ type: "custom", id: "obs-1", customType: "om.observations.recorded", data: { coversUpToId: "raw-1", observations: [observation("aaaaaaaaaaaa", "2026-01-01 00:00", 1)] } },
+			{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { version: 1, summaries: [{ id: "cccccccccccc", content: "summary [aaaaaaaaaaaa, bbbbbbbbbbbb]", timestamp: "2026-01-01 00:00", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 1 }], coversUpToId: "obs-1", createdAt: 1, completedWithDone: true, metrics: { consumedMemoryCount: 2, sourceTokens: 2, summaryTokens: 1, estimatedTokenReduction: 1 } } },
 			{ type: "message", id: "raw-2" },
-			{ type: "custom", id: "obs-2", customType: "om.observations.recorded", data: { coversUpToId: "raw-2", observations: [{ id: "dddddddddddd", content: "new", timestamp: "2026-01-02 00:00", relevance: "low", sourceEntryIds: ["raw-2"], tokenCount: 1 }] } },
+			{ type: "custom", id: "obs-2", customType: "om.observations.recorded", data: { coversUpToId: "raw-2", observations: [observation("dddddddddddd", "2026-01-02 00:00", 1)] } },
 		];
 		expect(newMemoryIdsSinceSummarizerCoverage(entries)).toEqual(new Set(["dddddddddddd"]));
-	});
-
-	it("uses the observation's durable activity checkpoint as dirty age", () => {
-		const entries: Entry[] = [
-			{ type: "custom", id: "activity", customType: "om.agent.activity", data: { durationMs: 1234 } },
-			{ type: "custom", id: "obs", customType: "om.observations.recorded", data: { coversUpToId: "activity", observations: [{ id: "aaaaaaaaaaaa" }] } },
-		];
-		expect(summarizerDirtySinceAgentTime(entries, new Set(["aaaaaaaaaaaa"]))).toBe(1234);
 	});
 });

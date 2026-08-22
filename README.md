@@ -149,7 +149,7 @@ Running extra agents in the background can be worrying — what if they take ove
 | Agent | What it does | When it runs |
 |---|---|---|
 | **Observer** | Extracts concrete, timestamped observations from the primary session, citing source entries and assigning a simple retention class. | In the background after turns, once enough new source text accumulates. |
-| **Summarizer** | Condenses related observations and older summaries into shorter, citation-linked summaries. Consumed sources leave active context but remain searchable and recallable through the graph. | On a coalesced schedule after new memories arrive, sooner under memory pressure. |
+| **Summarizer** | Condenses related old observations and summaries into shorter, citation-linked summaries. Consumed sources leave active context but remain searchable and recallable through the graph. | When the old memory pool exceeds its token target; the newest memory pool remains protected. |
 | **Contemplator** | Watches accumulated memories for reasoning gaps, contradictions, overlooked alternatives, and recurring structural concerns; can send a focused probe or request a review. | Asynchronously after enough new memories accumulate. |
 | **Reviewer** | Performs a deep, scoped (workflow or software) structural investigation and records a durable proposal or a no-proposal conclusion. | Only when the contemplator commissions a review, and only one at a time. |
 

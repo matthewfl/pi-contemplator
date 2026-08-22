@@ -160,12 +160,13 @@ describe("Runtime V3 behavior", () => {
 		])).toMatchObject({ contemplatorMinTurns: 8 });
 	});
 
-	it("accepts an active-memory target without an obsolete maximum constraint", () => {
+	it("accepts independent new-pool and old-pool token limits", () => {
 		const runtime = new Runtime();
-		runtime.setSessionSettings({ observationsPoolTargetTokens: 80_000 });
+		runtime.setSessionSettings({ newMemoryPoolMaxTokens: 30_000, oldMemoryPoolTargetTokens: 50_000 });
 
-		expect(runtime.config.observationsPoolTargetTokens).toBe(80_000);
-		expect(runtime.getSessionSettings().observationsPoolTargetTokens).toBe(80_000);
+		expect(runtime.config.newMemoryPoolMaxTokens).toBe(30_000);
+		expect(runtime.config.oldMemoryPoolTargetTokens).toBe(50_000);
+		expect(runtime.getSessionSettings()).toMatchObject({ newMemoryPoolMaxTokens: 30_000, oldMemoryPoolTargetTokens: 50_000 });
 	});
 
 	it("keeps compaction flags independent", () => {

@@ -9,7 +9,7 @@ type ModelRegistryLike = {
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerSamplingThresholdTokens";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "summarizerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
@@ -32,7 +32,7 @@ function hasOverride(settings: SessionSettings, key: string): boolean {
 	return  Object.hasOwn(settings, key);
 }
 
-function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio" | "summarizerPressureTriggerRatio"): string {
+function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "compactAfterTokensRatio"): string {
 	const current = runtime.config[key];
 	const defaultValue = runtime.getDefaultConfig()[key];
 	const renderedDefault = defaultValue === undefined ? "derived" : String(defaultValue);
@@ -132,12 +132,11 @@ async function chooseModel(ctx: ExtensionContext, current: ConfiguredModel | und
 }
 
 async function editNumber(ctx: ExtensionContext, runtime: Runtime, key: NumberSetting, title: string): Promise<number | undefined> {
-	const permitsZero = key === "summarizerMinIntervalMinutes" || key === "summarizerMaxDelayMinutes";
-	const requirement = permitsZero ? "non-negative integer" : "positive integer";
+	const requirement = "positive integer";
 	const value = await ctx.ui.input(`${title} (current: ${scalarLabel(runtime, key)})`, `${requirement}; blank cancels`);
 	if (value === undefined || value.trim() === "") return undefined;
 	const parsed = Number(value.trim());
-	if (!Number.isInteger(parsed) || (permitsZero ? parsed < 0 : parsed <= 0)) {
+	if (!Number.isInteger(parsed) || parsed <= 0) {
 		ctx.ui.notify(`Value must be a ${requirement}.`, "warning");
 		return undefined;
 	}
@@ -199,12 +198,9 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Contemplator new-summary trigger (count): ${scalarLabel(runtime, "contemplatorMinNewSummaries")}`,
 				`Contemplator response spacing (count): ${scalarLabel(runtime, "contemplatorMinTurns")}`,
 				`Summarizer enabled: ${scalarLabel(runtime, "summarizerEnabled")}`,
-				`Active memory target (tokens, advisory): ${scalarLabel(runtime, "observationsPoolTargetTokens")}`,
-				`Summarizer minimum spacing (agent-active minutes): ${scalarLabel(runtime, "summarizerMinIntervalMinutes")}`,
-				`Summarizer maximum backlog age (agent-active minutes): ${scalarLabel(runtime, "summarizerMaxDelayMinutes")}`,
-				`Summarizer normal backlog trigger (tokens): ${scalarLabel(runtime, "summarizerMinNewMemoryTokens")}`,
-				`Summarizer urgent backlog trigger (tokens): ${scalarLabel(runtime, "summarizerMaxPendingMemoryTokens")}`,
-				`Summarizer pool-pressure multiplier: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")}`,
+				`New memory pool maximum (tokens): ${scalarLabel(runtime, "newMemoryPoolMaxTokens")}`,
+				`Old memory pool target (tokens, advisory): ${scalarLabel(runtime, "oldMemoryPoolTargetTokens")}`,
+				`Summarizer old-pool retrigger growth (tokens): ${scalarLabel(runtime, "summarizerRetriggerTokens")}`,
 				`Summarizer input cap before sampling (tokens): ${scalarLabel(runtime, "summarizerSamplingThresholdTokens")}`,
 				`Structural reviewer enabled: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `${modelLabel(runtime.getDefaultConfig().reviewerModel)} (default)`}`,
@@ -241,11 +237,6 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else if (choice.startsWith("Automatic compaction threshold mode:")) {
 				const mode = await ctx.ui.select("Automatic compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });
-			} else if (choice.startsWith("Summarizer pool-pressure multiplier:")) {
-				const value = await ctx.ui.input(`Summarizer pool-pressure multiplier (current: ${scalarLabel(runtime, "summarizerPressureTriggerRatio")})`, "positive multiplier, e.g. 1 or 1.5");
-				const ratio = value === undefined ? undefined : Number(value.trim());
-				if (ratio !== undefined && Number.isFinite(ratio) && ratio > 0) appendSettings(pi, runtime, { summarizerPressureTriggerRatio: ratio }, ctx);
-				else if (value !== undefined) ctx.ui.notify("Ratio must be a positive number.", "warning");
 			} else if (choice.startsWith("Automatic compaction context ratio:")) {
 				const value = await ctx.ui.input(`Automatic compaction context ratio (current: ${scalarLabel(runtime, "compactAfterTokensRatio")})`, "decimal between 0 and 1");
 				const ratio = value === undefined ? undefined : Number(value.trim());
@@ -257,14 +248,12 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Observer input cap (tokens):", "observerChunkMaxTokens", "Observer input cap (tokens)"],
 					["Observer and summarizer max rounds:", "agentMaxTurns", "Observer and summarizer max rounds"],
 					["Automatic compaction trigger:", "compactAfterTokens", "Automatic compaction trigger"],
-					["Active memory target (tokens, advisory):", "observationsPoolTargetTokens", "Active memory target (tokens, advisory)"],
+					["New memory pool maximum (tokens):", "newMemoryPoolMaxTokens", "New memory pool maximum (tokens)"],
+					["Old memory pool target (tokens, advisory):", "oldMemoryPoolTargetTokens", "Old memory pool target (tokens, advisory)"],
 					["Contemplator new-observation trigger (count):", "contemplatorMinNewObservations", "Contemplator new-observation trigger (count)"],
 					["Contemplator new-summary trigger (count):", "contemplatorMinNewSummaries", "Contemplator new-summary trigger (count)"],
 					["Contemplator response spacing (count):", "contemplatorMinTurns", "Contemplator response spacing (count)"],
-					["Summarizer minimum spacing (agent-active minutes):", "summarizerMinIntervalMinutes", "Summarizer minimum spacing (agent-active minutes)"],
-					["Summarizer maximum backlog age (agent-active minutes):", "summarizerMaxDelayMinutes", "Summarizer maximum backlog age (agent-active minutes)"],
-					["Summarizer normal backlog trigger (tokens):", "summarizerMinNewMemoryTokens", "Summarizer normal backlog trigger (tokens)"],
-					["Summarizer urgent backlog trigger (tokens):", "summarizerMaxPendingMemoryTokens", "Summarizer urgent backlog trigger (tokens)"],
+					["Summarizer old-pool retrigger growth (tokens):", "summarizerRetriggerTokens", "Summarizer old-pool retrigger growth (tokens)"],
 					["Summarizer input cap before sampling (tokens):", "summarizerSamplingThresholdTokens", "Summarizer input cap before sampling (tokens)"],
 				];
 				const selected = numberChoice.find(([prefix]) => choice.startsWith(prefix));

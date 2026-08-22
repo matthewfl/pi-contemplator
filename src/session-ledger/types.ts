@@ -51,6 +51,8 @@ export type Observation = {
 export type Summary = {
 	id: string;
 	content: string;
+	/** Newest effective timestamp among the cited source memories. */
+	timestamp: string;
 	/** Every inline-cited memory id, deduplicated in first-occurrence order. */
 	sourceMemoryIds: string[];
 	/** Sources newly removed from automatic visibility by this summary. */
@@ -223,7 +225,7 @@ export function isObservation(value: unknown): value is Observation {
 
 export function isSummary(value: unknown): value is Summary {
 	if (!isPlainRecord(value)) return false;
-	if (!isMemoryId(value.id) || !isNonEmptyString(value.content) || !isTokenCount(value.tokenCount)) return false;
+	if (!isMemoryId(value.id) || !isNonEmptyString(value.content) || !isNonEmptyString(value.timestamp) || !isTokenCount(value.tokenCount)) return false;
 	if (!hasUniqueMemoryIds(value.sourceMemoryIds, 2) || !hasUniqueMemoryIds(value.consumedMemoryIds, 2)) return false;
 	const sourceIds = new Set(value.sourceMemoryIds);
 	return value.consumedMemoryIds.every((id) => sourceIds.has(id));

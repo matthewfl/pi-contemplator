@@ -43,7 +43,7 @@ async function finish(context: any): Promise<void> {
 	await tool(context, "done").execute("done-2", {});
 }
 
-const base = { model: { contextWindow: 500_000, api: "openai-responses" } as any, apiKey: "test", targetTokens: 100, getBranch: branch };
+const base = { model: { contextWindow: 500_000, api: "openai-responses" } as any, apiKey: "test", targetTokens: 100, newPoolMaxTokens: 1, getBranch: branch };
 
 describe("summarizer citation parser", () => {
 	const known = new Set([A, B, C]);
@@ -85,22 +85,21 @@ describe("summarizer agent", () => {
 
 	it("retains conservative, citation-driven prompt priorities", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("ONLY information");
-		expect(SUMMARIZER_SYSTEM).toContain("Anything you distort");
-		expect(SUMMARIZER_SYSTEM).toContain("Memories of user intent should almost never leave visible context");
-		expect(SUMMARIZER_SYSTEM).toContain("Keep recent memories verbatim");
-		expect(SUMMARIZER_SYSTEM).toContain("Decision procedure:");
-		expect(SUMMARIZER_SYSTEM).toContain("Work from the oldest eligible memories forward");
-		expect(SUMMARIZER_SYSTEM).toContain("coverage stewardship");
-		expect(SUMMARIZER_SYSTEM).toContain("the last several uses of that tool may still be active evidence");
-		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips that would make future use easier");
-		expect(SUMMARIZER_SYSTEM).toContain("A citation lets a future agent recall the full source");
+		expect(SUMMARIZER_SYSTEM).toContain("anything you distort");
+		expect(SUMMARIZER_SYSTEM).toContain("User intent should almost never be summarized");
+		expect(SUMMARIZER_SYSTEM).toContain("only the OLD memory pool");
+		expect(SUMMARIZER_SYSTEM).toContain("Start with the oldest records");
+		expect(SUMMARIZER_SYSTEM).toContain("repetitive low-value history");
+		expect(SUMMARIZER_SYSTEM).toContain("completed units of work");
+		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips");
+		expect(SUMMARIZER_SYSTEM).toContain("future agent can recall citations");
 		expect(SUMMARIZER_SYSTEM).toContain("Examples:");
 		expect(SUMMARIZER_SYSTEM).toContain("BAD:");
 		expect(SUMMARIZER_SYSTEM).toContain("GOOD:");
-		expect(SUMMARIZER_SYSTEM).toContain("Tool guidance:");
-		expect(SUMMARIZER_SYSTEM).toContain("Use fix_summary only");
+		expect(SUMMARIZER_SYSTEM).toContain("Tools:");
+		expect(SUMMARIZER_SYSTEM).toContain("fix_summary corrects");
 		expect(SUMMARIZER_SYSTEM).toContain("Call done alone");
-		expect(SUMMARIZER_SYSTEM).toContain("Prefer faithful compression");
+		expect(SUMMARIZER_SYSTEM).toContain("Prefer faithful useful compression");
 		expect(SUMMARIZER_CONTINUE).toContain("IMPORTANT!!!!");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
@@ -148,7 +147,7 @@ describe("summarizer agent", () => {
 			await tool(context, "done").execute("d2", {});
 		}) });
 		expect(result.completed).toBe(true);
-		expect(result.commit?.summaries).toEqual([{ id: hashId(content), content, sourceMemoryIds: [A, B], consumedMemoryIds: [A, B], tokenCount: expect.any(Number) }]);
+		expect(result.commit?.summaries).toEqual([{ id: hashId(content), content, timestamp: "2026-01-02 10:00", sourceMemoryIds: [A, B], consumedMemoryIds: [A, B], tokenCount: expect.any(Number) }]);
 		expect(result.commit?.metrics).toMatchObject({ consumedMemoryCount: 2, sourceTokens: 200 });
 		expect(result.commit?.completedWithDone).toBe(true);
 	});

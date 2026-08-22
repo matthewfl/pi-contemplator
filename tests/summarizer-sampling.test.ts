@@ -25,17 +25,18 @@ describe("summarizer sampling", () => {
 		expect(sample.selectedCount).toBeLessThan(memories.length);
 	});
 
-	it("favors new memories and records no fairness mutation itself", () => {
-		const fairness = new Map<string, { sampleCount: number }>();
-		const equallyOld = [observation("aaaaaaaaaaaa", "2026-01-01 00:00"), observation("bbbbbbbbbbbb", "2026-01-01 00:00")];
-		const sample = sampleSummarizerMemories({ memories: equallyOld, samplingThresholdTokens: 200, newMemoryIds: new Set(["aaaaaaaaaaaa"]), fairness, random: () => 0.5 });
+	it("samples inversely to rendered memory length without age weighting", () => {
+		const short = observation("aaaaaaaaaaaa", "2026-01-03 00:00");
+		const long = observation("bbbbbbbbbbbb", "2026-01-01 00:00");
+		long.memory.content = long.memory.content.repeat(20);
+		const sample = sampleSummarizerMemories({ memories: [long, short], samplingThresholdTokens: 150, random: () => 0.5 });
 		expect(sample.memories.map((item) => item.memory.id)).toContain("aaaaaaaaaaaa");
-		expect(fairness.size).toBe(0);
+		expect(sample.memories.map((item) => item.memory.id)).not.toContain("bbbbbbbbbbbb");
 	});
 
 	it("renders observation and summary metadata for the model", () => {
 		expect(renderSummarizerMemory(memories[0])).toContain("observation 2026-01-01");
-		const summary: SummarizerMemory = { kind: "summary", memory: { id: "dddddddddddd", content: "combined", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 2 } };
-		expect(renderSummarizerMemory(summary)).toContain("summary sources=[aaaaaaaaaaaa, bbbbbbbbbbbb]");
+		const summary: SummarizerMemory = { kind: "summary", memory: { id: "dddddddddddd", content: "combined", timestamp: "2026-01-02 00:00", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 2 } };
+		expect(renderSummarizerMemory(summary)).toContain("summary 2026-01-02 00:00 sources=[aaaaaaaaaaaa, bbbbbbbbbbbb]");
 	});
 });

@@ -32,11 +32,13 @@ Each summarizer run starts with fresh model context. It receives the selected ac
 
 It can also use `search_memories` and `recall`. Summary citations are parsed strictly. Unknown cited ids, known memory ids left outside brackets, malformed brackets, fewer than two newly consumable sources, or inadequate token reduction reject that candidate with a specific error. Unknown hash-like prose outside brackets only produces a warning. Valid candidates from the same call still succeed. Accepted work is committed even if the model reaches its turn/output limit without confirming `done`; an empty run writes no commit.
 
-## Sampling and pressure
+## New and old memory pools
 
-When eligible rendered memory exceeds `summarizerSamplingThresholdTokens` (50,000 by default), the input is sampled back to that budget. New and recent memories are favored while older memories retain a chance of selection. Sampling fairness state is launch-local, not durable.
+The pools are computed from active memory and are not persisted. Observations and summaries are ordered by timestamp; a summary's timestamp is the newest timestamp among its cited sources. The newest whole-memory suffix fitting `newMemoryPoolMaxTokens` (40,000 by default) is protected as new memory. Everything older is the old pool and is eligible for summarization.
 
-The summarizer also sees active-memory size and the configured target. These are advisory pressure signals, not deterministic removal quotas.
+The summarizer starts when old memory exceeds its current trigger, initially `oldMemoryPoolTargetTokens` (40,000 by default). A pass that remains above target advances the next trigger by `summarizerRetriggerTokens` (2,000 by default), avoiding immediate churn without introducing a time gate.
+
+When rendered old memory exceeds `summarizerSamplingThresholdTokens` (60,000 by default), it is sampled back to that budget with probability proportional to inverse memory length. This favors groups of small low-level records without assigning special treatment by age—the entire eligible pool is already old. Sampling and the next-trigger value are process-local escape-valve state, not durable memory.
 
 ## Search and recall
 

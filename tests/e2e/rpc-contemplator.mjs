@@ -475,7 +475,6 @@ async function run() {
 			"observational-memory": {
 				observeAfterTokens: 1,
 				compactAfterTokens: 1000000,
-				observationsPoolTargetTokens: 1,
 				// Summary graph behavior is exercised in rpc-summarizer.mjs. Keeping it
 				// isolated avoids perturbing this suite's deliberate probe races.
 				summarizerEnabled: false,

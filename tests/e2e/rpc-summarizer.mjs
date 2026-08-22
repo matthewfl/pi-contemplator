@@ -76,10 +76,13 @@ try {
 	const port = await server.start();
 	await prepareWorkspace(workspace, port, omSettings({
 		contemplatorEnabled: false, reviewerEnabled: false,
-		summarizerEnabled: true, summarizerMinIntervalMinutes: 0, summarizerMaxDelayMinutes: 0,
-		summarizerMinNewMemoryTokens: 1, summarizerMaxPendingMemoryTokens: 1,
-		summarizerPressureTriggerRatio: 1, summarizerSamplingThresholdTokens: 50_000,
-		observationsPoolTargetTokens: 50,
+		summarizerEnabled: true,
+		newMemoryPoolMaxTokens: 1,
+		// Wait until both 50-token observations are old so the first pass has
+		// the two consumable sources required to form a summary.
+		oldMemoryPoolTargetTokens: 99,
+		summarizerRetriggerTokens: 1,
+		summarizerSamplingThresholdTokens: 60_000,
 	}));
 	pi = await launchPi(workspace);
 	log("Pi RPC session ready");

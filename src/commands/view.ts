@@ -6,6 +6,7 @@ import { renderReviewer } from "./reviewer-view.js";
 import { renderSummarizer } from "./summarizer-view.js";
 import { executeRecall, formatRecallResultForTui } from "../tools/recall-observation.js";
 import {
+	chronologicalMemories,
 	fullProjection,
 	observationToSummaryLine,
 	summaryToSummaryLine,
@@ -45,12 +46,12 @@ function renderContentOnlyProjection(
 	projection: Projection,
 	emptyScope: "visible" | "recorded",
 ): string {
+	const memories = chronologicalMemories(projection.observations, projection.summaries);
 	const lines = [
-		"── Summaries ──",
-		renderList(projection.summaries, summaryToSummaryLine, `No ${emptyScope} summaries.`),
-		"",
-		"── Observations ──",
-		renderList(projection.observations, observationToSummaryLine, `No ${emptyScope} observations.`),
+		"── Memories (chronological) ──",
+		memories.length > 0
+			? memories.map((item) => item.kind === "observation" ? observationToSummaryLine(item.memory) : summaryToSummaryLine(item.memory)).join("\n")
+			: `No ${emptyScope} memories.`,
 	];
 	if (projection.reviews?.length) lines.push("", "── Advisory reviews ──", ...projection.reviews.map(reviewSummaryLine));
 	return lines.join("\n");

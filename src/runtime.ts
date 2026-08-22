@@ -23,10 +23,10 @@ function normalizeSessionSettings(settings: SessionSettings, _baseConfig: Config
 export type SessionSettings = Partial<Pick<Config,
 	| "observeAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
-	| "observationsPoolTargetTokens" | "agentMaxTurns"
+	| "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
 	| "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns"
-	| "summarizerEnabled" | "summarizerMinIntervalMinutes" | "summarizerMaxDelayMinutes" | "summarizerMinNewMemoryTokens" | "summarizerMaxPendingMemoryTokens" | "summarizerPressureTriggerRatio" | "summarizerSamplingThresholdTokens"
+	| "summarizerEnabled" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens"
 	| "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
@@ -127,18 +127,14 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		] as const;
 		const numberKeys = [
 			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
-			"observationsPoolTargetTokens", "agentMaxTurns",
+			"newMemoryPoolMaxTokens", "oldMemoryPoolTargetTokens", "agentMaxTurns",
 			"contemplatorMinNewObservations", "contemplatorMinNewSummaries", "contemplatorMinTurns",
-			"summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes", "summarizerMinNewMemoryTokens", "summarizerMaxPendingMemoryTokens", "summarizerSamplingThresholdTokens",
+			"summarizerRetriggerTokens", "summarizerSamplingThresholdTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
 		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
-		for (const key of ["summarizerMinIntervalMinutes", "summarizerMaxDelayMinutes"] as const) {
-			if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] >= 0) restored[key] = data[key];
-		}
 		if (data.compactAfterTokensMode === "calibrated" || data.compactAfterTokensMode === "ratio") restored.compactAfterTokensMode = data.compactAfterTokensMode;
 		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
-		if (typeof data.summarizerPressureTriggerRatio === "number" && Number.isFinite(data.summarizerPressureTriggerRatio) && data.summarizerPressureTriggerRatio > 0) restored.summarizerPressureTriggerRatio = data.summarizerPressureTriggerRatio;
 		if (data.model === null) restored.model = null;
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;
@@ -167,15 +163,8 @@ export class Runtime {
 	 */
 	summarizerInFlight = false;
 	summarizerPromise: Promise<void> | null = null;
-	/** Cumulative main-agent active time when the current backlog first became dirty. */
-	summarizerDirtySince: number | undefined;
-	/** Cumulative main-agent active time when the previous summarizer pass started. */
-	summarizerLastStartedAt: number | undefined;
-	summarizerPendingTokens = 0;
-	summarizerPendingCount = 0;
-	/** Keep an explicit pressure/settings pass eligible even without new observations. */
-	summarizerMaintenanceRequested = false;
-	summarizerFairness = new Map<string, { lastSampledAt?: number; sampleCount: number }>();
+	/** Old-pool token threshold for the next pass; undefined means configured target. */
+	summarizerNextTriggerTokens: number | undefined;
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private settingsUpdateListener: ((ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void) | undefined;
@@ -273,12 +262,7 @@ export class Runtime {
 		this.compactionResumeGeneration += 1;
 		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
 		this.compactionResumeTimer = undefined;
-		this.summarizerDirtySince = undefined;
-		this.summarizerLastStartedAt = undefined;
-		this.summarizerPendingTokens = 0;
-		this.summarizerPendingCount = 0;
-		this.summarizerMaintenanceRequested = false;
-		this.summarizerFairness.clear();
+		this.summarizerNextTriggerTokens = undefined;
 		this.lastObserverStartedAt = undefined;
 		this.lastObserverCompletedAt = undefined;
 		this.lastSummarizerStartedAt = undefined;
@@ -360,37 +344,11 @@ export class Runtime {
 		return promise;
 	}
 
-	markSummarizerDirty(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
-		this.summarizerDirtySince = this.summarizerDirtySince === undefined
-			? agentActiveTimeMs
-			: Math.min(this.summarizerDirtySince, agentActiveTimeMs);
-		this.summarizerPendingCount += Math.max(0, memoryCount);
-		this.summarizerPendingTokens += Math.max(0, memoryTokens);
-	}
-
-	requestSummarizerMaintenance(memoryCount: number, memoryTokens: number, agentActiveTimeMs: number): void {
-		this.summarizerMaintenanceRequested = true;
-		this.summarizerDirtySince = this.summarizerDirtySince === undefined
-			? agentActiveTimeMs
-			: Math.min(this.summarizerDirtySince, agentActiveTimeMs);
-		// This request describes the whole active pool, which may overlap the normal
-		// new-observation backlog. Use maxima rather than double-counting it.
-		this.summarizerPendingCount = Math.max(this.summarizerPendingCount, Math.max(0, memoryCount));
-		this.summarizerPendingTokens = Math.max(this.summarizerPendingTokens, Math.max(0, memoryTokens));
-	}
-
-	clearSummarizerDirty(): void {
-		this.summarizerDirtySince = undefined;
-		this.summarizerPendingCount = 0;
-		this.summarizerPendingTokens = 0;
-	}
-
-	launchSummarizerTask(ctx: LaunchCtx, work: () => Promise<void>, agentActiveTimeMs: number): Promise<void> | undefined {
+	launchSummarizerTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> | undefined {
 		// This is the authoritative single-flight gate, not merely a UI flag.
 		// Keep it here even though callers also avoid redundant launch attempts.
 		if (this.summarizerInFlight) return undefined;
 		this.summarizerInFlight = true;
-		this.summarizerLastStartedAt = agentActiveTimeMs;
 		this.lastSummarizerError = undefined;
 		const promise = this.launchTrackedTask(ctx, "summarizer", work, (error) => {
 			this.summarizerInFlight = false;

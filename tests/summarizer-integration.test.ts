@@ -12,12 +12,12 @@ const branch: Entry[] = [
 		{ id: "aaaaaaaaaaaa", content: "Alpha exact evidence.", timestamp: "2026-01-01 00:00", relevance: "high", sourceEntryIds: ["raw"], tokenCount: 20 },
 		{ id: "bbbbbbbbbbbb", content: "Beta exact evidence.", timestamp: "2026-01-01 00:01", relevance: "high", sourceEntryIds: ["raw"], tokenCount: 20 },
 	] } },
-	{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { version: 1, summaries: [{ id: "cccccccccccc", content: "Combined [aaaaaaaaaaaa, bbbbbbbbbbbb].", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 5 }], coversUpToId: "obs", createdAt: 1, completedWithDone: true, metrics: { consumedMemoryCount: 2, sourceTokens: 40, summaryTokens: 5, estimatedTokenReduction: 35 } } },
+	{ type: "custom", id: "sum", customType: "om.summarizer.commit", data: { version: 1, summaries: [{ id: "cccccccccccc", content: "Combined [aaaaaaaaaaaa, bbbbbbbbbbbb].", timestamp: "2026-01-01 00:01", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 5 }], coversUpToId: "obs", createdAt: 1, completedWithDone: true, metrics: { consumedMemoryCount: 2, sourceTokens: 40, summaryTokens: 5, estimatedTokenReduction: 35 } } },
 ];
 
 describe("summarizer configuration and user tools", () => {
-	it("uses the proposed scheduling and 50k sampling defaults", () => {
-		expect(DEFAULTS).toMatchObject({ summarizerEnabled: true, summarizerMinIntervalMinutes: 10, summarizerMaxDelayMinutes: 180, summarizerSamplingThresholdTokens: 50_000 });
+	it("uses token-pool scheduling and 60k sampling defaults", () => {
+		expect(DEFAULTS).toMatchObject({ summarizerEnabled: true, newMemoryPoolMaxTokens: 40_000, oldMemoryPoolTargetTokens: 40_000, summarizerRetriggerTokens: 2_000, summarizerSamplingThresholdTokens: 60_000 });
 		expect(DEFAULTS).not.toHaveProperty("librarianEnabled");
 	});
 
