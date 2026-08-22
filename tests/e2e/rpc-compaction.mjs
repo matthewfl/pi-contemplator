@@ -13,6 +13,7 @@ const PI = join(ROOT, "node_modules/.bin/pi");
 const EXTENSION = join(ROOT, "src/index.ts");
 const MANUAL = "SCENARIO_MANUAL_COMPACTION";
 const AUTOMATIC = "SCENARIO_AUTOMATIC_COMPACTION";
+const EMPTY_STOP = "SCENARIO_EMPTY_STOP_COMPACTION";
 const MANUAL_PROBE = "Before continuing, verify that the compaction retained the manual scenario and its next action.";
 const MANUAL_CONTINUATION = "After compaction, verify the queued contemplator probe and report MANUAL_COMPACTION_RESUMED.";
 const startedAt = Date.now();
@@ -82,6 +83,7 @@ class CompactionServer {
 	manualSawProbe = false;
 	manualSawContinuation = false;
 	automaticUnexpectedRestart = false;
+	emptyStopResumed = false;
 
 	async start() {
 		this.server.listen(0, "127.0.0.1");
@@ -114,7 +116,9 @@ class CompactionServer {
 			? MANUAL
 			: serialized.includes(AUTOMATIC)
 				? AUTOMATIC
-				: undefined;
+				: serialized.includes(EMPTY_STOP)
+					? EMPTY_STOP
+					: undefined;
 		const role = tools.has("record_observations") ? "observer" : tools.has("send_probe") ? "contemplator" : "main";
 		this.requests.push({ role, scenario, body });
 		const hasToolResult = (body.messages ?? []).some((message) => message.role === "tool");
@@ -173,13 +177,25 @@ class CompactionServer {
 			return sendSse(res, { text: "Waiting for the remaining queued post-compaction message." });
 		}
 
+		if (scenario === AUTOMATIC) {
+			if (count === 1) return sendSse(res, {
+				delayMs: 250,
+				tool: { id: "automatic-bash", name: "bash", arguments: { command: `printf '${AUTOMATIC}:checkpoint\\n'` } },
+			});
+			if (count === 2) return sendSse(res, { text: "AUTOMATIC_PRECOMPACTION_COMPLETE", outputTokens: 200 });
+			this.automaticUnexpectedRestart = true;
+			return sendSse(res, { text: "UNEXPECTED_PROACTIVE_RESTART" });
+		}
+
 		if (count === 1) return sendSse(res, {
 			delayMs: 250,
-			tool: { id: "automatic-bash", name: "bash", arguments: { command: `printf '${AUTOMATIC}:checkpoint\\n'` } },
+			tool: { id: "empty-stop-bash", name: "bash", arguments: { command: `printf '${EMPTY_STOP}:checkpoint\\n'` } },
 		});
-		if (count === 2) return sendSse(res, { text: "AUTOMATIC_PRECOMPACTION_COMPLETE", outputTokens: 200 });
-		this.automaticUnexpectedRestart = true;
-		return sendSse(res, { text: "UNEXPECTED_PROACTIVE_RESTART" });
+		// Emulate the real provider failure: it spends output tokens but finishes
+		// with no text and no tool call while the autonomous task is still active.
+		if (count === 2) return sendSse(res, { text: "", outputTokens: 200 });
+		this.emptyStopResumed = true;
+		return sendSse(res, { text: "EMPTY_STOP_COMPACTION_RESUMED" });
 	}
 }
 
@@ -276,7 +292,7 @@ async function stopPi(instance) {
 }
 
 async function run() {
-	console.log("RPC compaction E2E test plan:\n  1. Main agent calls compact_context with an authored continuation\n  2. Contemplator queues a steer immediately before manual compaction\n  3. Manual compaction preserves the probe and resumes with the authored instruction\n  4. Proactive automatic compaction runs after a normally completed agent turn\n  5. Proactive maintenance does not restart the settled agent\n");
+	console.log("RPC compaction E2E test plan:\n  1. Main agent calls compact_context with an authored continuation\n  2. Contemplator queues a steer immediately before manual compaction\n  3. Manual compaction preserves the probe and resumes with the authored instruction\n  4. Proactive automatic compaction runs after a normally completed agent turn\n  5. Proactive maintenance does not restart the settled agent\n  6. A provider's empty normal stop is resumed after threshold compaction\n");
 	const workspace = await mkdtemp(join(tmpdir(), "pi-contemplator-compaction-e2e-"));
 	const server = new CompactionServer();
 	let instance;
@@ -285,7 +301,7 @@ async function run() {
 		const providerExtension = join(workspace, "mock-provider.ts");
 		await writeFile(providerExtension, `export default function (pi) {\n  pi.registerProvider("e2e", {\n    name: "E2E Mock", baseUrl: "http://127.0.0.1:${port}/v1", apiKey: "e2e-test-key", api: "openai-completions",\n    models: [{ id: "mock-model", name: "Mock Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }]\n  });\n}\n`);
 
-		progress("TEST 1/2: agent-requested compact_context with queued contemplator probe");
+		progress("TEST 1/3: agent-requested compact_context with queued contemplator probe");
 		const manualBase = join(workspace, "manual");
 		instance = await launchPi({
 			workspace,
@@ -310,11 +326,11 @@ async function run() {
 		assert(!manualProbeStates.filter((entry) => entry.data?.delivered === false).some((pending) => !manualProbeStates.some((entry) => entry.data?.probeId === pending.data?.probeId && entry.data?.delivered === true)), "A manual-compaction probe remained pending");
 		assert(manualEntries.some((entry) => entry.type === "message" && entry.message?.role === "assistant" && entry.message.content?.some?.((part) => part.type === "toolCall" && part.name === "compact_context")), "Main agent never called compact_context");
 		assert(!instance.rpc.events.some((event) => event.type === "extension_error"), "Extension error during manual compaction race");
-		progress("PASS 1/2: queued steer survived compaction and authored continuation resumed automatically");
+		progress("PASS 1/3: queued steer survived compaction and authored continuation resumed automatically");
 		await stopPi(instance);
 		instance = undefined;
 
-		progress("TEST 2/2: proactive compaction after normal completion does not restart work");
+		progress("TEST 2/3: proactive compaction after normal completion does not restart work");
 		const autoBase = join(workspace, "automatic");
 		instance = await launchPi({
 			workspace,
@@ -340,10 +356,34 @@ async function run() {
 		assert(server.mainCounts.get(AUTOMATIC) === 2 && !server.automaticUnexpectedRestart, "Proactive compaction restarted normally completed agent work");
 		assert(!autoEntries.some((entry) => entry.type === "custom_message" && entry.customType === "om.compaction.resume"), "Proactive compaction queued a hidden resume message");
 		assert(!instance.rpc.events.some((event) => event.type === "extension_error"), "Extension error during proactive compaction");
-		progress("PASS 2/2: proactive threshold compacted without restarting settled work");
+		progress("PASS 2/3: proactive threshold compacted without restarting settled work");
 		await stopPi(instance);
 		instance = undefined;
-		progress("ALL COMPACTION TESTS PASSED: manual continuation, queued-probe race, proactive threshold, and no settled-work restart");
+
+		progress("TEST 3/3: empty provider stop resumes after proactive compaction");
+		const emptyBase = join(workspace, "empty-stop");
+		instance = await launchPi({
+			workspace,
+			project: join(emptyBase, "project"),
+			agentDir: join(emptyBase, "agent"),
+			sessions: join(emptyBase, "sessions"),
+			providerExtension,
+			compactAfterTokens: 1,
+			contemplatorEnabled: false,
+		});
+		const emptyEventStart = instance.rpc.events.length;
+		await instance.rpc.command({ type: "prompt", message: `${EMPTY_STOP}: run a command, then continue working after it.` });
+		await waitFor(() => instance.rpc.events.slice(emptyEventStart).some((event) => event.type === "compaction_end" && event.result), "empty-stop proactive compaction");
+		await waitFor(() => server.emptyStopResumed, "provider request resumed after empty stop and compaction");
+		const emptyEntries = await instance.rpc.entries();
+		assert(server.mainCounts.get(EMPTY_STOP) === 3, `Expected exactly one empty-stop continuation, got ${server.mainCounts.get(EMPTY_STOP)} main requests`);
+		assert(emptyEntries.some((entry) => entry.type === "custom_message" && entry.customType === "om.compaction.resume"), "Empty stop did not queue a hidden resume message");
+		assert(emptyEntries.some((entry) => entry.type === "message" && entry.message?.role === "assistant" && messageText(entry.message).includes("EMPTY_STOP_COMPACTION_RESUMED")), "Resumed empty-stop response was not persisted");
+		assert(!instance.rpc.events.some((event) => event.type === "extension_error"), "Extension error during empty-stop recovery");
+		progress("PASS 3/3: empty normal stop was distinguished from genuine completion and resumed");
+		await stopPi(instance);
+		instance = undefined;
+		progress("ALL COMPACTION TESTS PASSED: manual continuation, queued-probe race, normal-stop stability, and empty-stop recovery");
 	} catch (error) {
 		console.error("Compaction E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));

@@ -124,6 +124,35 @@ describe("V3 compaction trigger", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled();
 	});
 
+	it("resumes after proactive compaction when the provider settles with an empty normal stop", async () => {
+		const { handler, settledHandler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], {
+			compact: vi.fn((options) => options.onComplete()),
+		});
+		const emptyStop = {
+			type: "agent_end",
+			messages: [
+				{ role: "user", content: "continue the task" },
+				{ role: "assistant", content: [], stopReason: "stop", usage: { output: 723 } },
+			],
+		};
+
+		handler(emptyStop, ctx);
+		settledHandler({}, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Continue the current task from the compacted context without waiting for another user message.",
+			display: false,
+		}, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
+	});
+
 	it("does not restart settled work when proactive compaction fails", async () => {
 		const { settledHandler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
 		const ctx = fakeCtx([dueBranch], {
