@@ -50,7 +50,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `summarizerRetriggerTokens` | `2000` | If a pass leaves the old pool above target, require this much additional old-pool growth before another pass. |
 | `summarizerSamplingThresholdTokens` | `60000` | Rendered old-memory input cap. Above it, inverse-length sampling favors compactable groups of small memories. |
 | `contemplatorEnabled` | `true` | Enables contemplator updates. |
-| `contemplatorModel` | current model | Optional model override for the contemplator. |
+| `contemplatorModel` | current model | Optional model override for the contemplator. Reasoning-capable models default to `medium` thinking unless this or the shared `model.thinking` explicitly overrides it. |
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
 | `contemplatorMinNewObservations` | `8` | Observation trigger component. |
 | `contemplatorMinNewSummaries` | `1` | Summary trigger component. |

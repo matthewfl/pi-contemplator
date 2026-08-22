@@ -147,6 +147,31 @@ describe("Contemplator lifecycle", () => {
 		]);
 	});
 
+	it("surfaces a model stream error directly without misreporting missing tool calls", async () => {
+		agentMocks.agentLoop.mockImplementation(() => stream(Promise.resolve(), [
+			{ role: "assistant", content: [], stopReason: "error", errorMessage: "400: reasoning is mandatory", timestamp: Date.now() },
+		]));
+		const harness = setup([]);
+		const notify = vi.fn();
+		harness.ctx.hasUI = true;
+		(harness.ctx as any).ui = { notify };
+		harness.runtime.config = { ...harness.runtime.config, showWorkerNotifications: true };
+		harness.setEntries([
+			textCustomMessage("raw-error", "work to remember"),
+			observationsRecordedEntry("obs-error", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-error"] })],
+				coversUpToId: "raw-error",
+			}),
+		]);
+
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator failed — 400: reasoning is mandatory", "warning"));
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		expect(harness.runtime.contemplatorState.lastError).toBe("400: reasoning is mandatory");
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
+	});
+
 	it("persists each update prompt once when agentLoop returns that input prompt", async () => {
 		agentMocks.agentLoop.mockImplementation((prompts, context) => {
 			selectNoIntervention(context);
@@ -276,6 +301,43 @@ describe("Contemplator lifecycle", () => {
 
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
 		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("retries an unprocessed memory backlog immediately after reload", async () => {
+		const harness = setup([
+			textCustomMessage("raw-reload", "work that failed contemplation"),
+			observationsRecordedEntry("obs-reload", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-reload"] })],
+				coversUpToId: "raw-reload",
+			}),
+		]);
+		(harness.ctx.model as any).reasoning = true;
+
+		harness.fire("session_start", { reason: "reload" });
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect(agentMocks.agentLoop.mock.calls[0][2].reasoning).toBe("medium");
+	});
+
+	it("does not replay memories covered by a persisted contemplator update", async () => {
+		const coveredId = "aaaaaaaaaaaa";
+		const harness = setup([
+			textCustomMessage("raw-covered", "already contemplated work"),
+			observationsRecordedEntry("obs-covered", {
+				observations: [observation(coveredId, { sourceEntryIds: ["raw-covered"] })],
+				coversUpToId: "raw-covered",
+			}),
+			{
+				id: "contemplator-prompt", type: "custom", customType: "om.contemplator.message",
+				data: { version: 1, message: { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n[${coveredId}] already processed` }] } },
+			} as TestEntry,
+		]);
+
+		harness.fire("session_start", { reason: "reload" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(0);
 	});
 
 	it("restores an undelivered probe on fresh session startup", () => {
@@ -816,7 +878,10 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 
 		const continuation = agentMocks.agentLoop.mock.calls[1][0][0];
+		const retryConfig = agentMocks.agentLoop.mock.calls[1][2];
 		expect(continuation.role).toBe("user");
+		expect(retryConfig.toolChoice).toBe("required");
+		expect(retryConfig.onPayload({})).toMatchObject({ tool_choice: "required" });
 		expect(continuation.content[0].text).toContain("You stopped without selecting a final action");
 		expect(continuation.content[0].text).toContain("argument-free no_intervention tool now");
 		expect(continuation.content[0].text).toContain("preferred default");

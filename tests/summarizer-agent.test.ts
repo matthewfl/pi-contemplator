@@ -260,12 +260,13 @@ describe("summarizer agent", () => {
 
 	it("forces tool choice after an initial prose-only stop", async () => {
 		const configs: any[] = [];
-		await runSummarizer({ ...base, agentLoop: fakeLoop(async (invocation, context, config) => {
+		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: fakeLoop(async (invocation, context, config) => {
 			configs.push(config);
 			if (invocation === 1) await finish(context);
 		}) });
 		expect(configs[0].toolChoice).toBeUndefined();
 		expect(configs[1].toolChoice).toBe("required");
+		expect(configs[1].reasoning).toBe("minimal");
 		expect(configs[1].onPayload({})).toMatchObject({ tool_choice: "required" });
 	});
 });

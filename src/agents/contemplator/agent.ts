@@ -13,6 +13,7 @@ import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
+import { forceRequiredToolPayload, requiredToolChoice } from "../../required-tool-choice.js";
 import { memoryReferenceIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
@@ -262,12 +263,18 @@ export class Contemplator {
 		});
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			const generation = this.sessionGeneration;
 			this.agentActiveSince = undefined;
 			// AgentSession preserves its steering queue across extension reloads. An
 			// undelivered tracking entry therefore still has a live queued message;
 			// restoring it here would enqueue the same probe a second time.
 			const reload = event?.reason === "reload";
 			this.restore(ctx, true, reload, reload);
+			// Reconstruct and schedule durable memory immediately. In particular, a
+			// reload after a failed run must not silently mark its pending backlog seen.
+			queueMicrotask(() => {
+				if (generation === this.sessionGeneration) this.withDebugContext(ctx, () => this.observeTurn(ctx));
+			});
 		});
 		this.pi.on("session_tree", (_event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
@@ -413,6 +420,7 @@ export class Contemplator {
 		if (this.running && !resetTracking) return;
 		if (tipId === this.restoredTipId && !resetTracking) return;
 		this.history = [];
+		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
 			if (!retainQueuedIds) this.queuedProbeIds.clear();
@@ -420,10 +428,10 @@ export class Contemplator {
 			this.resolvingReviewIds.clear();
 			this.resumedReviewIds.clear();
 			this.reviewerSessions.clear();
-			const projection = fullProjection(entries);
-			this.seenObservationIds = new Set(projection.observations.map((item) => item.id));
-			this.seenSummaryIds = new Set(projection.summaries.map((item) => item.id));
-			this.seenReviewIds = new Set((projection.reviews ?? []).map((item) => item.id));
+			resetProjection = fullProjection(entries);
+			this.seenObservationIds.clear();
+			this.seenSummaryIds.clear();
+			this.seenReviewIds.clear();
 			this.pending = undefined;
 			this.turnsSinceRun = 0;
 			this.assistantResponsesInCurrentTurn = 0;
@@ -498,6 +506,27 @@ export class Contemplator {
 				} else if (typeof data.suggestion === "string") {
 					undeliveredSuggestions.set(data.probeId, data.suggestion);
 				}
+			}
+		}
+		if (resetTracking && resetProjection) {
+			// Successful contemplator update prompts are the durable coverage record.
+			// Only memories present in those prompts are considered seen after reload;
+			// memories from a failed, unpersisted run remain pending and retryable.
+			const coveredIds = new Set<string>();
+			for (const message of this.history) {
+				if (message.role !== "user") continue;
+				const text = customMessageText(message.content);
+				if (!text.includes("NEW MEMORY UPDATE")) continue;
+				for (const id of memoryReferenceIds(text)) coveredIds.add(id);
+			}
+			this.seenObservationIds = new Set(resetProjection.observations.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			this.seenSummaryIds = new Set(resetProjection.summaries.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			this.seenReviewIds = new Set((resetProjection.reviews ?? []).filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			const unprocessedObservations = resetProjection.observations.length - this.seenObservationIds.size;
+			const unprocessedSummaries = resetProjection.summaries.length - this.seenSummaryIds.size;
+			const unprocessedReviews = (resetProjection.reviews?.length ?? 0) - this.seenReviewIds.size;
+			if (unprocessedReviews > 0 || unprocessedObservations >= this.runtime.config.contemplatorMinNewObservations || unprocessedSummaries >= this.runtime.config.contemplatorMinNewSummaries) {
+				this.turnsSinceRun = this.runtime.config.contemplatorMinTurns;
 			}
 		}
 		this.restoredTipId = tipId;
@@ -716,7 +745,9 @@ export class Contemplator {
 				}, memoryExists);
 				tools.push(requestReview as AgentTool<any>);
 			}
-			const config: AgentLoopConfig = {
+			const selectedThinkingLevel = this.runtime.config.contemplatorModel?.thinking ?? this.runtime.config.model?.thinking ?? "medium";
+			const supportsReasoning = (resolved.model as { reasoning?: unknown }).reasoning === true;
+			const config: AgentLoopConfig & { toolChoice?: "any" | "required"; onPayload?: (payload: unknown) => unknown } = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
@@ -727,13 +758,20 @@ export class Contemplator {
 				// spend another model request asking it to narrate after its decision.
 				// Citation warnings leave the loop open so it can correct the action.
 				shouldStopAfterTurn: () => intervention !== undefined && !finalActionWarned,
+				...(supportsReasoning && selectedThinkingLevel !== "off" ? { reasoning: selectedThinkingLevel } : {}),
 			};
 			const runMessages: AgentMessage[] = [];
 			let nextPrompt = prompt;
 			for (let invocation = 1; invocation <= CONTEMPLATOR_MAX_INVOCATIONS && !intervention; invocation++) {
 				runMessages.push(nextPrompt);
 				const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: [...this.history, ...runMessages.slice(0, -1)], tools };
-				const stream = agentLoop([nextPrompt], context, config, undefined, streamSimple);
+				const api = (resolved.model as Model<any>).api;
+				const invocationConfig: AgentLoopConfig & { toolChoice?: "any" | "required"; onPayload?: (payload: unknown) => unknown } = invocation === 1 ? config : {
+					...config,
+					toolChoice: requiredToolChoice(api),
+					onPayload: (payload) => forceRequiredToolPayload(payload, api),
+				};
+				const stream = agentLoop([nextPrompt], context, invocationConfig, undefined, streamSimple);
 				for await (const event of stream) logAgentStreamError("contemplator", event);
 				const result = await stream.result();
 				// agentLoop returns its input prompt as the first new message. We already
@@ -753,6 +791,12 @@ export class Contemplator {
 					assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
 					intervention: (intervention as Intervention | undefined)?.kind,
 				});
+				if (assistant && "stopReason" in assistant && (assistant.stopReason === "error" || assistant.stopReason === "aborted")) {
+					const errorMessage = "errorMessage" in assistant && typeof assistant.errorMessage === "string"
+						? assistant.errorMessage
+						: `Contemplator model ${assistant.stopReason}`;
+					throw new Error(errorMessage);
+				}
 				if (!intervention && invocation < CONTEMPLATOR_MAX_INVOCATIONS) {
 					nextPrompt = { role: "user", content: [{ type: "text", text: `You stopped without selecting a final action. If stopping meant that no intervention was clearly warranted, call the argument-free no_intervention tool now; that is the preferred default, and no explanation is required. Do not invent or send a probe merely to satisfy the tool requirement. Use send_probe only for a specific, memory-grounded question that is materially likely to improve the primary agent's reasoning${reviewerEnabled ? ", and request_review only for a well-supported recurring structural concern" : ""}. Call one final-action tool now: ${finalActionNames}. search_memories and recall do not satisfy this requirement.` }], timestamp: Date.now() };
 				}
@@ -835,7 +879,7 @@ export class Contemplator {
 			});
 			if (workerNotified && sessionGeneration === this.sessionGeneration) {
 				ctx.ui?.notify(
-					failed ? "pi-contemplator: contemplator failed" : "pi-contemplator: contemplator completed",
+					failed ? `pi-contemplator: contemplator failed — ${failureMessage ?? "unknown error"}` : "pi-contemplator: contemplator completed",
 					failed ? "warning" : "info",
 				);
 			}
