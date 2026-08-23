@@ -117,6 +117,7 @@ class CompactionServer {
 			: serialized.includes(AUTOMATIC)
 				? AUTOMATIC
 				: serialized.includes(EMPTY_STOP)
+					|| (this.mainCounts.get(EMPTY_STOP) === 2 && serialized.includes("Continue the current task from the compacted context"))
 					? EMPTY_STOP
 					: undefined;
 		const role = tools.has("record_observations") ? "observer" : tools.has("send_probe") ? "contemplator" : "main";

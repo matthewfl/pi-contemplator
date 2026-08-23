@@ -90,6 +90,9 @@ describe("summarizer agent", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("anything you distort");
 		expect(SUMMARIZER_SYSTEM).toContain("User intent should almost never be summarized");
 		expect(SUMMARIZER_SYSTEM).toContain("only the OLD memory pool");
+		expect(SUMMARIZER_SYSTEM).toContain("grown beyond its configured target and needs to shrink");
+		expect(SUMMARIZER_SYSTEM).toContain("merely ignoring a memory has the same retention effect");
+		expect(SUMMARIZER_SYSTEM).toContain("pollute the context");
 		expect(SUMMARIZER_SYSTEM).toContain("Start with the oldest records");
 		expect(SUMMARIZER_SYSTEM).toContain("repetitive low-value history");
 		expect(SUMMARIZER_SYSTEM).toContain("completed units of work");
