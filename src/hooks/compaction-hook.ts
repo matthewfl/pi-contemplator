@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { debugLog } from "../debug-log.js";
 import { computeSessionSettings, type Runtime } from "../runtime.js";
 import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation-trigger.js";
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
@@ -85,5 +86,31 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		if (event.willRetry) continuation = "; resuming the interrupted agent run";
 		else if (omWillResume) continuation = "; resuming the agent run";
 		ctx.ui.notify(`pi-contemplator: compaction complete (${reason})${continuation}`, "info");
+	});
+
+	pi.on("session_compact_failed", (event, ctx) => {
+		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
+		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
+		debugLog("compaction.failed", {
+			reason,
+			piReason: event.reason,
+			errorMessage: event.errorMessage,
+			aborted: event.aborted,
+			willRetry: event.willRetry,
+			fromExtension: event.fromExtension,
+			initiatedByOm,
+		});
+
+		// OM-initiated ctx.compact() calls already have an onError callback that
+		// clears UI state and applies the origin-specific continuation policy. Do
+		// not duplicate that work here; Pi emits this event before invoking it.
+		if (initiatedByOm) return;
+		if (ctx.hasUI) ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+		if (!event.aborted && ctx.hasUI) {
+			ctx.ui.notify(
+				`pi-contemplator: compaction failed (${reason}): ${event.errorMessage ?? "unknown error"}`,
+				"error",
+			);
+		}
 	});
 }

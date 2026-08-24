@@ -509,7 +509,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		const contextAvailableOutput = Math.max(1, contextWindow - estimatedInputTokens - SUMMARIZER_CONTEXT_RESERVE_TOKENS);
 		const maxOutputTokens = Math.min(SUMMARIZER_MAX_OUTPUT_TOKENS, contextAvailableOutput);
 		let turnCount = 0;
-		const config: AgentLoopConfig & { toolChoice?: "any" | "required" } = {
+		const config: AgentLoopConfig = {
 			model: args.model,
 			apiKey: args.apiKey,
 			headers: args.headers,
@@ -524,9 +524,13 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 				return undefined;
 			},
 			shouldStopAfterTurn: () => completedWithDone || (effectiveMaxTurns !== undefined && ++turnCount >= effectiveMaxTurns),
-			...(requireToolCall ? { toolChoice: requiredToolChoice(args.model.api), onPayload: (payload: unknown) => forceRequiredToolPayload(payload, args.model.api) } : {}),
+			...(requireToolCall ? { onPayload: (payload: unknown) => forceRequiredToolPayload(payload, args.model.api) } : {}),
 			...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		};
+		// See contemplator: provider APIs support required/any beyond the narrower
+		// provider-neutral SimpleStreamOptions type. The payload transform is the
+		// authoritative enforcement; retain this runtime hint for compatible loops.
+		if (requireToolCall) (config as any).toolChoice = requiredToolChoice(args.model.api);
 		history.push(prompt as AgentMessage);
 		args.onMessages?.(history.slice());
 		const stream = loop([prompt], context, config, args.signal, streamSimple);

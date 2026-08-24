@@ -747,7 +747,7 @@ export class Contemplator {
 			}
 			const selectedThinkingLevel = this.runtime.config.contemplatorModel?.thinking ?? this.runtime.config.model?.thinking ?? "medium";
 			const supportsReasoning = (resolved.model as { reasoning?: unknown }).reasoning === true;
-			const config: AgentLoopConfig & { toolChoice?: "any" | "required"; onPayload?: (payload: unknown) => unknown } = {
+			const config: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
@@ -766,11 +766,14 @@ export class Contemplator {
 				runMessages.push(nextPrompt);
 				const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: [...this.history, ...runMessages.slice(0, -1)], tools };
 				const api = (resolved.model as Model<any>).api;
-				const invocationConfig: AgentLoopConfig & { toolChoice?: "any" | "required"; onPayload?: (payload: unknown) => unknown } = invocation === 1 ? config : {
+				const invocationConfig: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = invocation === 1 ? config : {
 					...config,
-					toolChoice: requiredToolChoice(api),
 					onPayload: (payload) => forceRequiredToolPayload(payload, api),
 				};
+				// SimpleStreamOptions 0.84.3 types provider-neutral choice as auto/none,
+				// while individual provider APIs also support required/any. Preserve the
+				// runtime hint and final-payload enforcement without weakening base types.
+				if (invocation > 1) (invocationConfig as any).toolChoice = requiredToolChoice(api);
 				const stream = agentLoop([nextPrompt], context, invocationConfig, undefined, streamSimple);
 				for await (const event of stream) logAgentStreamError("contemplator", event);
 				const result = await stream.result();
