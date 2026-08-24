@@ -6,7 +6,7 @@ export type ResolveResult =
 
 type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
-export type ConsolidationPhase = "observer" | "reflector" | "dropper";
+export type ConsolidationPhase = "observer";
 
 export const OM_SETTINGS = "om.settings";
 
@@ -16,27 +16,18 @@ function isConfiguredModel(value: unknown): value is ConfiguredModel {
 	return typeof model.provider === "string" && model.provider.length > 0 && typeof model.id === "string" && model.id.length > 0;
 }
 
-function normalizeSessionSettings(settings: SessionSettings, baseConfig: Config): SessionSettings {
-	const normalized = { ...settings };
-	if (normalized.observationsPoolMaxTokens !== undefined && normalized.observationsPoolMaxTokens < 2) {
-		delete normalized.observationsPoolMaxTokens;
-	}
-	const maxTokens = normalized.observationsPoolMaxTokens ?? baseConfig.observationsPoolMaxTokens;
-	const targetTokens = normalized.observationsPoolTargetTokens ?? baseConfig.observationsPoolTargetTokens;
-	if (normalized.observationsPoolMaxTokens !== undefined && targetTokens >= maxTokens) {
-		normalized.observationsPoolTargetTokens = Math.floor(maxTokens / 2);
-	} else if (normalized.observationsPoolTargetTokens !== undefined && normalized.observationsPoolTargetTokens >= maxTokens) {
-		delete normalized.observationsPoolTargetTokens;
-	}
-	return normalized;
+function normalizeSessionSettings(settings: SessionSettings, _baseConfig: Config): SessionSettings {
+	return { ...settings };
 }
 
 export type SessionSettings = Partial<Pick<Config,
-	| "observeAfterTokens" | "reflectAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
+	| "observeAfterTokens" | "observerChunkMaxTokens" | "compactAfterTokens"
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
-	| "observationsPoolMaxTokens" | "observationsPoolTargetTokens" | "agentMaxTurns"
+	| "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
-	| "contemplatorMinNewObservations" | "contemplatorMinNewReflections" | "contemplatorMinTurns" | "debugLog"
+	| "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns"
+	| "summarizerEnabled" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens"
+	| "debugLog"
 >> & {
 	/** null explicitly means use the configured/session model. */
 	model?: ConfiguredModel | null;
@@ -61,6 +52,30 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 	model: unknown;
 	modelRegistry: ResolveCtx["modelRegistry"];
 	sessionManager: { getBranch(): readonly unknown[] };
+}
+
+export type SettingsUpdate = Partial<SessionSettings>;
+
+export interface SummarizerRunView {
+	startedAt: number;
+	completedAt?: number;
+	status: "running" | "completed" | "incomplete" | "failed";
+	messages: readonly unknown[];
+	summary?: string;
+	error?: string;
+}
+
+export interface ContemplatorRunState {
+	running: boolean;
+	pendingObservations: number;
+	pendingSummaries: number;
+	pendingReviews: number;
+	/** Completed primary-model responses since the previous contemplator run. */
+	responsesSinceRun: number;
+	waitingFor: "disabled" | "passive" | "memories" | "responses" | "ready" | "running" | "idle";
+	lastStartedAt?: number;
+	lastCompletedAt?: number;
+	lastError?: string;
 }
 
 export interface LlmUsageTotals {
@@ -108,12 +123,13 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (!source || typeof source !== "object") return;
 		const data = source as Record<string, unknown>;
 		const booleanKeys = [
-			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "debugLog",
+			"showWorkerNotifications", "passive", "compactionObserverEnabled", "contemplatorEnabled", "showContemplatorMessages", "reviewerEnabled", "summarizerEnabled", "debugLog",
 		] as const;
 		const numberKeys = [
-			"observeAfterTokens", "reflectAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
-			"observationsPoolMaxTokens", "observationsPoolTargetTokens", "agentMaxTurns",
-			"contemplatorMinNewObservations", "contemplatorMinNewReflections", "contemplatorMinTurns",
+			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
+			"newMemoryPoolMaxTokens", "oldMemoryPoolTargetTokens", "agentMaxTurns",
+			"contemplatorMinNewObservations", "contemplatorMinNewSummaries", "contemplatorMinTurns",
+			"summarizerRetriggerTokens", "summarizerSamplingThresholdTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
 		for (const key of numberKeys) if (typeof data[key] === "number" && Number.isInteger(data[key]) && data[key] > 0) restored[key] = data[key];
@@ -140,7 +156,18 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	reviewInFlight = false;
 	reviewPromise: Promise<void> | null = null;
+	/**
+	 * Process-local single-flight lock for this session runtime. Every launch path
+	 * must go through launchSummarizerTask; a second summarizer cannot start until
+	 * the tracked promise's finally handler releases this lock.
+	 */
+	summarizerInFlight = false;
+	summarizerPromise: Promise<void> | null = null;
+	/** Old-pool token threshold for the next pass; undefined means configured target. */
+	summarizerNextTriggerTokens: number | undefined;
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
+	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
+	private settingsUpdateListener: ((ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
@@ -154,11 +181,26 @@ export class Runtime {
 	compactionResumeTimer: ReturnType<typeof setTimeout> | undefined;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
-	lastReflectorError: string | undefined;
-	lastDropperError: string | undefined;
+	lastSummarizerError: string | undefined;
+	/** Wall-clock worker boundaries for launch-local status diagnostics. */
+	lastObserverStartedAt: number | undefined;
+	lastObserverCompletedAt: number | undefined;
+	lastSummarizerStartedAt: number | undefined;
+	lastSummarizerCompletedAt: number | undefined;
+	/** Most recent summarizer transcript in this extension launch/session context. */
+	lastSummarizerRun: SummarizerRunView | undefined;
+	/** Launch-local liveness and trigger diagnostics published by the contemplator. */
+	contemplatorState: ContemplatorRunState = {
+		running: false,
+		pendingObservations: 0,
+		pendingSummaries: 0,
+		pendingReviews: 0,
+		responsesSinceRun: 0,
+		waitingFor: "idle",
+	};
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
 
-	/** Accumulate usage from one background LLM call (contemplator flush/summary or observer/reflector/dropper run). */
+	/** Accumulate usage from one background LLM call. */
 	recordAgentUsage(usage: LlmUsageInput): void {
 		const totals = this.agentUsage;
 		totals.input += usage.input ?? 0;
@@ -220,6 +262,20 @@ export class Runtime {
 		this.compactionResumeGeneration += 1;
 		if (this.compactionResumeTimer !== undefined) clearTimeout(this.compactionResumeTimer);
 		this.compactionResumeTimer = undefined;
+		this.summarizerNextTriggerTokens = undefined;
+		this.lastObserverStartedAt = undefined;
+		this.lastObserverCompletedAt = undefined;
+		this.lastSummarizerStartedAt = undefined;
+		this.lastSummarizerCompletedAt = undefined;
+		this.lastSummarizerRun = undefined;
+		this.contemplatorState = {
+			running: false,
+			pendingObservations: 0,
+			pendingSummaries: 0,
+			pendingReviews: 0,
+			responsesSinceRun: 0,
+			waitingFor: "idle",
+		};
 	}
 
 	getContextGeneration(): number {
@@ -237,7 +293,7 @@ export class Runtime {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
-					`Observational memory: configured model ${configuredModel.provider}/${configuredModel.id} not found, using session model`,
+					`pi-contemplator: configured model ${configuredModel.provider}/${configuredModel.id} not found, using session model`,
 					"warning",
 				);
 			}
@@ -259,18 +315,47 @@ export class Runtime {
 		this.memoryUpdateListener?.(ctx);
 	}
 
+	setAgentActivityListener(listener: (ctx: MemoryUpdateCtx) => void): void {
+		this.agentActivityListener = listener;
+	}
+
+	notifyAgentActivity(ctx: MemoryUpdateCtx): void {
+		this.agentActivityListener?.(ctx);
+	}
+
+	setSettingsUpdateListener(listener: (ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void): void {
+		this.settingsUpdateListener = listener;
+	}
+
+	notifySettingsUpdate(ctx: MemoryUpdateCtx, settings: SettingsUpdate): void {
+		this.settingsUpdateListener?.(ctx, settings);
+	}
+
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
 		this.lastObserverError = undefined;
-		this.lastReflectorError = undefined;
-		this.lastDropperError = undefined;
 		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
 			if (this.consolidationPromise === promise) this.consolidationPromise = null;
 		});
 		this.consolidationPromise = promise;
+		return promise;
+	}
+
+	launchSummarizerTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> | undefined {
+		// This is the authoritative single-flight gate, not merely a UI flag.
+		// Keep it here even though callers also avoid redundant launch attempts.
+		if (this.summarizerInFlight) return undefined;
+		this.summarizerInFlight = true;
+		this.lastSummarizerError = undefined;
+		const promise = this.launchTrackedTask(ctx, "summarizer", work, (error) => {
+			this.summarizerInFlight = false;
+			this.lastSummarizerError = error;
+			if (this.summarizerPromise === promise) this.summarizerPromise = null;
+		});
+		this.summarizerPromise = promise;
 		return promise;
 	}
 
@@ -289,10 +374,8 @@ export class Runtime {
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {
 		const message = error instanceof Error ? error.message : String(error);
-		if (phase === "observer") this.lastObserverError = message;
-		if (phase === "reflector") this.lastReflectorError = message;
-		if (phase === "dropper") this.lastDropperError = message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
+		this.lastObserverError = message;
+		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`pi-contemplator: ${phase} failed: ${message}`, "warning");
 		return message;
 	}
 
@@ -310,7 +393,7 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (hasUI && ui) ui.notify(`pi-contemplator: ${label} failed: ${errorMessage}`, "warning");
 			} finally {
 				onFinally(errorMessage);
 			}

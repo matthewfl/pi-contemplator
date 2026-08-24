@@ -13,13 +13,14 @@ import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
-import { delimitedMemoryIds } from "../../memory-citations.js";
+import { forceRequiredToolPayload, requiredToolChoice } from "../../required-tool-choice.js";
+import { memoryReferenceIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
 
 interface PendingUpdate {
 	observations: string[];
-	reflections: string[];
+	summaries: string[];
 	reviews: string[];
 	mainAgentOutputTokens: number;
 	mainAgentToolCalls: number;
@@ -28,7 +29,8 @@ interface PendingUpdate {
 
 type Intervention =
 	| { kind: "probe"; question: string }
-	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> };
+	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> }
+	| { kind: "none" };
 
 type ReviewerSession = {
 	scope: StructuralReviewRequest["scope"];
@@ -94,6 +96,7 @@ function customMessageText(content: unknown): string {
 }
 
 const AGENT_TIME_BUCKET_MINUTES = 5;
+export const CONTEMPLATOR_MAX_INVOCATIONS = 3;
 
 function coarseAgentTime(durationMs: number): string {
 	const totalMinutes = Math.floor(durationMs / 60_000);
@@ -110,6 +113,7 @@ const CONTEMPLATOR_STATE = "om.contemplator.state";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const REVIEW_PROPOSAL_MESSAGE = "om.review.proposal";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
+const NoInterventionSchema = Type.Object({});
 const ReviewScopeSchema = Type.Union([Type.Literal("workflow"), Type.Literal("software")]);
 export const RequestReviewSchema = Type.Object({
 	scope: ReviewScopeSchema,
@@ -147,16 +151,36 @@ export function createSendProbeTool(
 	return {
 		name: "send_probe",
 		label: "Send probe",
-		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review. A later intervention call in the same turn replaces this one.",
+		description: "Send one concise, high-level probing question to the primary agent asynchronously. The message must contain one focused question, optionally preceded by one short sentence of context, and cite relevant memory identifiers. Do not use it for routine reminders, status updates, generic advice, direct task management, or a structural design deserving review. This is a terminal tool when all cited memory ids are valid; citation warnings leave the turn open so the action can be replaced. A later intervention call in the same turn replaces this one.",
 		parameters: SendProbeSchema,
 		execute: async (_toolCallId, params: SendProbeArgs) => {
 			const question = params.question.trim();
 			const write = onProbe(question);
-			const memoryIds = delimitedMemoryIds(question);
+			const memoryIds = memoryReferenceIds(question);
 			debugLog("contemplator.tool_call", { tool: "send_probe", suggestionLength: question.length, memoryIds, overwritten: write.overwritten });
 			return {
 				content: [{ type: "text", text: interventionResultText({ kind: "probe", memoryIds, memoryExists, overwritten: write.overwritten, queuedText: "Probe will be delivered at the end of your turn." }) }],
 				details: { queued: true, overwritten: write.overwritten, memoryIds },
+			};
+		},
+	};
+}
+
+export function createNoInterventionTool(
+	onNoIntervention: () => InterventionWrite,
+): AgentTool<typeof NoInterventionSchema> {
+	return {
+		name: "no_intervention",
+		label: "No intervention",
+		description: "Terminally end this contemplator update without sending anything to the primary agent. This argument-free tool is the preferred default whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Never send a probe merely to avoid choosing no_intervention. A later final-action call in the same turn replaces an earlier warned action.",
+		parameters: NoInterventionSchema,
+		execute: async () => {
+			const write = onNoIntervention();
+			debugLog("contemplator.no_intervention", { overwritten: write.overwritten });
+			const warning = write.overwritten ? "WARNING: overwriting prior probe/review/no_intervention tool call; only one final action may be taken per turn.\n" : "";
+			return {
+				content: [{ type: "text", text: `${warning}No intervention will be sent.` }],
+				details: { selected: true, overwritten: write.overwritten },
 			};
 		},
 	};
@@ -169,12 +193,12 @@ export function createRequestReviewTool(
 	return {
 		name: "request_review",
 		label: "Request structural review",
-		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution. A later intervention call in the same turn replaces this one.",
+		description: "Request a short-lived structural review grounded in cited memories. Use workflow for recurring problems in how work is performed and software for recurring problems in the product structure. Identify evidence, the suspected concern, review focus, and constraints without designing the solution. This is a terminal tool when all cited memory ids are valid; citation warnings leave the turn open so the action can be replaced. A later intervention call in the same turn replaces this one.",
 		parameters: RequestReviewSchema,
 		execute: async (_toolCallId, params: RequestReviewArgs) => {
 			const request = { ...params, evidence: params.evidence.trim(), concern: params.concern.trim(), review_focus: params.review_focus.trim(), constraints: params.constraints?.trim() || undefined };
 			const write = onReview(request);
-			const memoryIds = delimitedMemoryIds([request.evidence, request.concern, request.review_focus, request.constraints].filter((value): value is string => Boolean(value)).join("\n"));
+			const memoryIds = memoryReferenceIds([request.evidence, request.concern, request.review_focus, request.constraints].filter((value): value is string => Boolean(value)).join("\n"));
 			debugLog("contemplator.review_requested", { reviewRequestId: write.reviewRequestId, scope: request.scope, evidenceLength: request.evidence.length, concernLength: request.concern.length, memoryIds, overwritten: write.overwritten });
 			const queuedText = `${request.scope === "workflow" ? "Workflow" : "Software"} review [${write.reviewRequestId}] will be started at the end of your turn.`;
 			return {
@@ -190,7 +214,7 @@ export class Contemplator {
 	private pending: PendingUpdate | undefined;
 	private running = false;
 	private seenObservationIds = new Set<string>();
-	private seenReflectionIds = new Set<string>();
+	private seenSummaryIds = new Set<string>();
 	private seenReviewIds = new Set<string>();
 	private inFlightReviewKeys = new Set<string>();
 	private inFlightReviewIds = new Set<string>();
@@ -202,7 +226,10 @@ export class Contemplator {
 	private queuedProbeIds = new Set<string>();
 	private sessionGeneration = 0;
 	private latestCtx: MemoryUpdateCtx | undefined;
+	/** Completed primary-model responses since the previous contemplator run. */
 	private turnsSinceRun = 0;
+	/** Used to avoid counting the final turn_end after its assistant message_end. */
+	private assistantResponsesInCurrentTurn = 0;
 	private restoredTipId: string | undefined;
 	/** Start of the unpersisted portion of the current main-agent run. */
 	private agentActiveSince: number | undefined;
@@ -211,7 +238,12 @@ export class Contemplator {
 
 	register(): void {
 		this.pi.registerMessageRenderer(CONTEMPLATOR_SUGGESTION, (message, _options, theme) => {
-			const content = customMessageText(message.content).replace(/^Background contemplator probe \(advisory\):\n?/, "");
+			const details = message.details as { question?: unknown } | undefined;
+			const content = typeof details?.question === "string"
+				? details.question
+				: customMessageText(message.content)
+					.replace(/^Background contemplator probe \(advisory\):\n?/, "")
+					.replace(/\n\nReferenced memories can be reviewed using the recall tool\.\s*$/, "");
 			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 			box.addChild(new Text(theme.fg("thinkingHigh", `${theme.bold("◆ CONTEMPLATOR PROBE")}\n${content}`), 0, 0));
 			return box;
@@ -231,12 +263,18 @@ export class Contemplator {
 		});
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			const generation = this.sessionGeneration;
 			this.agentActiveSince = undefined;
 			// AgentSession preserves its steering queue across extension reloads. An
 			// undelivered tracking entry therefore still has a live queued message;
 			// restoring it here would enqueue the same probe a second time.
 			const reload = event?.reason === "reload";
 			this.restore(ctx, true, reload, reload);
+			// Reconstruct and schedule durable memory immediately. In particular, a
+			// reload after a failed run must not silently mark its pending backlog seen.
+			queueMicrotask(() => {
+				if (generation === this.sessionGeneration) this.withDebugContext(ctx, () => this.observeTurn(ctx));
+			});
 		});
 		this.pi.on("session_tree", (_event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
@@ -250,7 +288,7 @@ export class Contemplator {
 			this.history = [];
 			this.pending = undefined;
 			this.seenObservationIds.clear();
-			this.seenReflectionIds.clear();
+			this.seenSummaryIds.clear();
 			this.seenReviewIds.clear();
 			this.inFlightReviewKeys.clear();
 			this.inFlightReviewIds.clear();
@@ -261,27 +299,49 @@ export class Contemplator {
 			this.queuedProbeIds.clear();
 			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
+			this.assistantResponsesInCurrentTurn = 0;
 			this.restoredTipId = undefined;
+			this.runtime.contemplatorState = {
+				running: false,
+				pendingObservations: 0,
+				pendingSummaries: 0,
+				pendingReviews: 0,
+				responsesSinceRun: 0,
+				waitingFor: "idle",
+			};
 		});
 		this.pi.on("session_compact", (_event: any, ctx: ExtensionContext) => {
-			// The in-flight prompt is persisted by flush after its agent loop. Do not
-			// snapshot it here or compaction would make restore replay it twice.
-			const history = this.running ? this.history.slice(0, -1) : this.history;
-			if (history.length > 0) {
-				this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history });
+			// In-flight invocation messages remain local to flush until its required
+			// final action is selected, so history always contains only completed work.
+			if (this.history.length > 0) {
+				this.pi.appendEntry(CONTEMPLATOR_STATE, { version: 1, history: this.history });
 				this.markTipPersisted(ctx);
-				debugLog("contemplator.state_persisted", { historyMessageCount: history.length, running: this.running });
+				debugLog("contemplator.state_persisted", { historyMessageCount: this.history.length, running: this.running });
 			}
 			this.persistReviewerStates(ctx);
 		});
-		this.pi.on("message_end", (event: any) => {
+		this.pi.on("message_end", (event: any, ctx: ExtensionContext) => {
 			const message = event?.message;
+			// A Pi turn can contain hours of assistant/tool/model rounds. Count each
+			// completed primary-model response, not only the eventual turn_end, or the
+			// contemplator can remain throttled forever during a long autonomous run.
+			if (message?.role === "assistant") {
+				this.persistAgentActivity(ctx);
+				this.turnsSinceRun++;
+				this.assistantResponsesInCurrentTurn++;
+				this.withDebugContext(ctx, () => this.observeTurn(ctx));
+			}
 			if (message?.role !== "custom" || message.customType !== CONTEMPLATOR_SUGGESTION) return;
 			if (typeof message.details?.probeId !== "string") return;
 			// message_end means Pi has drained the steer into the conversation
 			// stream. It is no longer protected by an in-memory queue, so a later
 			// tree restore must be allowed to requeue it until context acknowledges it.
 			this.queuedProbeIds.delete(message.details.probeId);
+		});
+		this.pi.on("tool_execution_end", (_event: unknown, ctx: ExtensionContext) => {
+			// This records one wall-clock interval regardless of how many tools were
+			// running concurrently; persistAgentActivity restarts the shared clock.
+			this.persistAgentActivity(ctx);
 		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const deliveredMessages = event.messages?.filter((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string") ?? [];
@@ -304,7 +364,10 @@ export class Contemplator {
 		});
 		this.pi.on("turn_end", (_event: any, ctx: ExtensionContext) => {
 			this.persistAgentActivity(ctx);
-			this.turnsSinceRun++;
+			// Normally message_end already counted the final assistant response. Keep a
+			// one-response fallback for hosts/tests that emit turn_end without it.
+			if (this.assistantResponsesInCurrentTurn === 0) this.turnsSinceRun++;
+			this.assistantResponsesInCurrentTurn = 0;
 			this.withDebugContext(ctx, () => this.observeTurn(ctx));
 		});
 	}
@@ -317,6 +380,9 @@ export class Contemplator {
 		const durationMs = Math.max(0, endedAt - startedAt);
 		if (durationMs === 0) return;
 		this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
+		// Notify only after appendEntry so active-time schedulers always observe the
+		// checkpoint, regardless of Pi's ordering between independent event handlers.
+		this.runtime.notifyAgentActivity(ctx);
 		debugLog("agent.activity_recorded", { durationMs });
 	}
 
@@ -331,6 +397,22 @@ export class Contemplator {
 		}, fn);
 	}
 
+	private publishState(
+		waitingFor: typeof this.runtime.contemplatorState.waitingFor,
+		overrides: Partial<typeof this.runtime.contemplatorState> = {},
+	): void {
+		this.runtime.contemplatorState = {
+			...this.runtime.contemplatorState,
+			running: this.running,
+			pendingObservations: this.pending?.observations.length ?? 0,
+			pendingSummaries: this.pending?.summaries.length ?? 0,
+			pendingReviews: this.pending?.reviews.length ?? 0,
+			responsesSinceRun: this.turnsSinceRun,
+			waitingFor,
+			...overrides,
+		};
+	}
+
 	private restore(ctx: MemoryUpdateCtx, resetTracking = false, retainQueuedIds = false, skipUndeliveredRestore = false): void {
 		this.latestCtx = ctx;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -338,6 +420,7 @@ export class Contemplator {
 		if (this.running && !resetTracking) return;
 		if (tipId === this.restoredTipId && !resetTracking) return;
 		this.history = [];
+		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
 			if (!retainQueuedIds) this.queuedProbeIds.clear();
@@ -345,12 +428,21 @@ export class Contemplator {
 			this.resolvingReviewIds.clear();
 			this.resumedReviewIds.clear();
 			this.reviewerSessions.clear();
-			const projection = fullProjection(entries);
-			this.seenObservationIds = new Set(projection.observations.map((item) => item.id));
-			this.seenReflectionIds = new Set(projection.reflections.map((item) => item.id));
-			this.seenReviewIds = new Set((projection.reviews ?? []).map((item) => item.id));
+			resetProjection = fullProjection(entries);
+			this.seenObservationIds.clear();
+			this.seenSummaryIds.clear();
+			this.seenReviewIds.clear();
 			this.pending = undefined;
 			this.turnsSinceRun = 0;
+			this.assistantResponsesInCurrentTurn = 0;
+			this.runtime.contemplatorState = {
+				running: false,
+				pendingObservations: 0,
+				pendingSummaries: 0,
+				pendingReviews: 0,
+				responsesSinceRun: 0,
+				waitingFor: "idle",
+			};
 		}
 		const undeliveredSuggestions = new Map<string, string>();
 		for (const entry of entries) {
@@ -416,6 +508,27 @@ export class Contemplator {
 				}
 			}
 		}
+		if (resetTracking && resetProjection) {
+			// Successful contemplator update prompts are the durable coverage record.
+			// Only memories present in those prompts are considered seen after reload;
+			// memories from a failed, unpersisted run remain pending and retryable.
+			const coveredIds = new Set<string>();
+			for (const message of this.history) {
+				if (message.role !== "user") continue;
+				const text = customMessageText(message.content);
+				if (!text.includes("NEW MEMORY UPDATE")) continue;
+				for (const id of memoryReferenceIds(text)) coveredIds.add(id);
+			}
+			this.seenObservationIds = new Set(resetProjection.observations.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			this.seenSummaryIds = new Set(resetProjection.summaries.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			this.seenReviewIds = new Set((resetProjection.reviews ?? []).filter((item) => coveredIds.has(item.id)).map((item) => item.id));
+			const unprocessedObservations = resetProjection.observations.length - this.seenObservationIds.size;
+			const unprocessedSummaries = resetProjection.summaries.length - this.seenSummaryIds.size;
+			const unprocessedReviews = (resetProjection.reviews?.length ?? 0) - this.seenReviewIds.size;
+			if (unprocessedReviews > 0 || unprocessedObservations >= this.runtime.config.contemplatorMinNewObservations || unprocessedSummaries >= this.runtime.config.contemplatorMinNewSummaries) {
+				this.turnsSinceRun = this.runtime.config.contemplatorMinTurns;
+			}
+		}
 		this.restoredTipId = tipId;
 		for (const [probeId, question] of undeliveredSuggestions) {
 			// A durable custom_message proves only that Pi inserted the probe at some
@@ -432,68 +545,75 @@ export class Contemplator {
 		this.restore(ctx);
 		this.runtime.ensureConfig(ctx.cwd);
 		if (!this.runtime.config.contemplatorEnabled) {
+			this.publishState("disabled");
 			debugLog("contemplator.skipped", { reason: "disabled" });
 			return;
 		}
 		if (this.runtime.config.passive) {
+			this.publishState("passive");
 			debugLog("contemplator.skipped", { reason: "passive" });
 			return;
 		}
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 		const projection = fullProjection(branchEntries);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
-		const reflections = projection.reflections.map((item) => `[${item.id}] ${item.content}`);
+		const summaries = projection.summaries.map((item) => `[${item.id}] ${item.content}`);
 		const reviews = projection.reviews ?? [];
 		const newObservationItems = projection.observations.filter((item) => !this.seenObservationIds.has(item.id));
-		const newReflectionItems = projection.reflections.filter((item) => !this.seenReflectionIds.has(item.id));
+		const newSummaryItems = projection.summaries.filter((item) => !this.seenSummaryIds.has(item.id));
 		const newReviewItems = reviews.filter((item) => !this.seenReviewIds.has(item.id));
 		const newObservations = newObservationItems.map((item) => `[${item.id}] ${item.content}`);
-		const newReflections = newReflectionItems.map((item) => `[${item.id}] ${item.content}`);
+		const newSummaries = newSummaryItems.map((item) => `[${item.id}] ${item.content}`);
 		const newReviews = newReviewItems.map(reviewSummaryLine);
 		for (const item of newObservationItems) this.seenObservationIds.add(item.id);
-		for (const item of newReflectionItems) this.seenReflectionIds.add(item.id);
+		for (const item of newSummaryItems) this.seenSummaryIds.add(item.id);
 		for (const item of newReviewItems) this.seenReviewIds.add(item.id);
 		debugLog("contemplator.update", {
 			observationCount: observations.length,
-			reflectionCount: reflections.length,
+			summaryCount: summaries.length,
 			newObservationCount: newObservations.length,
-			newReflectionCount: newReflections.length,
+			newSummaryCount: newSummaries.length,
 			newReviewCount: newReviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 			pending: this.pending !== undefined,
 			running: this.running,
 		});
-		if (newObservations.length > 0 || newReflections.length > 0 || newReviews.length > 0) {
+		if (newObservations.length > 0 || newSummaries.length > 0 || newReviews.length > 0) {
 			this.pending = {
 				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
-				reflections: mergeMemoryLines(this.pending?.reflections ?? [], newReflections),
+				summaries: mergeMemoryLines(this.pending?.summaries ?? [], newSummaries),
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
 				mainAgentOutputTokens: assistantOutputTokens(branchEntries),
 				mainAgentToolCalls: assistantToolCallCount(branchEntries),
 				mainAgentActiveTimeMs: agentActiveTimeMs(branchEntries),
 			};
 		}
-		if (!this.pending) return;
+		if (!this.pending) {
+			this.publishState(this.running ? "running" : "idle");
+			return;
+		}
 		// Activity values are cumulative send-time snapshots, not values frozen when
 		// the first memory entered a pending batch. This includes work performed
 		// while that batch waits for its memory/turn thresholds.
 		this.pending.mainAgentOutputTokens = assistantOutputTokens(branchEntries);
 		this.pending.mainAgentToolCalls = assistantToolCallCount(branchEntries);
 		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
-		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.reflections.length >= this.runtime.config.contemplatorMinNewReflections;
+		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries;
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
+			this.publishState(!enoughMemories ? "memories" : "responses");
 			debugLog("contemplator.waiting", {
 				enoughMemories,
 				turnsSinceRun: this.turnsSinceRun,
 				minTurns: this.runtime.config.contemplatorMinTurns,
 				minNewObservations: this.runtime.config.contemplatorMinNewObservations,
-				minNewReflections: this.runtime.config.contemplatorMinNewReflections,
+				minNewSummaries: this.runtime.config.contemplatorMinNewSummaries,
 			});
 			return;
 		}
+		this.publishState(this.running ? "running" : "ready");
 		debugLog("contemplator.triggered", {
 			pendingObservationCount: this.pending.observations.length,
-			pendingReflectionCount: this.pending.reflections.length,
+			pendingSummaryCount: this.pending.summaries.length,
 			pendingReviewCount: this.pending.reviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 		});
@@ -521,11 +641,13 @@ export class Contemplator {
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
 		let failed = false;
+		let failureMessage: string | undefined;
+		let workerNotified = false;
 		let promptPersisted = false;
-		let promptMessage: Message | undefined;
+		this.publishState("running", { lastStartedAt: startedAt, lastError: undefined });
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
-			newReflectionCount: update.reflections.length,
+			newSummaryCount: update.summaries.length,
 			newReviewCount: update.reviews.length,
 			historyMessageCount: this.history.length,
 		});
@@ -539,12 +661,13 @@ export class Contemplator {
 			});
 			if (!resolved.ok) {
 				failed = true;
+				failureMessage = resolved.reason;
 				debugLog("contemplator.model_unavailable", { reason: resolved.reason });
 				if (sessionGeneration === this.sessionGeneration) {
 					const pending = this.pending as PendingUpdate | undefined;
 					this.pending = {
 						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-						reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+						summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
 						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 						mainAgentOutputTokens: update.mainAgentOutputTokens,
 						mainAgentToolCalls: update.mainAgentToolCalls,
@@ -564,33 +687,51 @@ export class Contemplator {
 				modelId: selectedModel.id,
 				contextWindow: selectedModel.contextWindow,
 			});
+			if (this.runtime.config.showWorkerNotifications && ctx.hasUI) {
+				ctx.ui?.notify("pi-contemplator: contemplator running", "info");
+				workerNotified = true;
+			}
 			const reviewerEnabled = this.runtime.config.reviewerEnabled;
 			const updateSections: string[] = [];
 			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
-			if (update.reflections.length > 0) updateSections.push(`REFLECTIONS:\n${update.reflections.join("\n")}`);
+			if (update.summaries.length > 0) updateSections.push(`SUMMARIES:\n${update.summaries.join("\n")}`);
 			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
+			const finalActionNames = reviewerEnabled
+				? "send_probe, request_review, or no_intervention"
+				: "send_probe or no_intervention";
 			const interventionInstruction = reviewerEnabled
-				? "Use send_probe for one focused question, or request_review only when a deeper workflow or software review is justified. Queue only one final intervention; if a tool warns about a bad memory citation, use search_memories and recall, then call an intervention tool again to replace it."
-				: "Use send_probe only when one focused question is materially useful. Queue only one final probe; if the tool warns about a bad memory citation, use search_memories and recall, then call send_probe again to replace it.";
+				? `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question, and request_review only when a deeper workflow or software review is justified. Never send a probe merely to satisfy the final-action requirement. If a tool warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`
+				: `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful probe is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question. Never send a probe merely to satisfy the final-action requirement. If send_probe warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`;
 			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
-			promptMessage = prompt;
-			this.history.push(prompt);
 			let intervention: Intervention | undefined;
+			let finalActionWarned = false;
 			const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 			const getBranch = () => branchEntries;
 			const searchMemoriesTool = createSearchMemoriesAgentTool(getBranch);
 			const recallTool = createRecallAgentTool(getBranch);
-			const memoryExists = (id: string) => recallMemorySources(branchEntries, id).status === "found";
+			const memoryExists = (id: string) => {
+				const exists = recallMemorySources(branchEntries, id).status === "found";
+				if (!exists) finalActionWarned = true;
+				return exists;
+			};
 			const sendProbe = createSendProbeTool((question) => {
 				const overwritten = intervention !== undefined;
+				finalActionWarned = false;
 				intervention = { kind: "probe", question };
 				return { overwritten };
 			}, memoryExists);
-			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>];
+			const noIntervention = createNoInterventionTool(() => {
+				const overwritten = intervention !== undefined;
+				finalActionWarned = false;
+				intervention = { kind: "none" };
+				return { overwritten };
+			});
+			const tools: AgentTool<any>[] = [searchMemoriesTool as AgentTool<any>, recallTool as AgentTool<any>, sendProbe as AgentTool<any>, noIntervention as AgentTool<any>];
 			if (reviewerEnabled) {
 				const requestReview = createRequestReviewTool((request) => {
 					const overwritten = intervention !== undefined;
+					finalActionWarned = false;
 					const reviewRequestId = `review-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 					intervention = { kind: "review", request: {
 						id: reviewRequestId,
@@ -604,41 +745,77 @@ export class Contemplator {
 				}, memoryExists);
 				tools.push(requestReview as AgentTool<any>);
 			}
-			const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: this.history.slice(0, -1), tools };
-			const config: AgentLoopConfig = {
+			const selectedThinkingLevel = this.runtime.config.contemplatorModel?.thinking ?? this.runtime.config.model?.thinking ?? "medium";
+			const supportsReasoning = (resolved.model as { reasoning?: unknown }).reasoning === true;
+			const config: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = {
 				model: resolved.model as Model<any>,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
 				maxTokens: boundedMaxTokens(resolved.model as Model<any>, AGENT_LOOP_MAX_TOKENS),
 				convertToLlm: (messages) => messages as Message[],
 				toolExecution: "sequential",
+				// A clean final-action call is the end of the contemplator turn. Do not
+				// spend another model request asking it to narrate after its decision.
+				// Citation warnings leave the loop open so it can correct the action.
+				shouldStopAfterTurn: () => intervention !== undefined && !finalActionWarned,
+				...(supportsReasoning && selectedThinkingLevel !== "off" ? { reasoning: selectedThinkingLevel } : {}),
 			};
-			const stream = agentLoop([prompt], context, config, undefined, streamSimple);
-			for await (const event of stream) logAgentStreamError("contemplator", event);
-			const result = await stream.result();
-			// The LLM call happened and was billed regardless of what we do next, so
-			// record its usage even if the session generation changed mid-run.
-			for (const message of result) {
-				if (message.role === "assistant" && message.usage) {
-					this.runtime.recordAgentUsage(message.usage);
+			const runMessages: AgentMessage[] = [];
+			let nextPrompt = prompt;
+			for (let invocation = 1; invocation <= CONTEMPLATOR_MAX_INVOCATIONS && !intervention; invocation++) {
+				runMessages.push(nextPrompt);
+				const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: [...this.history, ...runMessages.slice(0, -1)], tools };
+				const api = (resolved.model as Model<any>).api;
+				const invocationConfig: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = invocation === 1 ? config : {
+					...config,
+					onPayload: (payload) => forceRequiredToolPayload(payload, api),
+				};
+				// SimpleStreamOptions 0.84.3 types provider-neutral choice as auto/none,
+				// while individual provider APIs also support required/any. Preserve the
+				// runtime hint and final-payload enforcement without weakening base types.
+				if (invocation > 1) (invocationConfig as any).toolChoice = requiredToolChoice(api);
+				const stream = agentLoop([nextPrompt], context, invocationConfig, undefined, streamSimple);
+				for await (const event of stream) logAgentStreamError("contemplator", event);
+				const result = await stream.result();
+				// agentLoop returns its input prompt as the first new message. We already
+				// added nextPrompt above, so do not duplicate each update in the durable
+				// contemplator history or in a subsequent retry's context.
+				const returnedMessages = result[0] === nextPrompt ? result.slice(1) : result;
+				runMessages.push(...returnedMessages);
+				// The LLM call happened and was billed regardless of what we do next.
+				for (const message of result) {
+					if (message.role === "assistant" && message.usage) this.runtime.recordAgentUsage(message.usage);
+				}
+				const assistant = [...result].reverse().find((message) => message.role === "assistant");
+				debugLog("contemplator.result", {
+					invocation,
+					messageCount: result.length,
+					assistantFound: assistant !== undefined,
+					assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
+					intervention: (intervention as Intervention | undefined)?.kind,
+				});
+				if (assistant && "stopReason" in assistant && (assistant.stopReason === "error" || assistant.stopReason === "aborted")) {
+					const errorMessage = "errorMessage" in assistant && typeof assistant.errorMessage === "string"
+						? assistant.errorMessage
+						: `Contemplator model ${assistant.stopReason}`;
+					throw new Error(errorMessage);
+				}
+				if (!intervention && invocation < CONTEMPLATOR_MAX_INVOCATIONS) {
+					nextPrompt = { role: "user", content: [{ type: "text", text: `You stopped without selecting a final action. If stopping meant that no intervention was clearly warranted, call the argument-free no_intervention tool now; that is the preferred default, and no explanation is required. Do not invent or send a probe merely to satisfy the tool requirement. Use send_probe only for a specific, memory-grounded question that is materially likely to improve the primary agent's reasoning${reviewerEnabled ? ", and request_review only for a well-supported recurring structural concern" : ""}. Call one final-action tool now: ${finalActionNames}. search_memories and recall do not satisfy this requirement.` }], timestamp: Date.now() };
 				}
 			}
-			const assistant = [...result].reverse().find((message) => message.role === "assistant");
-			debugLog("contemplator.result", {
-				messageCount: result.length,
-				assistantFound: assistant !== undefined,
-				assistantStopReason: assistant && "stopReason" in assistant ? assistant.stopReason : undefined,
-				intervention: intervention?.kind,
-			});
+			if (!intervention) throw new Error(`Contemplator stopped ${CONTEMPLATOR_MAX_INVOCATIONS} times without calling a final-action tool`);
 			if (sessionGeneration === this.sessionGeneration) {
-				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: prompt });
-				promptPersisted = true;
-				this.markTipPersisted(ctx);
-			}
-			if (assistant && sessionGeneration === this.sessionGeneration) {
-				this.history.push(assistant);
-				this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message: assistant });
-				this.markTipPersisted(ctx);
+				// Keep the durable contemplator history compact: prompts and assistant
+				// decisions are sufficient to resume its reasoning. Tool-result bodies
+				// are available within this run but are not copied into the ledger.
+				for (const message of runMessages) {
+					if (message.role !== "user" && message.role !== "assistant") continue;
+					this.history.push(message);
+					this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message });
+					promptPersisted = true;
+					this.markTipPersisted(ctx);
+				}
 			}
 			if (intervention?.kind === "probe" && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, intervention.question, "send_probe");
 			if (intervention?.kind === "review" && this.runtime.config.reviewerEnabled && sessionGeneration === this.sessionGeneration) {
@@ -666,13 +843,13 @@ export class Contemplator {
 			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration);
 		} catch (error) {
 			failed = true;
-			debugLog("contemplator.error", { errorMessage: error instanceof Error ? error.message : String(error) });
+			failureMessage = error instanceof Error ? error.message : String(error);
+			debugLog("contemplator.error", { errorMessage: failureMessage });
 			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
-				if (promptMessage && this.history.at(-1) === promptMessage) this.history.pop();
 				const pending = this.pending as PendingUpdate | undefined;
 				this.pending = {
 					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-					reflections: mergeMemoryLines(pending?.reflections ?? [], update.reflections),
+					summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
 					reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 					mainAgentOutputTokens: update.mainAgentOutputTokens,
 					mainAgentToolCalls: update.mainAgentToolCalls,
@@ -682,11 +859,33 @@ export class Contemplator {
 			}
 		} finally {
 			this.running = false;
+			const pendingHasEnoughMemories = this.pending !== undefined && (
+				this.pending.reviews.length > 0 ||
+				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations ||
+				this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries
+			);
+			const waitingFor = !this.pending
+				? "idle"
+				: !pendingHasEnoughMemories
+					? "memories"
+					: this.turnsSinceRun < this.runtime.config.contemplatorMinTurns
+						? "responses"
+						: "ready";
+			this.publishState(waitingFor, {
+				lastCompletedAt: Date.now(),
+				lastError: failureMessage,
+			});
 			debugLog("contemplator.complete", {
 				durationMs: Date.now() - startedAt,
 				historyMessageCount: this.history.length,
 				pendingUpdate: this.pending !== undefined,
 			});
+			if (workerNotified && sessionGeneration === this.sessionGeneration) {
+				ctx.ui?.notify(
+					failed ? `pi-contemplator: contemplator failed — ${failureMessage ?? "unknown error"}` : "pi-contemplator: contemplator completed",
+					failed ? "warning" : "info",
+				);
+			}
 			if (!failed && sessionGeneration === this.sessionGeneration && this.pending) this.observeTurn(ctx);
 		}
 	}
@@ -705,7 +904,11 @@ export class Contemplator {
 		// triggerTurn:false as "do not queue while streaming" and inserts directly
 		// into agent.state, outside the active run's context snapshot. Omitting it
 		// still does not start a turn while idle, but allows steer to work in-run.
-		if (this.agentActiveSince !== undefined) this.queuedProbeIds.add(probeId);
+		// Whether Pi is currently running or idle, sendMessage owns this probe in an
+		// in-memory steer queue until message_end drains it. Track both cases so an
+		// unrelated observer update or compaction callback cannot restore and enqueue
+		// a duplicate while the original idle steer is still pending.
+		this.queuedProbeIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}\n\nReferenced memories can be reviewed using the recall tool.`,

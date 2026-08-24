@@ -1,6 +1,6 @@
 {
   "name": "@matthewfl/pi-contemplator",
-  "version": "0.0.11",
+  "version": "0.1.0",
   "description": "A Pi extension that keeps long-running agentic sessions on track with background memory, contemplation, and structural review.",
   "type": "module",
   "license": "MIT",
@@ -41,7 +41,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
-    "test:e2e": "node tests/e2e/rpc-contemplator.mjs && node tests/e2e/rpc-delivery.mjs && node tests/e2e/rpc-restore-review.mjs && node tests/e2e/rpc-compaction.mjs && node tests/e2e/rpc-compaction-resilience.mjs && node tests/e2e/rpc-memory-edges.mjs && node tests/e2e/rpc-routing-isolation.mjs"
+    "test:e2e": "node tests/e2e/rpc-contemplator.mjs && node tests/e2e/rpc-summarizer.mjs && node tests/e2e/rpc-delivery.mjs && node tests/e2e/rpc-restore-review.mjs && node tests/e2e/rpc-compaction.mjs && node tests/e2e/rpc-compaction-resilience.mjs && node tests/e2e/rpc-memory-edges.mjs && node tests/e2e/rpc-routing-isolation.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -50,10 +50,10 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.2",
-    "@earendil-works/pi-ai": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2",
+    "@earendil-works/pi-agent-core": "^0.84.3",
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
     "@types/node": "^22.0.0",
     "typebox": "^1.1.38",
     "typescript": "^5.6.0",

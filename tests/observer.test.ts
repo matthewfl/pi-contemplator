@@ -30,7 +30,7 @@ describe("runObserver", () => {
 	const baseArgs = {
 		model: {} as any,
 		apiKey: "test",
-		priorReflections: [],
+		priorSummaries: [],
 		priorObservations: [],
 		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
 		allowedSourceEntryIds: ["entry-a"],
@@ -49,15 +49,17 @@ describe("runObserver", () => {
 		expect(systemPrompt).toContain("Frame state changes as supersession");
 		expect(systemPrompt).toContain("sourceEntryIds");
 		expect(systemPrompt).toContain("zero observations");
-		expect(systemPrompt).toContain("The dropper will drop these first");
+		expect(systemPrompt).toContain("The summarizer considers relevance together with retention");
+		expect(systemPrompt).toContain("Retention horizons");
 		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
 		expect(systemPrompt).not.toContain("will NEVER be dropped");
 		expect(systemPrompt).not.toContain("pruner");
 	});
 
-	it("records V3 observations with source ids and code-computed tokenCount", async () => {
+	it("defaults omitted retention without rejecting the observation batch", async () => {
 		const content = "User asked for a memory update.";
 		const loop = fakeAgentLoop(async (_prompts, context) => {
+			expect(context.tools[0].parameters.properties.observations.items.required).not.toContain("retention");
 			await context.tools[0].execute("tool-1", {
 				observations: [{ timestamp: "2026-05-02 10:30", content, relevance: "high", sourceEntryIds: ["entry-a"] }],
 			});
@@ -70,6 +72,7 @@ describe("runObserver", () => {
 			content,
 			timestamp: "2026-05-02 10:30",
 			relevance: "high",
+			retention: "contextual",
 			sourceEntryIds: ["entry-a"],
 			tokenCount: estimateStringTokens(content),
 		});

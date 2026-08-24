@@ -18,8 +18,20 @@ type TriggerOptions = {
 	shortContinuationPrompt?: string;
 };
 
+/** A stop with thinking but no text or tool call did not produce a usable turn. */
+function isEmptyNormalStop(message: any): boolean {
+	if (!message || message.role !== "assistant" || message.stopReason !== "stop") return false;
+	if (typeof message.content === "string") return message.content.trim().length === 0;
+	if (!Array.isArray(message.content)) return true;
+	return !message.content.some((part: any) =>
+		part?.type === "toolCall"
+		|| (part?.type === "text" && typeof part.text === "string" && part.text.trim().length > 0),
+	);
+}
+
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	registerCompactionResumeAcknowledgement(pi, runtime);
+	let resumeEmptyStopAfterProactiveCompaction = false;
 
 	const triggerCompaction = (ctx: any, options: TriggerOptions): void => {
 		const { origin, resume, threshold, shortContinuationPrompt } = options;
@@ -35,7 +47,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactOrigin = undefined;
 					if (origin === "agent-requested") runtime.compactRequested = true;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction deferred — agent became busy before compaction",
+						"pi-contemplator: compaction deferred — agent became busy before compaction",
 						"info",
 					);
 					return;
@@ -46,7 +58,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactInFlight = false;
 					runtime.compactOrigin = undefined;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+						"pi-contemplator: compaction skipped — another compaction already ran before deferred compaction",
 						"info",
 					);
 					return;
@@ -57,7 +69,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					const reason = origin === "agent-requested" ? "agent-requested, " : origin === "length-stop" ? "length-stop, " : "";
 					const continuation = resume ? "; the interrupted agent run will resume automatically" : "";
 					ui?.notify(
-						`Observational memory: compaction started (${reason}~${currentTokens.toLocaleString()} tokens)${continuation}`,
+						`pi-contemplator: compaction started (${reason}~${currentTokens.toLocaleString()} tokens)${continuation}`,
 						"info",
 					);
 				}
@@ -74,7 +86,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						runtime.compactOrigin = undefined;
 						if (hasUI) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
 						if (error.message !== "Compaction cancelled" && hasUI) {
-							ui?.notify(`Observational memory: ${error.message}`, "error");
+							ui?.notify(`pi-contemplator: ${error.message}`, "error");
 						}
 						if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 					},
@@ -86,7 +98,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) {
 					ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
-					ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
+					ui?.notify(`pi-contemplator: compact threw: ${msg}`, "error");
 				}
 				if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
 			}
@@ -96,6 +108,15 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	pi.on("agent_end", (event: any, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.compactInFlight) return;
+
+		const lastAssistant = [...event.messages].reverse().find(
+			(m): m is Extract<typeof m, { role: "assistant" }> => m.role === "assistant",
+		);
+		// Some providers occasionally return stop after spending output tokens but
+		// emit no text or tool call. Pi regards that as settled, yet it plainly is
+		// not a completed autonomous turn. Remember this only until agent_settled so
+		// threshold compaction can continue it; never resume an ordinary text stop.
+		resumeEmptyStopAfterProactiveCompaction = isEmptyNormalStop(lastAssistant);
 
 		const agentRequested = runtime.compactRequested;
 		if (agentRequested) {
@@ -108,9 +129,6 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		// Pi owns error, abort, and overflow retry policy. OM's session hook still
 		// supplies the compaction contents when Pi performs a native retry.
-		const lastAssistant = [...event.messages].reverse().find(
-			(m): m is Extract<typeof m, { role: "assistant" }> => m.role === "assistant",
-		);
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : 0;
 		if (
 			!lastAssistant
@@ -129,15 +147,19 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	});
 
 	// Proactive threshold compaction is maintenance after Pi has fully settled.
-	// It must not manufacture another agent turn: the previous run completed
-	// normally and there is no interrupted work to resume.
+	// It must not manufacture another agent turn after an ordinary completed
+	// response. The narrow exception is a provider's empty normal stop: there was
+	// no usable response, so compaction must preserve the autonomous run rather
+	// than making that provider failure look like successful completion.
 	pi.on("agent_settled", (_event: any, ctx: any) => {
+		const resume = resumeEmptyStopAfterProactiveCompaction;
+		resumeEmptyStopAfterProactiveCompaction = false;
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true || runtime.compactInFlight || runtime.compactRequested) return;
 		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (rawTokensSinceLastCompaction(entries) < threshold) return;
-		triggerCompaction(ctx, { origin: "proactive", resume: false, threshold });
+		triggerCompaction(ctx, { origin: "proactive", resume, threshold });
 	});
 }

@@ -1,355 +1,69 @@
 # How it works
 
-This is the V3 technical reference for `pi-contemplator`.
+## Event flow
 
-V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. Compaction is model-free and renders a projection of that ledger into the summary the agent sees.
+1. `agent_start`, `turn_end`, and main-agent activity checkpoints evaluate background work.
+2. The observer serializes the oldest uncovered source entries, bounded by its input cap, and appends `om.observations.recorded`.
+3. Active observations and summaries are sorted chronologically. The newest whole-memory suffix fitting `newMemoryPoolMaxTokens` is the protected new pool; the older prefix is the summarizer-eligible old pool.
+4. When the old pool exceeds its current token trigger, a fresh single-flight summarizer run receives only old memories and creates strictly validated citation summaries.
+5. Accepted work appends one atomic `om.summarizer.commit`. Partial useful work is retained even if the run reaches its turn/output limit; an empty run writes no commit.
+6. If the pass reaches the old-pool target, the next trigger resets to the target. Otherwise it advances to the post-run old-pool size plus the configured retrigger growth.
+7. Memory updates may independently wake the contemplator. Reviewer work has its own lock and does not block observer, summarizer, contemplator, or primary-agent work.
 
-## Runtime entry points
+## Observer coverage
 
-`src/index.ts` registers one shared runtime and these Pi surfaces:
+Observer progress is source-addressed by `coversUpToId`. Input is drained oldest-first. Complete entries are preferred; if the first source alone exceeds the cap, it is represented by a marked head/tail excerpt while retaining the original source id for provenance.
 
-| Surface | Purpose |
-| --- | --- |
-| `turn_end` observer trigger | Maybe run the observer in the background. |
-| `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
-| `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
-| `session_before_compact` hook | Build the V3 compaction payload deterministically. |
-| `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
-| `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
-| `search_memories` tool | Search recorded observations and reflections by topic or keywords. |
-| `recall` tool | Recover source evidence for a memory id. |
+The cap is explicit `observerChunkMaxTokens` when configured, otherwise 20% of the resolved model context window (with a fallback). Empty observer output does not fake coverage, so the range can be retried with later context.
 
-## Main-agent activity time
+## Summarizer scheduling
 
-The extension records small `om.agent.activity` custom entries while the primary Pi agent is running. Timing starts at `agent_start`, checkpoints at `turn_end`, and records any remainder at `agent_end`. The cumulative value therefore measures wall-clock time spent inside main-agent runs—model generation, tool execution, and their orchestration—while excluding idle time waiting for the user.
+Pool membership is accounting-only state derived from the active ledger; no pool marker is persisted. By default, the newest 40,000 tokens are protected as the new pool. Everything older is the old pool, whose advisory target is also 40,000 tokens. Whole memories are never split across the boundary, and the newest memory is always protected even if it alone exceeds the new-pool budget.
 
-Parallel tools share the same running clock, so two concurrent ten-second tool calls add roughly ten seconds rather than twenty. Because activity segments are custom entries on the active session branch, completed activity survives reloads and follows tree navigation without modifying primary `AgentMessage` objects. When the contemplator starts during a long in-progress turn, it first persists the live interval and restarts the running clock at the current time. Its activity signal can then be derived entirely from branch ledger entries, while a later turn or agent checkpoint records only the remainder and does not double-count the interval. Milliseconds are retained internally for correct accumulation, but the contemplator receives a human-readable value rounded down to a five-minute bucket alongside cumulative generated tokens and tool-call count. This is an advisory long-run efficiency signal: high active time combined with memory evidence of limited progress may justify investigation or a workflow review, but elapsed time alone is not proof of a problem.
+A run starts when the old pool strictly exceeds its current trigger. The initial trigger is `oldMemoryPoolTargetTokens`. After a pass:
 
-## Lifecycle overview
+- if old memory is at or below the target, the next trigger resets to the target;
+- otherwise the next trigger is `postRunOldTokens + summarizerRetriggerTokens` (2,000 by default).
 
-```mermaid
-flowchart TD
-    TE[turn_end]
-    AE[agent_end]
-    SBC[session_before_compact]
+There are no wall-clock or agent-time scheduling gates. The in-memory next-trigger value is re-evaluated at main-agent activity checkpoints and is safely recomputed after restart. Updates coalesce while one run is active.
 
-    ObsDue{raw tokens since observation coverage<br/>≥ observeAfterTokens?}
-    Observer[Observer model call<br/>append om.observations.recorded]
+Only old memories are eligible and shown to the summarizer. Input sampling is a separate escape valve: when rendered old memory exceeds `summarizerSamplingThresholdTokens` (60,000 by default), weighted sampling back to that budget uses weight proportional to inverse memory length. In normal operation the 40,000-token target should make sampling uncommon.
 
-    ReflectDropDue{observer not due<br/>and reflection/drop clock due?}
-    BothDue{both due?}
-    ReflectorOnly{reflector due only?}
-    Reflector[Reflector model call<br/>append om.reflections.recorded]
-    Dropper[Dropper model call<br/>append om.observations.dropped]
+## Summarizer validation and commit
 
-    CompactDue{raw tokens since compaction<br/>≥ compactAfterTokens<br/>and idle?}
-    CompactCall[ctx.compact]
+The tools execute sequentially so each receipt is visible before the next mutation:
 
-    Fold[fold/project V3 ledger]
-    Render[render deterministic summary]
-    Details[return om.folded details]
+- `summarize` can mark valid active memories `keep_verbatim` for this run and process multiple candidate summary strings;
+- each summary must use strict square-bracket citations, cite at least two newly consumable pre-run memories, and be no more than 80% of their estimated source tokens;
+- a memory already consumed by an earlier accepted candidate, marked keep-verbatim, or created during this run may still be cited, but does not count toward the two-source or reduction checks;
+- `fix_summary` atomically deletes or replaces only a summary created in the current run, updating which sources are consumed; and
+- `done` reports run statistics on its first call and completes on its second consecutive call.
 
-    TE --> ObsDue
-    ObsDue -- yes --> Observer
-    ObsDue -- no --> ReflectDropDue
-    ReflectDropDue --> BothDue
-    BothDue -- yes --> Reflector --> Dropper
-    BothDue -- no --> ReflectorOnly
-    ReflectorOnly -- yes --> Reflector
-    ReflectorOnly -- no --> Dropper
-
-    AE --> CompactDue
-    CompactDue -- yes --> CompactCall
-    CompactCall --> SBC
-    SBC --> Fold --> Render --> Details
-```
+Malformed candidates are rejected individually with actionable errors. Accepted candidates remain staged. If the model stops without `done`, continuation requests require tool use; useful accepted work is still returned and committed when limits are reached.
 
-The observer has priority. Reflect/drop does not run on a turn where observer work is due.
+## Folding and projection
 
-## Source entries and progress
+`foldLedger` reconstructs all observations and summaries, then derives the consumption and citation graph from summarizer commits. Routine and compaction projections inject only unconsumed observations and summaries. Search and recall use the complete durable archive, including consumed records and review outcomes.
 
-V3 raw-token progress counts only source entries:
+Compaction details preserve the full memory graph so old raw ledger entries may be folded away without breaking search, recall, or provenance.
 
-- `message`
-- `custom_message`
-- `branch_summary`
-
-Memory ledger entries and compaction entries do not add raw-token progress.
-
-Every V3 ledger entry has `data.coversUpToId`. That field is a progress and projection watermark. Worker clocks count raw/source tokens after the latest valid watermark for that worker's ledger type:
-
-| Worker/trigger | Progress source |
-| --- | --- |
-| Observer | latest `om.observations.recorded.data.coversUpToId` |
-| Reflector | latest `om.reflections.recorded.data.coversUpToId` |
-| Dropper | latest `om.observations.dropped.data.coversUpToId` |
-| Auto-compaction | latest compaction boundary |
+## Compaction
 
-The watermark is also used to decide whether a memory ledger entry belongs to a bounded projection. It is not provenance. Provenance lives in `sourceEntryIds` and `supportingObservationIds`.
+Proactive compaction is controlled by `compactAfterTokensMode`:
 
-## Ledger data shapes
+- `calibrated` uses the `compactAfterTokens` raw source-backlog threshold (81,000 by default);
+- `ratio` uses `floor(contextWindow * compactAfterTokensRatio)`.
 
-### Observations recorded
-
-```ts
-customType: "om.observations.recorded"
-data: {
-  observations: Observation[];
-  coversUpToId: string;
-}
-```
-
-Each observation:
-
-```ts
-type Observation = {
-  id: string;
-  content: string;
-  timestamp: string;
-  relevance: "low" | "medium" | "high" | "critical";
-  sourceEntryIds: string[];
-  tokenCount: number;
-}
-```
-
-The builder rejects empty observation arrays, so no empty progress entries are written.
-
-### Reflections recorded
-
-```ts
-customType: "om.reflections.recorded"
-data: {
-  reflections: Reflection[];
-  coversUpToId: string;
-}
-```
+Injected observations and summaries do not contribute to this proactive source-backlog counter. They do contribute to the actual model context seen by Pi, so Pi may still invoke its native context-limit compaction earlier when source context plus injected memory approaches the model limit.
 
-Each reflection:
+Agent-requested compaction resumes with the authored continuation prompt. Proactive maintenance after a normally settled turn does not restart the agent. Failed/too-small compactions retain the fail-safe continuation behavior. A compaction observer can run asynchronously without blocking compaction.
 
-```ts
-type Reflection = {
-  id: string;
-  content: string;
-  supportingObservationIds: string[];
-  tokenCount: number;
-}
-```
+## Probe delivery
 
-The reflector must cite valid active observation ids.
+A contemplator probe is persisted as pending but displayed only after Pi accepts it into the conversation stream. It is sent as a steer, not a follow-up turn. During tools it waits for the current (including parallel) tool batch to finish, then appears in the next provider request. Pending probes survive restore and branch movement and are acknowledged exactly once.
 
-### Observations dropped
+## Concurrency
 
-```ts
-customType: "om.observations.dropped"
-data: {
-  observationIds: string[];
-  coversUpToId: string;
-}
-```
+Observer/consolidation, summarizer, contemplator, and reviewer each have separate tracked tasks. The summarizer has one authoritative process-local single-flight gate per session runtime: a second pass cannot start until the tracked first pass exits and releases its lock. A no-progress watchdog aborts a summarizer after 15 minutes without stream/message progress; normal streamed thinking resets the timer, so a long run that is still producing output is not cancelled. A successful pass derives its next threshold from the current old-pool size; failed, stalled, incomplete, or no-model launches preserve the prior threshold so the backlog remains eligible at the next activity checkpoint.
 
-Drops are tombstones. They remove ids from active observations but do not delete ledger history.
-
-### Folded compaction details
-
-```ts
-details: {
-  type: "om.folded";
-  version: 1;
-  fullFold: boolean;
-  observations: Observation[];
-  reflections: Reflection[];
-}
-```
-
-These details are what later visible projections read. The ledger remains the source of truth.
-
-## Observer flow
-
-The observer trigger runs on `turn_end`.
-
-1. Load config if needed.
-2. Skip if `passive` is true.
-3. Skip if `observerInFlight` is true.
-4. Count raw/source tokens since latest observation coverage.
-5. Skip if below `observeAfterTokens`.
-6. Select source entries after the latest observation coverage marker.
-7. Serialize those source entries for the observer prompt.
-8. Resolve the memory model.
-9. Run `runObserver()` in a background task.
-10. Validate source ids returned by the model.
-11. Compute deterministic 12-character ids and per-observation token counts in code.
-12. Append `om.observations.recorded` only if at least one observation was accepted.
-
-If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range.
-
-## Reflect/drop flow
-
-Reflect/drop also runs on `turn_end`, but only when the observer is not due.
-
-1. Load config if needed.
-2. Skip if `passive` is true.
-3. Skip if observer or reflect/drop work is already in flight.
-4. Skip if observer progress has reached `observeAfterTokens`.
-5. Check the reflector raw-token clock against `reflectAfterTokens`.
-6. Resolve the model only for stages that are ready to run.
-7. Fold current ledger state.
-8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
-9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity.
-10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
-11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
-12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
-
-Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.
-
-## Auto-compaction trigger
-
-The proactive auto-compaction trigger runs on `agent_settled`, after Pi has finished retries, native compaction, and queued continuations.
-
-It skips when:
-
-- `passive` is true;
-- compaction is already in flight;
-- raw/source tokens since last compaction are below `compactAfterTokens`;
-- Pi is not idle after the deferred check;
-- the threshold is no longer met after the deferred check.
-
-When all checks pass, it calls `ctx.compact()`. This settled maintenance compaction does not send a continuation or restart the agent. Explicit `compact_context` requests and non-overflow length stops are handled from `agent_end` because they represent interrupted work and must resume. Pi-owned compactions with `willRetry` keep a bounded fallback continuation in case native retry does not start.
-
-This trigger does not wait for observer, reflector, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
-
-## Compaction hook
-
-The compaction hook runs on `session_before_compact` and is the critical V3 latency path.
-
-It starts a fire-and-forget observer pass for uncovered source entries, then immediately performs deterministic compaction work. The observer uses the branch snapshot supplied by the event and appends any resulting observations to the ledger for later recall and compactions. Its result is not included in the compaction currently being prepared; recent entries retained by `firstKeptEntryId` remain available for short-term continuity.
-
-The hook then:
-
-1. Guards against duplicate concurrent compaction hooks.
-2. Loads config if needed.
-3. Reads `event.preparation.firstKeptEntryId` and `event.preparation.tokensBefore`.
-4. Builds a compaction projection from branch entries and `firstKeptEntryId`.
-5. Renders a summary from projected reflections and observations.
-6. Returns `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
-
-The compaction hook itself does not wait for the observer, call the reflector/dropper, or append ledger entries synchronously. If another compaction hook is already in flight, it returns `{ cancel: true }`.
-
-## Projections
-
-V3 uses projection helpers so commands, compaction, and recall do not each invent their own truth.
-
-### Full projection
-
-Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Memory entries are included by resolving their `data.coversUpToId` marker against the boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling coverage markers are ignored.
-
-### Visible projection
-
-Visible projection without a boundary reads the latest V3 `om.folded` compaction details. This is what the agent currently sees.
-
-### Compaction projection
-
-When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose `coversUpToId` reaches `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, and drops by coverage marker. Otherwise, it keeps the normal projection.
-
-### Diff projection
-
-Diff projection compares visible memory with full memory. `/om:status` uses this to show recorded-vs-visible drift. `/om:status` also reports the visible observation pool separately from the folded active observation pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
-
-## Summary rendering
-
-The renderer returns an empty string when there are no visible observations or reflections. Otherwise it starts with deterministic usage instructions that tell the agent how to treat the memory, how to handle conflicts, and when to use `recall` for exact source context. It then renders reflection and observation sections when those entries exist:
-
-```md
-These are condensed memories from earlier in this session.
-
-- Reflections: stable, long-lived facts about the user, project, decisions, and constraints. New reflection lines may include ids in brackets.
-- Observations: timestamped events from the conversation history, in chronological order. Observation lines include ids in brackets.
-
-Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
-
-When historical context may be missing, use `search_memories` with a few distinctive keywords. It searches current-branch observations and reflections, including dropped observations. Use the returned id with `recall` when exact source context or provenance is needed; do not inject raw source unless it materially improves precision.
-
-## Reflections
-[id] durable reflection
-
-## Observations
-[id] YYYY-MM-DD HH:MM [relevance] timestamped observation
-```
-
-The renderer is deterministic. It does not call a model and does not rewrite memory content.
-
-## Commands
-
-### `/om:status`
-
-Shows:
-
-- recorded/dropped/visible observation counts, with plain `+N` / `-N` visible-vs-full drift suffixes when drift exists;
-- recorded/visible reflection counts, with a plain `+N` drift suffix when full memory has extra reflections;
-- next observation/reflection/compaction token progress and drop coverage since the last successful drop;
-- visible observation pool pressure against `observationsPoolMaxTokens` from the current compaction projection;
-- active observation pool pressure against `observationsPoolTargetTokens` from folded active observations;
-- dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
-- reflection pool token total;
-- passive mode;
-- worker in-flight flags;
-- last observer and reflect/drop errors.
-
-### `/om:view`
-
-Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no visible memory has been folded into a compaction yet but recorded memory exists, it falls back to showing recorded memory with a notice. Subcommands: `/om:view full` always shows recorded branch memory, and `/om:view contemplator` shows the contemplator's private history and probes (see below).
-
-Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
-
-### `/om:view full`
-
-Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`.
-
-### `/om:view contemplator`
-
-Shows the contemplator's persisted private messages on the current branch, including memory-update messages, assistant text, tool calls, probes, compacted summaries, and estimated token counts. Contemplator output is displayed dimmed where the terminal supports it, and the plain-text view is copied to the clipboard.
-
-## Recall flow
-
-The agent-facing `recall` tool accepts a 12-character lowercase hex id.
-
-1. Validate id shape.
-2. Read the current branch.
-3. Index V3 observations, reflections, and drops from ledger history.
-4. Match the id against observations and reflections.
-5. For observations, mark status as `active` or `dropped`.
-6. Resolve observation source entries from `sourceEntryIds`.
-7. For reflections, resolve supporting observations and their sources.
-8. Return exact evidence plus diagnostics for missing/non-source entries.
-
-Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.
-
-## Memory search
-
-The agent-facing `search_memories` tool performs a bounded lexical search over recorded V3 observations and reflections on the current branch. Results include the memory id, kind, relevance, timestamp when available, and active/dropped status. Reflection and higher-relevance matches receive a small ranking boost. Search is intentionally separate from `recall`: search discovers candidate ids, while recall retrieves exact source evidence.
-
-Search does not change the compaction summary or inject results automatically; the agent chooses when historical context is relevant and calls the tool.
-
-## Error and race handling
-
-- Worker in-flight flags prevent duplicate observer or reflect/drop runs.
-- Observer priority prevents reflect/drop from advancing while source text is due for observation.
-- No-output workers append no empty ledger entries.
-- Invalid source/support/drop ids are filtered or rejected by code.
-- Background worker errors are recorded on runtime state and surfaced in `/om:status`.
-- Compaction does not wait for background workers; it folds whatever ledger state is already present.
-- Historical or invalid coverage markers are tolerated by progress helpers instead of throwing.
-
-## V2 behavior
-
-V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction details, and old V2 config keys are ignored. Existing old visible compaction text in a continued session may remain visible until a V3 compaction replaces it. The recommended upgrade path is to update settings and start a new clean session.
-
-## Invariants
-
-- The branch-local V3 ledger is the memory source of truth.
-- Pi compaction summaries represent what the agent sees.
-- Compaction is deterministic and model-free.
-- Observer input is raw/source entries only.
-- `coversUpToId` is a progress/projection watermark, not provenance.
-- Kept observations and reflections are rendered without paraphrase.
-- Dropped observations remain recallable from ledger history.
-- Old V2 memory is ignored rather than migrated.
+The compaction observer may record memories alongside compaction, but it never launches a summarizer from inside the compaction sidecar. A later normal activity checkpoint re-evaluates the pools. Reviews are serialized. None of these workers blocks the primary agent. Context-generation checks discard stale background output after branch/session changes.

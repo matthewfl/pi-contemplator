@@ -32,7 +32,6 @@ export type CompactAfterTokensMode = "calibrated" | "ratio";
 
 export interface Config {
 	observeAfterTokens: number;
-	reflectAfterTokens: number;
 	/**
 	 * Maximum estimated source tokens serialized into a single observer chunk.
 	 * Unset (default) derives the cap from the resolved memory model's context
@@ -42,8 +41,10 @@ export interface Config {
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
-	observationsPoolMaxTokens: number;
-	observationsPoolTargetTokens: number;
+	/** Token budget for the protected newest-memory suffix; newest record always fits whole. */
+	newMemoryPoolMaxTokens: number;
+	/** Advisory token target for older summarizer-eligible memory. */
+	oldMemoryPoolTargetTokens: number;
 	agentMaxTurns: number;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
@@ -59,19 +60,25 @@ export interface Config {
 	/** Optional model override used only by short-lived structural reviewers. */
 	reviewerModel?: ConfiguredModel;
 	contemplatorMinNewObservations: number;
-	contemplatorMinNewReflections: number;
+	contemplatorMinNewSummaries: number;
+	/** Minimum completed primary-model responses between contemplator runs. */
 	contemplatorMinTurns: number;
+	/** Stateless loss-aware summarizer for the old memory pool. */
+	summarizerEnabled: boolean;
+	/** Additional old-pool tokens required before retrying an above-target pool. */
+	summarizerRetriggerTokens: number;
+	/** Rendered old-memory tokens available before pressure-valve sampling. */
+	summarizerSamplingThresholdTokens: number;
 	debugLog: boolean;
 }
 
 export const DEFAULTS: Config = {
 	observeAfterTokens: 10_000,
-	reflectAfterTokens: 20_000,
 	compactAfterTokens: 81_000,
 	compactAfterTokensMode: "calibrated",
 	compactAfterTokensRatio: 0.68,
-	observationsPoolMaxTokens: 20_000,
-	observationsPoolTargetTokens: 10_000,
+	newMemoryPoolMaxTokens: 40_000,
+	oldMemoryPoolTargetTokens: 40_000,
 	agentMaxTurns: 16,
 	showWorkerNotifications: true,
 	passive: false,
@@ -80,8 +87,11 @@ export const DEFAULTS: Config = {
 	showContemplatorMessages: true,
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
-	contemplatorMinNewReflections: 1,
+	contemplatorMinNewSummaries: 1,
 	contemplatorMinTurns: 10,
+	summarizerEnabled: true,
+	summarizerRetriggerTokens: 2_000,
+	summarizerSamplingThresholdTokens: 60_000,
 	debugLog: false,
 };
 
@@ -155,15 +165,6 @@ function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
 }
 
-function validTargetOrUndefined(value: unknown, maxTokens: number): number | undefined {
-	const target = positiveIntegerOrUndefined(value);
-	return target !== undefined && target < maxTokens ? target : undefined;
-}
-
-function derivedObservationPoolTarget(maxTokens: number): number {
-	return Math.floor(maxTokens / 2);
-}
-
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
 }
@@ -203,15 +204,16 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	const normalized: Partial<Config> = {};
 	const numberKeys = [
 		"observeAfterTokens",
-		"reflectAfterTokens",
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
-		"observationsPoolMaxTokens",
-		"observationsPoolTargetTokens",
+		"newMemoryPoolMaxTokens",
+		"oldMemoryPoolTargetTokens",
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
-		"contemplatorMinNewReflections",
+		"contemplatorMinNewSummaries",
 		"contemplatorMinTurns",
+		"summarizerRetriggerTokens",
+		"summarizerSamplingThresholdTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
@@ -228,6 +230,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.contemplatorEnabled === "boolean") normalized.contemplatorEnabled = value.contemplatorEnabled;
 	if (typeof value.showContemplatorMessages === "boolean") normalized.showContemplatorMessages = value.showContemplatorMessages;
 	if (typeof value.reviewerEnabled === "boolean") normalized.reviewerEnabled = value.reviewerEnabled;
+	if (typeof value.summarizerEnabled === "boolean") normalized.summarizerEnabled = value.summarizerEnabled;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
@@ -269,20 +272,10 @@ export function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): C
 	const globalConfig = readNamespacedConfig(globalPath);
 	const projectConfig = readNamespacedConfig(projectPath);
 	const envConfig = readEnvConfig(env);
-	const merged = {
+	return {
 		...DEFAULTS,
-		observationsPoolTargetTokens: undefined,
 		...globalConfig,
 		...projectConfig,
 		...envConfig,
-	};
-	const target = validTargetOrUndefined(
-		merged.observationsPoolTargetTokens,
-		merged.observationsPoolMaxTokens,
-	) ?? derivedObservationPoolTarget(merged.observationsPoolMaxTokens);
-
-	return {
-		...merged,
-		observationsPoolTargetTokens: target,
 	};
 }

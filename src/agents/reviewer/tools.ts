@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "typebox";
-import { delimitedMemoryIds } from "../../memory-citations.js";
+import { memoryReferenceIds } from "../../memory-citations.js";
 import type { ReviewNoProposal, SoftwareReviewProposal, WorkflowReviewProposal } from "../../session-ledger/types.js";
 
 const prose = (description: string) => Type.String({ minLength: 1, description });
@@ -49,7 +49,7 @@ function trimOptional(value: string | undefined): string | undefined {
 }
 
 function citedIds(params: Record<string, unknown>): string[] {
-	return delimitedMemoryIds(Object.values(params).filter((value): value is string => typeof value === "string").join("\n"));
+	return memoryReferenceIds(Object.values(params).filter((value): value is string => typeof value === "string").join("\n"));
 }
 
 function terminalTool<T extends TSchema>(

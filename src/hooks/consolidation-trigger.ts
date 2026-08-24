@@ -1,31 +1,23 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runDropper } from "../agents/dropper/agent.js";
-import { observationPoolMetrics } from "../agents/dropper/pool.js";
+import { runSummarizer } from "../agents/summarizer/agent.js";
 import { runObserver } from "../agents/observer/agent.js";
-import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
-	OM_OBSERVATIONS_DROPPED,
+	OM_SUMMARIZER_COMMIT,
 	OM_OBSERVATIONS_RECORDED,
-	OM_REFLECTIONS_RECORDED,
-	buildObservationsDroppedData,
 	buildObservationsRecordedData,
-	buildReflectionsRecordedData,
-	earlierCoverageMarkerId,
 	foldLedger,
 	fullProjection,
 	isSourceEntry,
 	latestCoverageIndex,
-	latestCoverageMarkerId,
 	observationToSummaryLine,
+	partitionMemoryPools,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
-	reflectionToSummaryLine,
+	summaryToSummaryLine,
 	type Entry,
-	type Reflection,
 } from "../session-ledger/index.js";
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
@@ -45,11 +37,35 @@ export type ConsolidationCtx = {
 
 type StageOutcome = "continue" | "abort";
 
-type ReflectorStageResult = {
-	outcome: StageOutcome;
-	sameRunReflections: Reflection[];
-	effectiveReflectionCoverageId?: string;
-};
+/** Abort only when a summarizer produces no stream/message progress for this long. */
+export const SUMMARIZER_STALL_TIMEOUT_MS = 15 * 60_000;
+
+export function createSummarizerStallWatchdog(
+	timeoutMs: number,
+	onStall: (signal: AbortSignal) => void,
+): { signal: AbortSignal; progress: () => void; dispose: () => void } {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const progress = () => {
+		if (controller.signal.aborted) return;
+		if (timer !== undefined) clearTimeout(timer);
+		timer = setTimeout(() => {
+			timer = undefined;
+			controller.abort(new Error(`summarizer produced no progress for ${Math.round(timeoutMs / 60_000)} minutes`));
+			onStall(controller.signal);
+		}, timeoutMs);
+		(timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+	};
+	progress();
+	return {
+		signal: controller.signal,
+		progress,
+		dispose: () => {
+			if (timer !== undefined) clearTimeout(timer);
+			timer = undefined;
+		},
+	};
+}
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
@@ -59,27 +75,15 @@ function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void 
 	pi.appendEntry(customType, data);
 }
 
-function mergeReflections(existing: Reflection[], additional: Reflection[]): Reflection[] {
-	const seen = new Set(existing.map((reflection) => reflection.id));
-	const merged = [...existing];
-	for (const reflection of additional) {
-		if (seen.has(reflection.id)) continue;
-		seen.add(reflection.id);
-		merged.push(reflection);
-	}
-	return merged;
-}
-
 function anyStageDue(entries: Entry[], runtime: Runtime): boolean {
-	return rawTokensSinceObservationCoverage(entries) >= runtime.config.observeAfterTokens
-		|| rawTokensSinceReflectionCoverage(entries) >= runtime.config.reflectAfterTokens;
+	return rawTokensSinceObservationCoverage(entries) >= runtime.config.observeAfterTokens;
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
 	return runtime.config.showWorkerNotifications && ctx.hasUI;
 }
 
-function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer" | "reflector" | "dropper") => Promise<ResolvedModel | undefined> {
+function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer") => Promise<ResolvedModel | undefined> {
 	let cached: ResolveResult | undefined;
 	return async (stage) => {
 		cached ??= await runtime.resolveModel({
@@ -94,7 +98,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 		}
 		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
 		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify(`Observational memory: ${stage} skipped — ${cached.reason}`, "warning");
+			ctx.ui.notify(`pi-contemplator: ${stage} skipped — ${cached.reason}`, "warning");
 			runtime.resolveFailureNotified = true;
 		}
 		return undefined;
@@ -105,8 +109,31 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	const launch = (_event: unknown, ctx: ConsolidationCtx) => {
 		maybeLaunchConsolidation(pi, runtime, ctx);
 	};
-	pi.on("agent_start", launch);
-	pi.on("turn_end", launch);
+	pi.on("agent_start", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
+	pi.on("turn_end", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
+	runtime.setAgentActivityListener((ctx) => {
+		runtime.ensureConfig(ctx.cwd);
+		// Token pools are re-evaluated at every primary-agent progress checkpoint;
+		// idle wall-clock time has no scheduling meaning.
+		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
+	runtime.setSettingsUpdateListener((ctx, settings) => {
+		const affectsScheduling = settings.summarizerEnabled !== undefined ||
+			settings.newMemoryPoolMaxTokens !== undefined ||
+			settings.oldMemoryPoolTargetTokens !== undefined ||
+			settings.summarizerRetriggerTokens !== undefined;
+		if (!affectsScheduling) return;
+		runtime.ensureConfig(ctx.cwd);
+		// A changed pool boundary starts a fresh threshold cycle.
+		runtime.summarizerNextTriggerTokens = undefined;
+		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
 }
 
 function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sessionFile?: string } {
@@ -183,6 +210,10 @@ export type ConsolidationPipelineOptions = {
 	observerOnly?: boolean;
 };
 
+export function shouldScheduleSummarizerFromObserver(options: ConsolidationPipelineOptions): boolean {
+	return options.observerOnly !== true;
+}
+
 export async function runConsolidationPipeline(
 	pi: ExtensionAPI,
 	runtime: Runtime,
@@ -192,7 +223,9 @@ export async function runConsolidationPipeline(
 	const resolveModel = makeModelResolver(runtime, ctx);
 	const contextGeneration = runtime.getContextGeneration();
 
+	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
+	runtime.lastObserverStartedAt = Date.now();
 	try {
 		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
 			force: options.forceObserver === true,
@@ -203,30 +236,149 @@ export async function runConsolidationPipeline(
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
+	} finally {
+		runtime.lastObserverCompletedAt = Date.now();
 	}
-	if (options.observerOnly === true) {
-		runtime.notifyMemoryUpdate?.(ctx);
-		return;
-	}
-
-	runtime.consolidationPhase = "reflector";
-	let reflectorResult: ReflectorStageResult;
-	try {
-		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel, contextGeneration);
-		if (reflectorResult.outcome === "abort") return;
-	} catch (error) {
-		debugLog("reflector.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error) });
-		return;
-	}
-
-	runtime.consolidationPhase = "dropper";
-	try {
-		const dropperOutcome = await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, contextGeneration);
-		if (dropperOutcome === "abort") return;
-	} catch (error) {
-		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
-	}
+	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
+	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
+	const added = afterFold.observations.filter((item) => !beforeIds.has(item.id));
+	if (added.length > 0 && shouldScheduleSummarizerFromObserver(options)) scheduleSummarizer(pi, runtime, ctx);
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
+}
+
+export function currentMemoryPools(runtime: Runtime, entries: Entry[]) {
+	const folded = foldLedger(entries);
+	return partitionMemoryPools(
+		folded.activeObservations,
+		folded.activeSummaries,
+		runtime.config.newMemoryPoolMaxTokens,
+	);
+}
+
+export function summarizerTriggerTokens(runtime: Runtime): number {
+	return runtime.summarizerNextTriggerTokens ?? runtime.config.oldMemoryPoolTargetTokens;
+}
+
+export function nextSummarizerTriggerTokens(targetTokens: number, postRunOldTokens: number, retriggerTokens: number): number {
+	return postRunOldTokens <= targetTokens
+		? targetTokens
+		: Math.max(targetTokens, postRunOldTokens + retriggerTokens);
+}
+
+/** Failed/incomplete launches must remain eligible at the prior threshold. */
+export function summarizerTriggerAfterRun(
+	successfullyCompleted: boolean,
+	currentTriggerTokens: number | undefined,
+	targetTokens: number,
+	postRunOldTokens: number,
+	retriggerTokens: number,
+): number | undefined {
+	return successfullyCompleted
+		? nextSummarizerTriggerTokens(targetTokens, postRunOldTokens, retriggerTokens)
+		: currentTriggerTokens;
+}
+
+function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+	runtime.ensureConfig(ctx.cwd);
+	scheduleSummarizer(pi, runtime, ctx);
+}
+
+export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+	if (runtime.config.passive || !runtime.config.summarizerEnabled || runtime.summarizerInFlight) return;
+	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const pools = currentMemoryPools(runtime, entries);
+	if (pools.oldTokens <= summarizerTriggerTokens(runtime)) return;
+	const generation = runtime.getContextGeneration();
+	const runId = `summarizer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+	const sessionMetadata = debugSessionMetadata(ctx);
+	void runtime.launchSummarizerTask(ctx, async () => withDebugLogContext({
+		enabled: runtime.config.debugLog === true,
+		cwd: ctx.cwd,
+		...sessionMetadata,
+		runId,
+	}, async () => {
+		let stalled = false;
+		let successfullyCompleted = false;
+		let disposeStallWatchdog = () => {};
+		const startedAt = Date.now();
+		runtime.lastSummarizerStartedAt = startedAt;
+		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
+		try {
+			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
+			if (!resolved.ok) {
+				debugLog("summarizer.model_unavailable", { reason: resolved.reason });
+				runtime.lastSummarizerRun = { startedAt, status: "failed", messages: [], error: resolved.reason };
+				return;
+			}
+			if (generation !== runtime.getContextGeneration()) return;
+			if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("pi-contemplator: summarizer running", "info");
+			const watchdog = createSummarizerStallWatchdog(SUMMARIZER_STALL_TIMEOUT_MS, (signal) => {
+				stalled = true;
+				const reason = signal.reason instanceof Error ? signal.reason.message : "summarizer stalled";
+				debugLog("summarizer.stalled", { reason });
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: ${reason}; cancelling and leaving the backlog eligible for retry`, "warning");
+			});
+			disposeStallWatchdog = watchdog.dispose;
+			const result = await runSummarizer({
+				signal: watchdog.signal,
+				model: resolved.model as any,
+				apiKey: resolved.apiKey,
+				headers: resolved.headers,
+				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
+				targetTokens: runtime.config.oldMemoryPoolTargetTokens,
+				newPoolMaxTokens: runtime.config.newMemoryPoolMaxTokens,
+				samplingThresholdTokens: runtime.config.summarizerSamplingThresholdTokens,
+				maxTurns: runtime.config.agentMaxTurns,
+				thinkingLevel: runtime.config.model?.thinking ?? "minimal",
+				recordUsage: (usage) => runtime.recordAgentUsage(usage),
+				onMessages: (messages) => {
+					watchdog.progress();
+					if (generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };
+				},
+			});
+			if (generation !== runtime.getContextGeneration()) return;
+			if (!result.completed) {
+				runtime.lastSummarizerRun = stalled
+					? { ...runtime.lastSummarizerRun!, status: "failed", error: "Summarizer stalled and was cancelled; memory remains eligible for retry." }
+					: { ...runtime.lastSummarizerRun!, status: "incomplete" };
+				return;
+			}
+			if (result.commit) {
+				pi.appendEntry(OM_SUMMARIZER_COMMIT, result.commit);
+				successfullyCompleted = true;
+				const summary = `${result.commit.summaries.length} summaries consumed ${result.commit.metrics.consumedMemoryCount} memories, reducing visible memory by ~${result.commit.metrics.estimatedTokenReduction.toLocaleString()} tokens.`;
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
+				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: summarizer completed — ${summary}`, "info");
+				runtime.notifyMemoryUpdate(ctx);
+			} else {
+				successfullyCompleted = true;
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary: "No safe summaries were created." };
+				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify("pi-contemplator: summarizer completed — no safe summaries", "info");
+			}
+		} catch (error) {
+			if (generation === runtime.getContextGeneration() && runtime.lastSummarizerRun) {
+				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun, status: "failed", error: error instanceof Error ? error.message : String(error) };
+			}
+			throw error;
+		} finally {
+			disposeStallWatchdog();
+			if (generation === runtime.getContextGeneration()) {
+				const completedAt = Date.now();
+				runtime.lastSummarizerCompletedAt = completedAt;
+				if (runtime.lastSummarizerRun) runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun, completedAt };
+				const postRunPools = currentMemoryPools(runtime, ctx.sessionManager.getBranch() as Entry[]);
+				const target = runtime.config.oldMemoryPoolTargetTokens;
+				runtime.summarizerNextTriggerTokens = summarizerTriggerAfterRun(
+					successfullyCompleted,
+					runtime.summarizerNextTriggerTokens,
+					target,
+					postRunPools.oldTokens,
+					runtime.config.summarizerRetriggerTokens,
+				);
+			}
+		}
+	}));
 }
 
 async function runObserverStage(
@@ -280,11 +432,11 @@ async function runObserverStage(
 	}
 
 	const memory = fullProjection(entries);
-	const priorReflections = memory.reflections.map(reflectionToSummaryLine);
+	const priorSummaries = memory.summaries.map(summaryToSummaryLine);
 	const priorObservations = memory.observations.map(observationToSummaryLine);
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
+		`pi-contemplator: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
 		"info",
 	);
 	debugLog("observer.start", {
@@ -293,7 +445,7 @@ async function runObserverStage(
 		coversUpToId,
 		sourceEntryIds,
 		sourceEntryCount: sourceEntryIds.length,
-		priorReflections: priorReflections.length,
+		priorSummaries: priorSummaries.length,
 		priorObservations: priorObservations.length,
 	});
 
@@ -301,7 +453,7 @@ async function runObserverStage(
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,
-		priorReflections,
+		priorSummaries,
 		priorObservations,
 		chunk,
 		allowedSourceEntryIds: sourceEntryIds,
@@ -316,7 +468,7 @@ async function runObserverStage(
 	if (!observations || observations.length === 0) {
 		debugLog("observer.empty", { coversUpToId });
 		if (ctx.hasUI) ctx.ui?.notify(
-			"Observational memory: observer returned no observations",
+			"pi-contemplator: observer returned no observations",
 			"warning",
 		);
 		return "continue";
@@ -346,143 +498,8 @@ async function runObserverStage(
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
 	debugLog("observer.appended", { count: observations.length, coversUpToId: effectiveCoversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
+		`pi-contemplator: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
 		"info",
 	);
-	return "continue";
-}
-
-async function runReflectorStage(
-	pi: ExtensionAPI,
-	runtime: Runtime,
-	ctx: ConsolidationCtx,
-	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
-	contextGeneration: number,
-): Promise<ReflectorStageResult> {
-	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const reflectionTokens = rawTokensSinceReflectionCoverage(entries);
-	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
-
-	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
-
-	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
-		"info",
-	);
-	const resolved = await resolveModel("reflector");
-	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", sameRunReflections: [] };
-	}
-
-	const folded = foldLedger(entries);
-	const reflections = await runReflector({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		reflections: folded.reflections,
-		observations: folded.activeObservations,
-		maxTurns: runtime.config.agentMaxTurns,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		recordUsage: (usage) => runtime.recordAgentUsage(usage),
-	});
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("reflector.stale", { reason: "session_or_branch_changed" });
-		return { outcome: "abort", sameRunReflections: [] };
-	}
-	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
-
-	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-	if (!data) return { outcome: "continue", sameRunReflections: [] };
-	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
-	return {
-		outcome: "continue",
-		sameRunReflections: reflections,
-		effectiveReflectionCoverageId: data.coversUpToId,
-	};
-}
-
-async function runDropperStage(
-	pi: ExtensionAPI,
-	runtime: Runtime,
-	ctx: ConsolidationCtx,
-	resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
-	sameRunReflections: Reflection[],
-	sameRunReflectionCoverageId: string | undefined,
-	contextGeneration: number,
-): Promise<StageOutcome> {
-	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
-		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
-		return "continue";
-	}
-
-	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return "continue";
-
-	const folded = foldLedger(entries);
-	const metrics = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
-	if (!metrics.ready) {
-		debugLog("dropper.not_ready", {
-			observationTokens: metrics.observationTokens,
-			targetTokens: metrics.targetTokens,
-			tokensOverTarget: metrics.tokensOverTarget,
-			fullness: metrics.fullness,
-			activeObservationCount: metrics.activeObservationCount,
-			droppableCount: metrics.droppableCount,
-			maxDropsAllowed: metrics.maxDropsAllowed,
-		});
-		return "continue";
-	}
-	debugLog("dropper.stage_start", {
-		observationCoverageId,
-		sameRunReflectionCoverageId,
-		sameRunReflectionCount: sameRunReflections.length,
-		activeObservationCount: metrics.activeObservationCount,
-		observationTokens: metrics.observationTokens,
-		targetTokens: metrics.targetTokens,
-		tokensOverTarget: metrics.tokensOverTarget,
-		fullness: metrics.fullness,
-		maxDropsAllowed: metrics.maxDropsAllowed,
-	});
-
-	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: dropper running after reflection — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
-		"info",
-	);
-	const resolved = await resolveModel("dropper");
-	if (!resolved) return "abort";
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
-		return "abort";
-	}
-
-	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
-	const droppedIds = await runDropper({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		reflections: reflectionsForDropper,
-		observations: folded.activeObservations,
-		targetTokens: runtime.config.observationsPoolTargetTokens,
-		maxTurns: runtime.config.agentMaxTurns,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		recordUsage: (usage) => runtime.recordAgentUsage(usage),
-	});
-	if (contextGeneration !== runtime.getContextGeneration()) {
-		debugLog("dropper.stale", { reason: "session_or_branch_changed" });
-		return "abort";
-	}
-	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
-	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
-	debugLog("dropper.append", {
-		droppedIdsCount: droppedIds?.length ?? 0,
-		coversUpToId,
-		dataBuilt: data !== undefined,
-		appended: data !== undefined,
-	});
-	if (data) appendEntry(pi, OM_OBSERVATIONS_DROPPED, data);
 	return "continue";
 }

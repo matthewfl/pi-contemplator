@@ -16,7 +16,7 @@ const server = new ModelServer(async (request, res) => {
 		const ids = [...request.text.matchAll(/Source entry id:\s*([\w-]+)/g)].map((match) => match[1]);
 		const sourceEntryIds = ids.length ? [ids.at(-1)] : [];
 		if (!sourceEntryIds.length) return sendSse(res, { text: "nothing valid to observe" });
-		return sendSse(res, { tool: { id: `observe-${state.observers}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 02:00", content: `${MARKER}: original evidence must survive repeated folds`, relevance: "high", sourceEntryIds }] } } });
+		return sendSse(res, { tool: { id: `observe-${state.observers}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 02:00", content: `${MARKER}: original evidence must survive repeated folds`, relevance: "high", retention: "contextual", sourceEntryIds }] } } });
 	}
 	assert(request.role === "main", `Unexpected role during compaction resilience test: ${request.role}`);
 	state.main++;

@@ -14,7 +14,6 @@ const EXTENSION = join(ROOT, "src/index.ts");
 const PROBE_TEXT = "Memory evidence shows repeated assumptions; what direct check would distinguish the current approach from the alternative?";
 const PROBE_RESPONSE_TEXT = "PROBE_RESPONSE_WITH_DIRECT_CHECK_RECORDED_BY_MAIN_AGENT";
 const PROBE_FEEDBACK_OBSERVATION = "The contemplator probe reached the primary agent, which responded with a concrete direct-check acknowledgement.";
-const PIPELINE_REFLECTION_PREFIX = "E2E_REFLECTOR_CRYSTALLIZED";
 const SLEEP_OUTPUT = "sleep-tool-finished:SCENARIO_SLEEP";
 const SCENARIOS = ["SCENARIO_PROBE", "SCENARIO_SLEEP", "SCENARIO_FEEDBACK", "SCENARIO_PROPOSAL", "SCENARIO_REJECT"];
 const SCENARIO_NAMES = {
@@ -28,9 +27,8 @@ const TEST_PLAN = [
 	"Launch an isolated real Pi RPC session with only the provider and contemplator extensions",
 	"Run three real bash tool/model rounds per scenario and preserve every result in later contexts",
 	"Run observer memory generation concurrently with the primary agent",
-	"Crystallize observer memories through the real reflector agent and persist durable reflections",
-	"Run the real dropper agent over the reflected observation pool and persist dropped ids",
-	"Deliver the resulting reflection memory to the contemplator",
+	"Persist observer memories while contemplator and reviewer workers run concurrently",
+	"Deliver observer memory updates to the contemplator",
 	"Delay the contemplator for two seconds while a primary provider request remains open",
 	"Deliver and acknowledge a probe as an immediate same-run steer",
 	"Queue a contemplator probe during a real sleeping bash call and deliver it after the tool finishes",
@@ -184,11 +182,9 @@ class MockModelServer {
 		const scenario = latestScenario(body);
 		const role = tools.has("record_observations")
 			? "observer"
-			: tools.has("record_reflections")
-				? "reflector"
-				: tools.has("drop_observations")
-					? "dropper"
-					: tools.has("send_probe")
+			: tools.has("summarize") && tools.has("fix_summary") && tools.has("done")
+				? "summarizer"
+				: tools.has("send_probe")
 						? "contemplator"
 						: tools.has("submit_workflow_proposal") || tools.has("submit_software_proposal") || tools.has("review_concluded_no_proposal")
 							? "reviewer"
@@ -224,47 +220,10 @@ class MockModelServer {
 								? PROBE_FEEDBACK_OBSERVATION
 								: `${scenario}: the primary agent repeatedly depends on an assumption that needs an independent check.`,
 							relevance: "high",
+							retention: "contextual",
 							sourceEntryIds: isProbeFeedback ? sourceIds : [sourceIds[0]],
 						}],
 					},
-				},
-			});
-		}
-
-		if (role === "reflector") {
-			if (hasToolResult) return sendSse(res, { text: "Reflection coverage complete.", delayMs: 150 });
-			const requestText = (body.messages ?? []).map(messageText).join("\n");
-			const observationSection = requestText.split("CURRENT OBSERVATIONS:").at(-1)?.split("\n\n")[0] ?? "";
-			const observationIds = [...observationSection.matchAll(/\[([a-f0-9]{12})\]/g)].map((match) => match[1]);
-			assert(observationIds.length > 0, "Reflector request did not contain an active observation id");
-			const feedbackSuffix = observationSection.includes(PROBE_FEEDBACK_OBSERVATION) ? `: ${PROBE_FEEDBACK_OBSERVATION}` : "";
-			return sendSse(res, {
-				delayMs: 200,
-				tool: {
-					id: `reflect-${scenario}-${this.requests.length}`,
-					name: "record_reflections",
-					arguments: {
-						reflections: [{
-							content: `${PIPELINE_REFLECTION_PREFIX}:${scenario}:${observationIds[0]}${feedbackSuffix}`,
-							supportingObservationIds: observationIds,
-						}],
-					},
-				},
-			});
-		}
-
-		if (role === "dropper") {
-			if (hasToolResult) return sendSse(res, { text: "Drop selection complete.", delayMs: 150 });
-			const requestText = (body.messages ?? []).map(messageText).join("\n");
-			const observationSection = requestText.split("CURRENT OBSERVATIONS:").at(-1)?.split("\n\n")[0] ?? "";
-			const observationIds = [...observationSection.matchAll(/\[([a-f0-9]{12})\]/g)].map((match) => match[1]);
-			assert(observationIds.length > 0, "Dropper request did not contain an active observation id");
-			return sendSse(res, {
-				delayMs: 200,
-				tool: {
-					id: `drop-${scenario}-${this.requests.length}`,
-					name: "drop_observations",
-					arguments: { ids: observationIds, reason: "The new durable reflection preserves this observation's useful content." },
 				},
 			});
 		}
@@ -298,13 +257,9 @@ class MockModelServer {
 				const memoryId = serializedMessages.match(/\[([a-f0-9]{12})\]/)?.[1] ?? "000000000000";
 				return sendSse(res, { tool: { id: `probe-call-${scenario}`, name: "send_probe", arguments: { question: `[${memoryId}] ${PROBE_TEXT}` } } });
 			}
-			if (scenario === "SCENARIO_PROBE" && phase === "probe_sent") {
-				const resultText = (body.messages ?? []).filter((message) => message.role === "tool").map(messageText).join("\n");
-				assert(resultText.includes("WARNING: overwriting prior probe/review tool call"), "Corrected send_probe did not report last-write-wins replacement");
-				return sendSse(res, { text: "Memory search, source recall, and intervention replacement are complete." });
+			if (this.interventionsSent.has(scenario)) {
+				return sendSse(res, { tool: { id: `no-intervention-${scenario}-${this.requests.length}`, name: "no_intervention", arguments: {} } });
 			}
-			if (hasToolResult) return sendSse(res, { text: "Intervention recorded." });
-			if (this.interventionsSent.has(scenario)) return sendSse(res, { text: "No additional intervention is warranted for this update." });
 			// Simulate a realistically slow contemplator. The primary agent must finish
 			// three independent model/tool rounds and either enter another provider
 			// request or begin the long-running sleep tool before intervention.
@@ -519,16 +474,16 @@ async function run() {
 		await writeFile(join(project, ".pi/settings.json"), JSON.stringify({
 			"observational-memory": {
 				observeAfterTokens: 1,
-				reflectAfterTokens: 1,
 				compactAfterTokens: 1000000,
-				observationsPoolMaxTokens: 2,
-				observationsPoolTargetTokens: 1,
+				// Summary graph behavior is exercised in rpc-summarizer.mjs. Keeping it
+				// isolated avoids perturbing this suite's deliberate probe races.
+				summarizerEnabled: false,
 				agentMaxTurns: 4,
 				model: { provider: "e2e", id: "mock-model", thinking: "off" },
 				contemplatorEnabled: true,
 				contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
 				contemplatorMinNewObservations: 1,
-				contemplatorMinNewReflections: 1,
+				contemplatorMinNewSummaries: 1,
 				contemplatorMinTurns: 1,
 				showWorkerNotifications: false,
 				showContemplatorMessages: true,
@@ -640,9 +595,9 @@ async function run() {
 				"The probe/proposal must steer the current run, not wait for a later user prompt.",
 			);
 			if (scenario === "SCENARIO_FEEDBACK") {
-				await waitFor(() => server.feedbackObserverSawProbeAndResponse, "observer request containing both the delivered probe and its primary-agent response");
+				await waitFor(() => server.feedbackObserverSawProbeAndResponse, "observer request containing both the delivered probe and its primary-agent response", 30_000);
 				progress(`${scenario}: observer received the delivered probe and primary-agent response together`);
-				await waitFor(() => server.feedbackObservationReachedContemplator, "probe-response observation delivered back to contemplator");
+				await waitFor(() => server.feedbackObservationReachedContemplator, "probe-response observation delivered back to contemplator", 30_000);
 				progress(`${scenario}: resulting observation reached a subsequent contemplator update`);
 			}
 			// agent_settled covers the primary run, not fire-and-forget memory workers.
@@ -656,8 +611,7 @@ async function run() {
 		progress("Running aggregate ledger, transcript, acknowledgement, concurrency, and error assertions");
 		const entries = await rpc.entries();
 		const observations = entries.filter((entry) => entry.customType === "om.observations.recorded");
-		const reflections = entries.filter((entry) => entry.customType === "om.reflections.recorded");
-		const droppedObservations = entries.filter((entry) => entry.customType === "om.observations.dropped");
+
 		const probeTracking = entries.filter((entry) => entry.customType === "om.contemplator.suggestion" && typeof entry.data?.probeId === "string");
 		const deliveredProbes = probeTracking.filter((entry) => entry.data?.delivered === true);
 		const reviewRequests = entries.filter((entry) => entry.customType === "om.review.request");
@@ -670,16 +624,9 @@ async function run() {
 		const bashResults = entries.filter((entry) => entry.type === "message" && entry.message?.role === "toolResult" && entry.message?.toolName === "bash");
 		const latestProbeState = new Map(probeTracking.map((entry) => [entry.data.probeId, entry.data.delivered === true]));
 		assert(observations.length >= 5, `Expected initial memories for every scenario plus probe feedback, got ${observations.length}`);
-		assert(reflections.length > 0, "Expected durable reflections from the real reflector agent");
-		assert(droppedObservations.length > 0, "Expected durable dropped-observation entries from the real dropper agent");
-		assert(reflections.every((entry) => JSON.stringify(entry.data).includes(PIPELINE_REFLECTION_PREFIX)), "A persisted E2E reflection did not come from the mock reflector response");
-		const recordedObservationIds = new Set(observations.flatMap((entry) => entry.data?.observations ?? []).map((observation) => observation.id));
-		const persistedDroppedIds = droppedObservations.flatMap((entry) => entry.data?.observationIds ?? []);
-		assert(persistedDroppedIds.length > 0, "Dropper ledger entries contained no dropped ids");
-		assert(persistedDroppedIds.every((id) => recordedObservationIds.has(id)), "Dropper persisted an id that was not produced by the observer");
-		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PIPELINE_REFLECTION_PREFIX)), "Reflector output was not delivered to the contemplator");
+
 		assert(observations.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Probe/response feedback observation was not persisted");
-		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Persisted contemplator transcript did not receive the probe/response feedback observation through the reflector");
+		assert(contemplatorMessages.some((entry) => JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)), "Persisted contemplator transcript did not receive the probe/response feedback observation");
 		assert(bashResults.length === 16, `Expected sixteen real bash tool rounds, got ${bashResults.length}`);
 		for (const scenario of SCENARIOS) {
 			for (const round of ["round-one", "round-two", "round-three"]) {
@@ -708,15 +655,14 @@ async function run() {
 		assert(customMessages.filter((entry) => entry.customType === "om.review.proposal").length === 1, "Expected exactly one proposal notice in the main conversation stream");
 		assert(!rpc.events.some((event) => event.type === "extension_error"), "The real Pi harness reported an extension error");
 		assert(server.requests.some((request) => request.role === "observer"), "Observer never reached the mock server");
-		assert(server.requests.some((request) => request.role === "reflector"), "Reflector never reached the mock server");
-		assert(server.requests.some((request) => request.role === "dropper"), "Dropper never reached the mock server");
+		assert(!server.requests.some((request) => request.role === "summarizer"), "An isolated summarizer unexpectedly reached this probe-race suite");
 		assert(server.requests.some((request) => request.role === "contemplator"), "Contemplator never reached the mock server");
 		assert(server.requests.some((request) => request.role === "reviewer"), "Reviewer never reached the mock server");
 
 		child.kill("SIGTERM");
 		const result = await exited;
 		assert(result.code === 0 || result.code === 143 || result.signal === "SIGTERM", `Pi exited unexpectedly: ${JSON.stringify(result)}\n${rpc.stderr}`);
-		progress(`ALL TESTS PASSED: ${observations.length} observation batches, ${reflections.length} reflection batches, ${droppedObservations.length} drop batches, 16 bash rounds including sleep race, ${deliveredProbes.length} delivered probes, search + recall, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
+		progress(`ALL TESTS PASSED: ${observations.length} observation batches, 16 bash rounds including sleep race, ${deliveredProbes.length} delivered probes, search + recall, complete probe feedback loop, proposal + no-proposal reviewer outcomes`);
 	} catch (error) {
 		console.error("E2E failure:", error?.stack ?? error);
 		console.error("Mock requests:", server.requests.map((request) => `${request.role}:${request.scenario}`).join(", "));

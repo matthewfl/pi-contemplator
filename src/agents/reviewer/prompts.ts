@@ -28,7 +28,7 @@ First recall every memory cited in the request. Then search for:
 - existing proposals, tools, abstractions, scripts, representations, or workflows that may already address it;
 - evidence showing whether the pattern is isolated, temporary, or recurring.
 
-Observations and reflections are compressed. When they do not preserve enough detail to evaluate the suspected pattern, use search_chat_history to search the primary agent's recorded chat with a regular expression. The search is deterministic, scans newest entries first, and returns each match separately. It does not interpret concepts for you. Form concrete patterns from the review concern and use regular expression wild cards around a term when the returned match should include nearby text. Use read_chat_history with a returned entry id when you need the complete entry or preceding and following messages.
+Observations and summaries are compressed. When they do not preserve enough detail to evaluate the suspected pattern, use search_chat_history to search the primary agent's recorded chat with a regular expression. The search is deterministic, scans newest entries first, and returns each match separately. It does not interpret concepts for you. Form concrete patterns from the review concern and use regular expression wild cards around a term when the returned match should include nearby text. Use read_chat_history with a returned entry id when you need the complete entry or preceding and following messages.
 
 Do not search chat history indiscriminately or treat a missing regex match as proof that an event did not occur. Search for specific evidence that can support, weaken, or contextualize the concern.
 

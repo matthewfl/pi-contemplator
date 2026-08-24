@@ -1,6 +1,6 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
-export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
-export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
+/** Atomic output of one summarizer pass: new summaries and their consumption edges. */
+export const OM_SUMMARIZER_COMMIT = "om.summarizer.commit";
 export const OM_REVIEW_REQUEST = "om.review.request";
 export const OM_REVIEW_RESULT = "om.review.result";
 /** Persisted assistant/tool output from a short-lived structural reviewer. */
@@ -15,6 +15,10 @@ export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
 export type Relevance = (typeof RELEVANCE_VALUES)[number];
+
+export const RETENTION_VALUES = ["ephemeral", "contextual", "durable"] as const;
+export type Retention = (typeof RETENTION_VALUES)[number];
+export type MemoryVisibility = "visible" | "summarized";
 
 export const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
@@ -37,29 +41,44 @@ export type Observation = {
 	content: string;
 	timestamp: string;
 	relevance: Relevance;
+	/** Missing values safely default to contextual. */
+	retention?: Retention;
 	sourceEntryIds: string[];
 	tokenCount: number;
 };
 
-export type Reflection = {
+/** A durable, cited summary. Its source bodies remain elsewhere in the ledger. */
+export type Summary = {
 	id: string;
 	content: string;
-	supportingObservationIds: string[];
+	/** Newest effective timestamp among the cited source memories. */
+	timestamp: string;
+	/** Every inline-cited memory id, deduplicated in first-occurrence order. */
+	sourceMemoryIds: string[];
+	/** Sources newly removed from automatic visibility by this summary. */
+	consumedMemoryIds: string[];
 	tokenCount: number;
+};
+
+export type SummarizerCommitMetrics = {
+	consumedMemoryCount: number;
+	sourceTokens: number;
+	summaryTokens: number;
+	estimatedTokenReduction: number;
+};
+
+export type SummarizerCommitEntryData = {
+	version: 1;
+	summaries: Summary[];
+	/** Entry id of the newest observation batch included in the run snapshot. */
+	coversUpToId: string;
+	createdAt: number;
+	completedWithDone: boolean;
+	metrics: SummarizerCommitMetrics;
 };
 
 export type ObservationsRecordedEntryData = {
 	observations: Observation[];
-	coversUpToId: string;
-};
-
-export type ReflectionsRecordedEntryData = {
-	reflections: Reflection[];
-	coversUpToId: string;
-};
-
-export type ObservationsDroppedEntryData = {
-	observationIds: string[];
 	coversUpToId: string;
 };
 
@@ -127,29 +146,44 @@ export type ReviewResult = WorkflowReviewProposal | SoftwareReviewProposal | Rev
 export type ReviewRequestEntryData = { request: StructuralReviewRequest };
 export type ReviewResultEntryData = { result: ReviewResult };
 
+/** Full durable memory state at a compaction boundary. Bodies occur once in this archive. */
+export type MemoryArchive = {
+	observations: Observation[];
+	summaries: Summary[];
+};
+
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
-	version: 1;
+	/** Version 2 intentionally breaks the unpublished reflections/lifecycle format. */
+	version: 2;
 	fullFold: boolean;
+	/** Visible memories injected by this compaction. */
 	observations: Observation[];
-	reflections: Reflection[];
-	/** Optional so compactions written before review results remain readable. */
+	summaries: Summary[];
+	/** Complete durable graph nodes at this compaction boundary. */
+	archive?: MemoryArchive;
+	/** Reviews remain recallable/searchable but are never automatically injected. */
 	reviews?: ReviewResult[];
 };
 
-export type V3MemoryCustomType =
+export type MemoryCoverageCustomType =
 	| typeof OM_OBSERVATIONS_RECORDED
-	| typeof OM_REFLECTIONS_RECORDED
-	| typeof OM_OBSERVATIONS_DROPPED
-	| typeof OM_REVIEW_REQUEST
-	| typeof OM_REVIEW_RESULT;
+	| typeof OM_SUMMARIZER_COMMIT;
 
 export function isRelevance(value: unknown): value is Relevance {
 	return typeof value === "string" && (RELEVANCE_VALUES as readonly string[]).includes(value);
 }
 
+export function isRetention(value: unknown): value is Retention {
+	return typeof value === "string" && (RETENTION_VALUES as readonly string[]).includes(value);
+}
+
+export function observationRetention(observation: Observation): Retention {
+	return observation.retention ?? "contextual";
+}
+
 export function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+	return typeof value === "string" && value.trim().length > 0;
 }
 
 export function isNonEmptyStringArray(value: unknown): value is string[] {
@@ -164,8 +198,16 @@ function isTokenCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object";
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasUniqueMemoryIds(value: unknown, minimum = 0): value is string[] {
+	return Array.isArray(value) && value.length >= minimum && value.every(isMemoryId) && new Set(value).size === value.length;
 }
 
 export function isObservation(value: unknown): value is Observation {
@@ -175,20 +217,18 @@ export function isObservation(value: unknown): value is Observation {
 		isNonEmptyString(value.content) &&
 		isNonEmptyString(value.timestamp) &&
 		isRelevance(value.relevance) &&
+		(value.retention === undefined || isRetention(value.retention)) &&
 		isNonEmptyStringArray(value.sourceEntryIds) &&
 		isTokenCount(value.tokenCount)
 	);
 }
 
-export function isReflection(value: unknown): value is Reflection {
+export function isSummary(value: unknown): value is Summary {
 	if (!isPlainRecord(value)) return false;
-	return (
-		isMemoryId(value.id) &&
-		isNonEmptyString(value.content) &&
-		!/\r|\n/.test(value.content) &&
-		isNonEmptyStringArray(value.supportingObservationIds) &&
-		isTokenCount(value.tokenCount)
-	);
+	if (!isMemoryId(value.id) || !isNonEmptyString(value.content) || !isNonEmptyString(value.timestamp) || !isTokenCount(value.tokenCount)) return false;
+	if (!hasUniqueMemoryIds(value.sourceMemoryIds, 2) || !hasUniqueMemoryIds(value.consumedMemoryIds, 2)) return false;
+	const sourceIds = new Set(value.sourceMemoryIds);
+	return value.consumedMemoryIds.every((id) => sourceIds.has(id));
 }
 
 export function isObservationsRecordedData(value: unknown): value is ObservationsRecordedEntryData {
@@ -201,19 +241,18 @@ export function isObservationsRecordedData(value: unknown): value is Observation
 	);
 }
 
-export function isReflectionsRecordedData(value: unknown): value is ReflectionsRecordedEntryData {
+function isSummarizerCommitMetrics(value: unknown): value is SummarizerCommitMetrics {
 	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.reflections) &&
-		value.reflections.length > 0 &&
-		value.reflections.every(isReflection) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	return isCount(value.consumedMemoryCount) && isTokenCount(value.sourceTokens) &&
+		isTokenCount(value.summaryTokens) && isTokenCount(value.estimatedTokenReduction);
 }
 
-export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
+export function isSummarizerCommitData(value: unknown): value is SummarizerCommitEntryData {
 	if (!isPlainRecord(value)) return false;
-	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
+	return value.version === 1 && Array.isArray(value.summaries) && value.summaries.length > 0 &&
+		value.summaries.every(isSummary) && isNonEmptyString(value.coversUpToId) &&
+		typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
+		typeof value.completedWithDone === "boolean" && isSummarizerCommitMetrics(value.metrics);
 }
 
 function isReviewScope(value: unknown): value is ReviewScope {
@@ -252,18 +291,22 @@ export function isReviewResult(value: unknown): value is ReviewResult {
 		isNonEmptyString(value.preservedBehavior) && isNonEmptyString(value.expectedEffect) && isNonEmptyString(value.uncertainties);
 }
 
+function isMemoryArchive(value: unknown): value is MemoryArchive {
+	if (!isPlainRecord(value)) return false;
+	return Array.isArray(value.observations) && value.observations.every(isObservation) &&
+		Array.isArray(value.summaries) && value.summaries.every(isSummary);
+}
+
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
-	return (
-		value.type === OM_FOLDED &&
-		value.version === 1 &&
-		typeof value.fullFold === "boolean" &&
-		Array.isArray(value.observations) &&
-		value.observations.every(isObservation) &&
-		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection) &&
-		(value.reviews === undefined || (Array.isArray(value.reviews) && value.reviews.every(isReviewResult)))
-	);
+	// No v1 migration is intentional: that format belonged to the unpublished
+	// librarian/reflection design and is not semantically compatible with the
+	// summarizer consumption graph.
+	return value.type === OM_FOLDED && value.version === 2 && typeof value.fullFold === "boolean" &&
+		Array.isArray(value.observations) && value.observations.every(isObservation) &&
+		Array.isArray(value.summaries) && value.summaries.every(isSummary) &&
+		(value.archive === undefined || isMemoryArchive(value.archive)) &&
+		(value.reviews === undefined || (Array.isArray(value.reviews) && value.reviews.every(isReviewResult)));
 }
 
 export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
@@ -274,20 +317,12 @@ export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED && isObservationsRecordedData(entry.data);
 }
 
-export function isReflectionsRecordedEntry(entry: Entry): entry is Entry & {
+export function isSummarizerCommitEntry(entry: Entry): entry is Entry & {
 	type: "custom";
-	customType: typeof OM_REFLECTIONS_RECORDED;
-	data: ReflectionsRecordedEntryData;
+	customType: typeof OM_SUMMARIZER_COMMIT;
+	data: SummarizerCommitEntryData;
 } {
-	return entry.type === "custom" && entry.customType === OM_REFLECTIONS_RECORDED && isReflectionsRecordedData(entry.data);
-}
-
-export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
-	type: "custom";
-	customType: typeof OM_OBSERVATIONS_DROPPED;
-	data: ObservationsDroppedEntryData;
-} {
-	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
+	return entry.type === "custom" && entry.customType === OM_SUMMARIZER_COMMIT && isSummarizerCommitData(entry.data);
 }
 
 export function isReviewRequestEntry(entry: Entry): entry is Entry & {
@@ -311,21 +346,13 @@ export function buildObservationsRecordedData(
 	coversUpToId: string,
 ): ObservationsRecordedEntryData | undefined {
 	if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observations, coversUpToId };
+	const candidate = { observations, coversUpToId };
+	return isObservationsRecordedData(candidate) ? candidate : undefined;
 }
 
-export function buildReflectionsRecordedData(
-	reflections: Reflection[],
-	coversUpToId: string,
-): ReflectionsRecordedEntryData | undefined {
-	if (reflections.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { reflections, coversUpToId };
-}
-
-export function buildObservationsDroppedData(
-	observationIds: string[],
-	coversUpToId: string,
-): ObservationsDroppedEntryData | undefined {
-	if (observationIds.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observationIds, coversUpToId };
+export function buildSummarizerCommitData(
+	data: Omit<SummarizerCommitEntryData, "version">,
+): SummarizerCommitEntryData | undefined {
+	const candidate: SummarizerCommitEntryData = { version: 1, ...data };
+	return isSummarizerCommitData(candidate) ? candidate : undefined;
 }

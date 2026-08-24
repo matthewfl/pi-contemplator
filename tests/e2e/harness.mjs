@@ -41,8 +41,7 @@ export function toolNames(body) {
 export function classify(body) {
 	const tools = toolNames(body);
 	if (tools.has("record_observations")) return "observer";
-	if (tools.has("record_reflections")) return "reflector";
-	if (tools.has("drop_observations")) return "dropper";
+	if (tools.has("summarize") && tools.has("fix_summary") && tools.has("done")) return "summarizer";
 	if (tools.has("send_probe")) return "contemplator";
 	if (tools.has("submit_workflow_proposal") || tools.has("submit_software_proposal") || tools.has("review_concluded_no_proposal")) return "reviewer";
 	return "main";
@@ -75,21 +74,31 @@ export class ModelServer {
 		this.requests = [];
 		this.active = 0;
 		this.maxActive = 0;
+		this.activeByRole = new Map();
+		this.maxActiveByRole = new Map();
 	}
 	async handle(req, res) {
 		this.active++;
 		this.maxActive = Math.max(this.maxActive, this.active);
+		let role;
+		let request;
 		try {
 			let raw = "";
 			for await (const chunk of req) raw += chunk;
 			const body = JSON.parse(raw || "{}");
-			const request = { body, role: classify(body), text: JSON.stringify(body.messages ?? []), startedAt: Date.now() };
+			role = classify(body);
+			const roleActive = (this.activeByRole.get(role) ?? 0) + 1;
+			this.activeByRole.set(role, roleActive);
+			this.maxActiveByRole.set(role, Math.max(this.maxActiveByRole.get(role) ?? 0, roleActive));
+			request = { body, role, text: JSON.stringify(body.messages ?? []), startedAt: Date.now() };
 			this.requests.push(request);
 			await this.router(request, res, this);
 		} catch (error) {
 			if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
 			if (!res.writableEnded) res.end(JSON.stringify({ error: { message: String(error) } }));
 		} finally {
+			if (request) request.endedAt = Date.now();
+			if (role) this.activeByRole.set(role, Math.max(0, (this.activeByRole.get(role) ?? 1) - 1));
 			this.active--;
 		}
 	}
@@ -172,11 +181,11 @@ export async function prepareWorkspace(workspace, port, settings, models = [{ id
 
 export function omSettings(overrides = {}) {
 	return { "observational-memory": {
-		observeAfterTokens: 1, reflectAfterTokens: 1000000, compactAfterTokens: 1000000,
+		observeAfterTokens: 1, compactAfterTokens: 1000000,
 		agentMaxTurns: 8, model: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorEnabled: true, contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
-		contemplatorMinNewObservations: 1, contemplatorMinNewReflections: 1, contemplatorMinTurns: 1,
-		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true,
+		contemplatorMinNewObservations: 1, contemplatorMinNewSummaries: 1, contemplatorMinTurns: 1,
+		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true, summarizerEnabled: false,
 		reviewerModel: { provider: "e2e", id: "mock-model", thinking: "off" }, compactionObserverEnabled: false,
 		debugLog: true, ...overrides,
 	} };

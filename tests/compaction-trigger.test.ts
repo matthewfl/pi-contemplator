@@ -101,7 +101,7 @@ describe("V3 compaction trigger", () => {
 			"OM compaction: running (proactive)",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction started (~3 tokens)",
+			"pi-contemplator: compaction started (~3 tokens)",
 			"info",
 		);
 	});
@@ -122,6 +122,35 @@ describe("V3 compaction trigger", () => {
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(pi.sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("resumes after proactive compaction when the provider settles with an empty normal stop", async () => {
+		const { handler, settledHandler, runtime, pi } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], {
+			compact: vi.fn((options) => options.onComplete()),
+		});
+		const emptyStop = {
+			type: "agent_end",
+			messages: [
+				{ role: "user", content: "continue the task" },
+				{ role: "assistant", content: [], stopReason: "stop", usage: { output: 723 } },
+			],
+		};
+
+		handler(emptyStop, ctx);
+		settledHandler({}, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(pi.sendMessage).toHaveBeenCalledWith({
+			customType: "om.compaction.resume",
+			content: "Continue the current task from the compacted context without waiting for another user message.",
+			display: false,
+		}, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
 	});
 
 	it("does not restart settled work when proactive compaction fails", async () => {
@@ -304,7 +333,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction deferred — agent became busy before compaction",
+			"pi-contemplator: compaction deferred — agent became busy before compaction",
 			"info",
 		);
 	});
@@ -319,7 +348,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+			"pi-contemplator: compaction skipped — another compaction already ran before deferred compaction",
 			"info",
 		);
 	});

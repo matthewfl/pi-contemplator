@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
 import type { Runtime } from "../runtime.js";
 import {
@@ -7,9 +6,9 @@ import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
+	partitionMemoryPools,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
 	visibleProjection,
 	type Entry,
 } from "../session-ledger/index.js";
@@ -37,6 +36,22 @@ function formatDuration(durationMs: number): string {
 	return `${seconds}s`;
 }
 
+function formatRunAge(timestamp: number): string {
+	return `${new Date(timestamp).toISOString()} (${formatDuration(Math.max(0, Date.now() - timestamp))} ago)`;
+}
+
+function contemplatorWaitingLabel(waitingFor: Runtime["contemplatorState"]["waitingFor"]): string {
+	switch (waitingFor) {
+		case "memories": return "waiting for memory threshold";
+		case "responses": return "waiting for response spacing";
+		case "ready": return "ready to launch";
+		case "running": return "running";
+		case "disabled": return "disabled";
+		case "passive": return "passive mode";
+		default: return "idle; no pending memories";
+	}
+}
+
 function truncateStatusText(value: string, limit = 1_000): string {
 	return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
@@ -60,7 +75,7 @@ function appendSuffixes(line: string, suffixes: (string | undefined)[]): string 
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
-		description: "Show observational memory status",
+		description: "Show pi-contemplator status",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -70,21 +85,17 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const drift = diffProjection(visible, full);
 
 			const visibleObservationTokens = tokenSum(visible.observations);
-			const visibleReflectionTokens = tokenSum(visible.reflections);
-			const activeObservationPool = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
+			const visibleSummaryTokens = tokenSum(visible.summaries);
+			const pools = partitionMemoryPools(folded.activeObservations, folded.activeSummaries, runtime.config.newMemoryPoolMaxTokens);
 			const observationLine = appendSuffixes(
-				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
-				[
-					addedSuffix(drift.observationsOnlyInFull.length),
-					removedSuffix(drift.droppedOnlyInFull.length),
-				],
+				`Observations: ${folded.observations.length} recorded / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
+				[addedSuffix(drift.observationsOnlyInFull.length), removedSuffix(drift.observationsOnlyInVisible.length)],
 			);
-			const reflectionLine = appendSuffixes(
-				`Reflections:  ${folded.reflections.length} recorded / ${visible.reflections.length} visible`,
-				[addedSuffix(drift.reflectionsOnlyInFull.length)],
+			const summaryLine = appendSuffixes(
+				`Summaries:    ${folded.summaries.length} recorded / ${folded.activeSummaries.length} active / ${visible.summaries.length} visible`,
+				[addedSuffix(drift.summariesOnlyInFull.length), removedSuffix(drift.summariesOnlyInVisible.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
-			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
 			const compactionProgress = rawTokensSinceLastCompaction(entries);
 			const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 			const compactThreshold = resolveCompactAfterTokens(runtime.config, contextWindow);
@@ -97,22 +108,27 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				]
 				: [];
 
+			const summarizerTrigger = runtime.summarizerNextTriggerTokens ?? runtime.config.oldMemoryPoolTargetTokens;
+			const summarizerSamplingTokens = runtime.config.summarizerSamplingThresholdTokens;
 			const lines = [
 				...passiveLines,
 				"── Memory ──",
 				observationLine,
-				reflectionLine,
+				summaryLine,
 				"",
 				"── Activity ──",
-				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
-				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
-				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
-				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
-				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
+				`Observer source backlog: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
+				`Summarizer trigger:      old pool ~${pools.oldTokens.toLocaleString()} / ${summarizerTrigger.toLocaleString()} tokens (${pct(pools.oldTokens, summarizerTrigger)}%)`,
+				`Automatic compaction source backlog: ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%; injected memory excluded)`,
+				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} tokens`,
+				`New memory pool:         ~${pools.newTokens.toLocaleString()} / ${runtime.config.newMemoryPoolMaxTokens.toLocaleString()} protection-budget tokens (${pct(pools.newTokens, runtime.config.newMemoryPoolMaxTokens)}%; newest memory always protected whole)`,
+				`Old memory pool:         ~${pools.oldTokens.toLocaleString()} / ${runtime.config.oldMemoryPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(pools.oldTokens, runtime.config.oldMemoryPoolTargetTokens)}%)`,
+				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
+				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; retrigger after +${runtime.config.summarizerRetriggerTokens.toLocaleString()} old-pool tokens / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
-				`Compaction observer:     ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
+				`Observe source during compaction: ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
+				`Contemplator trigger:     ${runtime.contemplatorState.pendingObservations} observations / ${runtime.contemplatorState.pendingSummaries} summaries / ${runtime.contemplatorState.pendingReviews} reviews pending; ${runtime.contemplatorState.responsesSinceRun} / ${runtime.config.contemplatorMinTurns} primary responses; ${contemplatorWaitingLabel(runtime.contemplatorState.waitingFor)}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
 				`Contemplator messages:   ${runtime.config.showContemplatorMessages ? "visible" : "hidden"}`,
 				`Structural reviewer:     ${runtime.config.reviewerEnabled === false ? "disabled" : "enabled"}`,
@@ -124,6 +140,15 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				lines.push(`Token usage:            ↑${formatTokens(u.input)} ↓${formatTokens(u.output)}${u.cacheRead ? ` R${formatTokens(u.cacheRead)}` : ""}${u.cacheWrite ? ` W${formatTokens(u.cacheWrite)}` : ""} $${u.cost.toFixed(3)} (${u.runs} call${u.runs === 1 ? "" : "s"})`);
 			}
 
+			lines.push("", "── Last worker runs ──");
+			lines.push(`Last observer start:     ${runtime.lastObserverStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastObserverStartedAt)}`);
+			lines.push(`Last observer end:       ${runtime.lastObserverCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastObserverCompletedAt)}`);
+			lines.push(`Last summarizer start:   ${runtime.lastSummarizerStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastSummarizerStartedAt)}`);
+			lines.push(`Last summarizer end:     ${runtime.lastSummarizerCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastSummarizerCompletedAt)}`);
+			lines.push(`Last contemplator start: ${runtime.contemplatorState.lastStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
+			lines.push(`Last contemplator end:   ${runtime.contemplatorState.lastCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
+
+			lines.push("", "── Interventions ──");
 			// Probe stats come from the branch ledger (like /om:view contemplator):
 			// deduped by probeId so restore re-queues don't inflate the count, and
 			// entries without a probeId (sent before probe tracking existed) count
@@ -146,12 +171,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 					probeSuggestions[existingIndex] = { suggestion: data.suggestion };
 				}
 			}
-			if (probeSuggestions.length > 0) {
-				lines.push(`Probes sent:            ${probeSuggestions.length}`);
-				lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
-			}
+			lines.push(`Probes sent:            ${probeSuggestions.length}`);
+			if (probeSuggestions.length > 0) lines.push(`Last probe:             ${probeSuggestions[probeSuggestions.length - 1].suggestion}`);
 
-			const latestReview = full.reviews?.at(-1);
+			const reviews = full.reviews ?? [];
+			lines.push(`Reviews completed:      ${reviews.length}`);
+			const latestReview = reviews.at(-1);
 			if (latestReview) {
 				lines.push(`Last review:            [${latestReview.id}] ${latestReview.scope} ${latestReview.outcome}`);
 				if (latestReview.outcome === "proposal") lines.push(`Last review summary:    ${truncateStatusText(latestReview.summary)}`);
@@ -165,22 +190,21 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			}
 			if (latestNotice) lines.push(`Last reviewer notice:  ${truncateStatusText(latestNotice)}`);
 
-			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
+			if (runtime.consolidationInFlight || runtime.summarizerInFlight || runtime.contemplatorState.running || runtime.compactInFlight || runtime.compactHookInFlight || runtime.reviewInFlight) {
 				lines.push("", "── In flight ──");
-				if (runtime.consolidationInFlight) {
-					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
-					lines.push(`Consolidation: running${phase}`);
-				}
-				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
+				if (runtime.consolidationInFlight) lines.push("Observer: running");
+				if (runtime.summarizerInFlight) lines.push("Summarizer: running");
+				if (runtime.contemplatorState.running) lines.push("Contemplator: running");
+				if (runtime.compactInFlight) lines.push("Automatic compaction: running");
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
 				if (runtime.reviewInFlight) lines.push("Structural review: running");
 			}
 
-			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastDropperError) {
+			if (runtime.lastObserverError || runtime.lastSummarizerError || runtime.contemplatorState.lastError) {
 				lines.push("", "── Last error ──");
 				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
-				if (runtime.lastReflectorError) lines.push(`Reflector: ${runtime.lastReflectorError}`);
-				if (runtime.lastDropperError) lines.push(`Dropper: ${runtime.lastDropperError}`);
+				if (runtime.lastSummarizerError) lines.push(`Summarizer: ${runtime.lastSummarizerError}`);
+				if (runtime.contemplatorState.lastError) lines.push(`Contemplator: ${runtime.contemplatorState.lastError}`);
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

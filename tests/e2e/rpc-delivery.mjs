@@ -20,21 +20,28 @@ async function sendParallel(res) {
 }
 
 async function runCase({ marker, visible }) {
-	const state = { main: 0, observer: 0, contemplator: 0, parallelIssued: false, probeSent: false };
+	const state = { main: 0, observer: 0, contemplator: 0, parallelIssued: false, probeSent: false, proseOnly: false, requiredSeen: false };
 	const server = new ModelServer(async (request, res) => {
 		const hasTool = (request.body.messages ?? []).some((message) => message.role === "tool");
 		if (request.role === "observer") {
 			state.observer++;
 			if (hasTool) return sendSse(res, { text: "observed" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: `obs-${state.observer}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 00:00", content: `${marker} durable delivery evidence`, relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: `obs-${state.observer}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 00:00", content: `${marker} durable delivery evidence`, relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			state.contemplator++;
-			if (hasTool) return sendSse(res, { text: "probe complete" });
-			if (state.probeSent) return sendSse(res, { text: "no second probe" });
+			if (hasTool || state.probeSent) return sendSse(res, { tool: { id: `no-intervention-${state.contemplator}`, name: "no_intervention", arguments: {} } });
+			if (marker === IDLE && !state.proseOnly) {
+				state.proseOnly = true;
+				return sendSse(res, { text: "I considered the memory but stopped without selecting a final-action tool." });
+			}
 			if (marker === PARALLEL) await waitFor(() => state.parallelIssued, "parallel tools issued");
-			else await sleep(900);
+			else {
+				assert(request.body.tool_choice === "required", `Contemplator retry did not require a tool: ${JSON.stringify(request.body.tool_choice)}`);
+				state.requiredSeen = true;
+				await sleep(900);
+			}
 			state.probeSent = true;
 			return sendSse(res, { tool: { id: `probe-${marker}`, name: "send_probe", arguments: { question: `${PROBE}:${marker}` } } });
 		}
@@ -74,6 +81,7 @@ async function runCase({ marker, visible }) {
 		} else {
 			await pi.rpc.waitSettled(start);
 			await waitFor(async () => (await pi.rpc.entries()).some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false), "idle pending probe");
+			assert(state.proseOnly && state.requiredSeen, "Contemplator prose-only stop was not retried with provider-level required tool choice");
 			assert(state.main === 1, "Idle contemplator probe incorrectly started a new primary turn");
 			const entriesBefore = await pi.rpc.entries();
 			assert(entriesBefore.filter((entry) => entry.type === "custom_message" && entry.customType === "om.contemplator.suggestion").every((entry) => entry.display === false), "Visibility-off probe was not marked hidden");

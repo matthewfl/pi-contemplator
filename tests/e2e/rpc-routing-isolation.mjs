@@ -11,11 +11,12 @@ async function modelRoutingAndFeatureFlags() {
 		if (request.role === "observer") {
 			if (hasTool) return sendSse(res, { text: "recorded" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: "route-observation", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:00", content: "E2E_ROUTING durable evidence", relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: "route-observation", name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:00", content: "E2E_ROUTING durable evidence", relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			assert(toolNames(request.body).has("request_review"), "Reviewer-enabled contemplator lacked request_review");
-			if (hasTool || state.reviewRequested) return sendSse(res, { text: "done" });
+			if (hasTool) return sendSse(res, { text: "The warned routed review may be delivered as-is." });
+			if (state.reviewRequested) return sendSse(res, { tool: { id: "route-no-intervention", name: "no_intervention", arguments: {} } });
 			state.reviewRequested = true;
 			return sendSse(res, { tool: { id: "route-review", name: "request_review", arguments: { scope: "workflow", evidence: "[000000000000] routing evidence", concern: "Verify model routing.", review_focus: "Reach a terminal result.", constraints: "No behavior changes." } } });
 		}
@@ -63,7 +64,7 @@ async function passiveMode() {
 		await sleep(500);
 		assert(server.requests.length === 1 && server.requests[0].role === "main", `Passive mode launched workers: ${server.requests.map((r) => r.role).join(",")}`);
 		const entries = await pi.rpc.entries();
-		assert(!entries.some((entry) => /^om\.(observations|reflections|review)/.test(entry.customType ?? "")), "Passive mode persisted worker output");
+		assert(!entries.some((entry) => /^om\.(observations|summarizer|review)/.test(entry.customType ?? "")), "Passive mode persisted worker output");
 		await stopPi(pi); pi = undefined;
 	} finally {
 		if (pi?.child.exitCode === null) pi.child.kill("SIGKILL");
@@ -116,11 +117,11 @@ async function concurrentIsolation() {
 		if (request.role === "observer") {
 			if (hasTool) return sendSse(res, { text: "recorded" });
 			const id = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
-			return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:10", content: `${marker} isolated memory`, relevance: "high", sourceEntryIds: [id] }] } } });
+			return sendSse(res, { tool: { id: `observe-${marker}`, name: "record_observations", arguments: { observations: [{ timestamp: "2026-08-15 04:10", content: `${marker} isolated memory`, relevance: "high", retention: "contextual", sourceEntryIds: [id] }] } } });
 		}
 		if (request.role === "contemplator") {
 			assert(!toolNames(request.body).has("request_review"), "Reviewer-disabled session exposed request_review");
-			if (hasTool || sent.has(marker)) return sendSse(res, { text: "done" });
+			if (hasTool || sent.has(marker)) return sendSse(res, { tool: { id: `no-intervention-${marker}`, name: "no_intervention", arguments: {} } });
 			sent.add(marker);
 			return sendSse(res, { delayMs: marker === "SESSION_ALPHA" ? 400 : 200, tool: { id: `probe-${marker}`, name: "send_probe", arguments: { question: `${marker}_PROBE` } } });
 		}

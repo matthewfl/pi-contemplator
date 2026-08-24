@@ -50,7 +50,7 @@ describe("Runtime V3 behavior", () => {
 
 		expect(result).toMatchObject({ ok: true, model: sessionModel });
 		expect(notify).toHaveBeenCalledWith(
-			"Observational memory: configured model anthropic/missing not found, using session model",
+			"pi-contemplator: configured model anthropic/missing not found, using session model",
 			"warning",
 		);
 	});
@@ -111,20 +111,14 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.reviewPromise).toBeNull();
 	});
 
-	it("records stage-specific consolidation errors", () => {
+	it("records observer consolidation errors", () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();
 
 		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error("observe failed"))).toBe("observe failed");
-		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "reflector", new Error("reflect failed"))).toBe("reflect failed");
-		expect(runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "dropper", "drop failed")).toBe("drop failed");
 
 		expect(runtime.lastObserverError).toBe("observe failed");
-		expect(runtime.lastReflectorError).toBe("reflect failed");
-		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith("Observational memory: observer failed: observe failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: reflector failed: reflect failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
+		expect(notify).toHaveBeenCalledWith("pi-contemplator: observer failed: observe failed", "warning");
 	});
 
 	it("restores session overrides retained in compaction details", () => {
@@ -166,24 +160,13 @@ describe("Runtime V3 behavior", () => {
 		])).toMatchObject({ contemplatorMinTurns: 8 });
 	});
 
-	it("preserves a valid default pool target when only the maximum is overridden", () => {
+	it("accepts independent new-pool and old-pool token limits", () => {
 		const runtime = new Runtime();
-		runtime.setSessionSettings({ observationsPoolMaxTokens: 15_000 });
+		runtime.setSessionSettings({ newMemoryPoolMaxTokens: 30_000, oldMemoryPoolTargetTokens: 50_000 });
 
-		expect(runtime.config.observationsPoolMaxTokens).toBe(15_000);
-		expect(runtime.config.observationsPoolTargetTokens).toBe(10_000);
-	});
-
-	it("normalizes invalid observation pool overrides restored from a branch", () => {
-		const runtime = new Runtime();
-		runtime.restoreSessionSettings([
-			{ type: "custom", customType: "om.settings", data: { observationsPoolMaxTokens: 5_000 } },
-			{ type: "custom", customType: "om.settings", data: { observationsPoolTargetTokens: 10_000 } },
-		]);
-
-		expect(runtime.config.observationsPoolMaxTokens).toBe(5_000);
-		expect(runtime.config.observationsPoolTargetTokens).toBe(2_500);
-		expect(runtime.config.observationsPoolTargetTokens).toBeLessThan(runtime.config.observationsPoolMaxTokens);
+		expect(runtime.config.newMemoryPoolMaxTokens).toBe(30_000);
+		expect(runtime.config.oldMemoryPoolTargetTokens).toBe(50_000);
+		expect(runtime.getSessionSettings()).toMatchObject({ newMemoryPoolMaxTokens: 30_000, oldMemoryPoolTargetTokens: 50_000 });
 	});
 
 	it("keeps compaction flags independent", () => {
@@ -199,11 +182,19 @@ describe("Runtime V3 behavior", () => {
 		runtime.compactInFlight = true;
 		runtime.compactRequested = true;
 		runtime.compactOrigin = "agent-requested";
+		runtime.lastObserverStartedAt = 1;
+		runtime.lastObserverCompletedAt = 2;
+		runtime.lastSummarizerStartedAt = 3;
+		runtime.lastSummarizerCompletedAt = 4;
 
 		runtime.advanceContextGeneration();
 
 		expect(runtime.compactInFlight).toBe(false);
 		expect(runtime.compactRequested).toBe(false);
 		expect(runtime.compactOrigin).toBeUndefined();
+		expect(runtime.lastObserverStartedAt).toBeUndefined();
+		expect(runtime.lastObserverCompletedAt).toBeUndefined();
+		expect(runtime.lastSummarizerStartedAt).toBeUndefined();
+		expect(runtime.lastSummarizerCompletedAt).toBeUndefined();
 	});
 });

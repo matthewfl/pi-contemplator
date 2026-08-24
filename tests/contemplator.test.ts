@@ -21,13 +21,18 @@ function deferred() {
 	return { promise, resolve };
 }
 
-function stream(waitFor: Promise<void> = Promise.resolve()) {
+function stream(waitFor: Promise<void> = Promise.resolve(), messages: any[] = []) {
 	return {
 		async *[Symbol.asyncIterator]() {
 			await waitFor;
 		},
-		result: async () => [],
+		result: async () => messages,
 	};
+}
+
+function selectNoIntervention(context: { tools?: Array<{ name: string; execute: (id: string, args: any) => Promise<unknown> }> }): void {
+	const tool = context.tools?.find((candidate) => candidate.name === "no_intervention");
+	if (tool) void tool.execute("test-no-intervention", {});
 }
 
 function setup(initialEntries: TestEntry[] = []) {
@@ -56,7 +61,7 @@ function setup(initialEntries: TestEntry[] = []) {
 		...runtime.config,
 		contemplatorEnabled: true,
 		contemplatorMinNewObservations: 1,
-		contemplatorMinNewReflections: 1,
+		contemplatorMinNewSummaries: 1,
 		contemplatorMinTurns: 1,
 		passive: false,
 	};
@@ -90,7 +95,10 @@ function setup(initialEntries: TestEntry[] = []) {
 
 beforeEach(() => {
 	agentMocks.agentLoop.mockReset();
-	agentMocks.agentLoop.mockImplementation(() => stream());
+	agentMocks.agentLoop.mockImplementation((_prompts, context) => {
+		selectNoIntervention(context);
+		return stream();
+	});
 });
 
 describe("Contemplator lifecycle", () => {
@@ -107,8 +115,87 @@ describe("Contemplator lifecycle", () => {
 			bg: vi.fn((_color: string, text: string) => text),
 			bold: vi.fn((text: string) => text),
 		};
-		probeRenderer?.({ content: "Background contemplator probe (advisory):\nQuestion?" }, { expanded: false }, theme);
-		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("◆ CONTEMPLATOR PROBE\nQuestion?"));
+		probeRenderer?.({
+			content: "Background contemplator probe (advisory):\nQuestion?\n\nReferenced memories can be reviewed using the recall tool.",
+			details: { question: "Question?" },
+		}, { expanded: false }, theme);
+		expect(theme.fg).toHaveBeenCalledWith("thinkingHigh", "◆ CONTEMPLATOR PROBE\nQuestion?");
+		expect(theme.fg).not.toHaveBeenCalledWith("thinkingHigh", expect.stringContaining("Referenced memories"));
+	});
+
+	it("shows contemplator lifecycle notifications when worker notifications are enabled", async () => {
+		const raw = textCustomMessage("raw-notify", "work to remember");
+		const memory = observationsRecordedEntry("obs-notify", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-notify"] })],
+			coversUpToId: "raw-notify",
+		});
+		const harness = setup([]);
+		const notify = vi.fn();
+		harness.ctx.hasUI = true;
+		(harness.ctx as any).ui = { notify };
+		harness.runtime.config = { ...harness.runtime.config, showWorkerNotifications: true };
+
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator completed", "info"));
+		expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator running", "info");
+		expect(notify.mock.calls.map(([message]) => message)).toEqual([
+			"pi-contemplator: contemplator running",
+			"pi-contemplator: contemplator completed",
+		]);
+	});
+
+	it("surfaces a model stream error directly without misreporting missing tool calls", async () => {
+		agentMocks.agentLoop.mockImplementation(() => stream(Promise.resolve(), [
+			{ role: "assistant", content: [], stopReason: "error", errorMessage: "400: reasoning is mandatory", timestamp: Date.now() },
+		]));
+		const harness = setup([]);
+		const notify = vi.fn();
+		harness.ctx.hasUI = true;
+		(harness.ctx as any).ui = { notify };
+		harness.runtime.config = { ...harness.runtime.config, showWorkerNotifications: true };
+		harness.setEntries([
+			textCustomMessage("raw-error", "work to remember"),
+			observationsRecordedEntry("obs-error", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-error"] })],
+				coversUpToId: "raw-error",
+			}),
+		]);
+
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("pi-contemplator: contemplator failed — 400: reasoning is mandatory", "warning"));
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		expect(harness.runtime.contemplatorState.lastError).toBe("400: reasoning is mandatory");
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
+	});
+
+	it("persists each update prompt once when agentLoop returns that input prompt", async () => {
+		agentMocks.agentLoop.mockImplementation((prompts, context) => {
+			selectNoIntervention(context);
+			return stream(Promise.resolve(), [
+				prompts[0],
+				{ role: "assistant", content: [{ type: "text", text: "No intervention." }], stopReason: "stop" },
+			]);
+		});
+		const raw = textCustomMessage("raw-prompt-once", "work to contemplate");
+		const memory = observationsRecordedEntry("obs-prompt-once", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-prompt-once"] })],
+			coversUpToId: "raw-prompt-once",
+		});
+		const harness = setup([]);
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.message", expect.anything()));
+		const persistedMessages = harness.pi.appendEntry.mock.calls
+			.filter(([type]) => type === "om.contemplator.message")
+			.map(([, data]) => (data as { message: { role: string } }).message);
+		expect(persistedMessages.filter((message) => message.role === "user")).toHaveLength(1);
+		expect(persistedMessages.filter((message) => message.role === "assistant")).toHaveLength(1);
 	});
 
 	it("requeues an unconfirmed probe on fresh startup even when its custom message was persisted", () => {
@@ -151,6 +238,20 @@ describe("Contemplator lifecycle", () => {
 
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+	});
+
+	it("does not duplicate an idle queued probe when a memory update restores the ledger", () => {
+		const harness = setup();
+		harness.fire("session_start", { reason: "startup" });
+		(harness.contemplator as any).queueProbe(harness.ctx, "Question?", "send_probe", "probe-idle");
+
+		// A background observer completion changes the branch tip and invokes the
+		// contemplator while Pi still owns the original idle steer.
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
+		expect((harness.contemplator as any).queuedProbeIds.has("probe-idle")).toBe(true);
 	});
 
 	it("keeps visible and hidden probes on the steer delivery path", () => {
@@ -202,6 +303,43 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
 	});
 
+	it("retries an unprocessed memory backlog immediately after reload", async () => {
+		const harness = setup([
+			textCustomMessage("raw-reload", "work that failed contemplation"),
+			observationsRecordedEntry("obs-reload", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-reload"] })],
+				coversUpToId: "raw-reload",
+			}),
+		]);
+		(harness.ctx.model as any).reasoning = true;
+
+		harness.fire("session_start", { reason: "reload" });
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect(agentMocks.agentLoop.mock.calls[0][2].reasoning).toBe("medium");
+	});
+
+	it("does not replay memories covered by a persisted contemplator update", async () => {
+		const coveredId = "aaaaaaaaaaaa";
+		const harness = setup([
+			textCustomMessage("raw-covered", "already contemplated work"),
+			observationsRecordedEntry("obs-covered", {
+				observations: [observation(coveredId, { sourceEntryIds: ["raw-covered"] })],
+				coversUpToId: "raw-covered",
+			}),
+			{
+				id: "contemplator-prompt", type: "custom", customType: "om.contemplator.message",
+				data: { version: 1, message: { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n[${coveredId}] already processed` }] } },
+			} as TestEntry,
+		]);
+
+		harness.fire("session_start", { reason: "reload" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(0);
+	});
+
 	it("restores an undelivered probe on fresh session startup", () => {
 		const harness = setup([{
 			id: "probe-tracking",
@@ -249,7 +387,7 @@ describe("Contemplator lifecycle", () => {
 		const harness = setup(branchA);
 		harness.fire("session_start");
 		const state = harness.contemplator as any;
-		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], reflections: [] };
+		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], summaries: [] };
 		state.turnsSinceRun = 9;
 		state.seenObservationIds.add("aaaaaaaaaaaa");
 
@@ -311,11 +449,86 @@ describe("Contemplator lifecycle", () => {
 		expect(durations.reduce((sum, duration) => sum + duration, 0)).toBe(8_000);
 	});
 
+	it("checkpoints active time during assistant and tool progress without waiting for agent_end", () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const harness = setup();
+		harness.runtime.config = { ...harness.runtime.config, contemplatorEnabled: false };
+		const checkpointTotals: number[] = [];
+		harness.runtime.setAgentActivityListener(() => checkpointTotals.push(harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.reduce((sum, entry) => sum + (entry.data as { durationMs: number }).durationMs, 0)));
+
+		harness.fire("agent_start");
+		time = 6_000;
+		harness.fire("message_end", { message: { role: "assistant", content: [] } });
+		time = 9_000;
+		harness.fire("tool_execution_end", { toolCallId: "long-tool" });
+
+		const beforeAgentEnd = harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.map((entry) => (entry.data as { durationMs: number }).durationMs);
+		expect(beforeAgentEnd).toEqual([5_000, 3_000]);
+		expect(checkpointTotals).toEqual([5_000, 8_000]);
+
+		time = 10_000;
+		harness.fire("agent_end");
+		now.mockRestore();
+		expect(harness.getEntries()
+			.filter((entry) => entry.customType === "om.agent.activity")
+			.map((entry) => (entry.data as { durationMs: number }).durationMs))
+			.toEqual([5_000, 3_000, 1_000]);
+	});
+
+	it("counts model responses within one long user turn toward contemplator spacing", async () => {
+		const raw = textCustomMessage("raw-long-turn", "autonomous work");
+		const memory = observationsRecordedEntry("obs-long-turn", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-long-turn"] })],
+			coversUpToId: "raw-long-turn",
+		});
+		const harness = setup([]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+		harness.fire("session_start");
+		harness.setEntries([raw, memory]);
+
+		// No turn_end occurs: these are two tool-using model rounds in one agent run.
+		harness.fire("message_end", { message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } });
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState).toMatchObject({
+			responsesSinceRun: 1,
+			waitingFor: "responses",
+			pendingObservations: 1,
+		});
+
+		harness.fire("message_end", { message: { role: "assistant", content: [{ type: "toolCall", name: "edit" }] } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect(harness.runtime.contemplatorState.lastStartedAt).toEqual(expect.any(Number));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+		expect(harness.runtime.contemplatorState.responsesSinceRun).toBe(0);
+	});
+
+	it("does not double-count turn_end after an assistant response", () => {
+		const harness = setup();
+		harness.runtime.config = { ...harness.runtime.config, contemplatorEnabled: false };
+		harness.fire("session_start");
+		harness.fire("message_end", { message: { role: "assistant", content: [] } });
+		harness.fire("turn_end");
+
+		expect((harness.contemplator as any).turnsSinceRun).toBe(1);
+	});
+
 	it("rechecks turn throttling before processing updates queued during a run", async () => {
 		const gate = deferred();
 		agentMocks.agentLoop
-			.mockImplementationOnce(() => stream(gate.promise))
-			.mockImplementation(() => stream());
+			.mockImplementationOnce((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream(gate.promise);
+			})
+			.mockImplementation((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
 		const rawA = textCustomMessage("raw-a", "branch a");
 		const obsA = observationsRecordedEntry("obs-a", {
 			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
@@ -644,6 +857,42 @@ describe("Contemplator lifecycle", () => {
 		expect(secondPrompt).toContain("review-two");
 	});
 
+	it("injects a user reminder when the contemplator stops without a final-action tool", async () => {
+		agentMocks.agentLoop
+			.mockImplementationOnce(() => stream(Promise.resolve(), [
+				{ role: "assistant", content: [{ type: "text", text: "I will just stop." }], stopReason: "stop", timestamp: Date.now() },
+			]))
+			.mockImplementationOnce((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
+		const harness = setup([
+			textCustomMessage("raw-a", "branch a"),
+			observationsRecordedEntry("obs-a", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-a"] })],
+				coversUpToId: "raw-a",
+			}),
+		]);
+
+		harness.fire("turn_end");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+
+		const continuation = agentMocks.agentLoop.mock.calls[1][0][0];
+		const retryConfig = agentMocks.agentLoop.mock.calls[1][2];
+		expect(continuation.role).toBe("user");
+		expect(retryConfig.toolChoice).toBe("required");
+		expect(retryConfig.onPayload({})).toMatchObject({ tool_choice: "required" });
+		expect(continuation.content[0].text).toContain("You stopped without selecting a final action");
+		expect(continuation.content[0].text).toContain("argument-free no_intervention tool now");
+		expect(continuation.content[0].text).toContain("preferred default");
+		expect(continuation.content[0].text).toContain("Do not invent or send a probe merely to satisfy the tool requirement");
+		expect(continuation.content[0].text).toContain("send_probe, request_review, or no_intervention");
+		expect(harness.pi.sendMessage).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.message", expect.objectContaining({
+			message: expect.objectContaining({ role: "user", content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("without selecting a final action") })]) }),
+		})));
+	});
+
 	it("removes reviewer instructions and tools when reviewers are disabled", async () => {
 		const harness = setup();
 		harness.runtime.config = { ...harness.runtime.config, reviewerEnabled: false };
@@ -661,7 +910,7 @@ describe("Contemplator lifecycle", () => {
 
 		const [, context] = agentMocks.agentLoop.mock.calls[0];
 		expect(context.systemPrompt).not.toContain("Structural reviews are enabled");
-		expect(context.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_memories", "recall", "send_probe"]);
+		expect(context.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_memories", "recall", "send_probe", "no_intervention"]);
 		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
 		expect(prompt.content[0].text).not.toContain("request_review");
 	});
@@ -674,12 +923,15 @@ describe("Contemplator lifecycle", () => {
 			cacheWrite: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
 		};
-		agentMocks.agentLoop.mockImplementation(() => ({
-			async *[Symbol.asyncIterator]() {},
-			result: async () => [
-				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
-			],
-		}));
+		agentMocks.agentLoop.mockImplementation((_prompts, context) => {
+			selectNoIntervention(context);
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => [
+					{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
+				],
+			};
+		});
 		const harness = setup();
 		harness.fire("session_start");
 		const rawA = textCustomMessage("raw-a", "branch a");

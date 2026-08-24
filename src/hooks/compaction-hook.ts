@@ -1,26 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { debugLog } from "../debug-log.js";
 import { computeSessionSettings, type Runtime } from "../runtime.js";
 import { launchCompactionObserver, type ConsolidationCtx } from "./consolidation-trigger.js";
 import { buildCompactionProjection, renderSummary, type Entry } from "../session-ledger/index.js";
 import { watchForNativeCompactionResume } from "./compaction-resume.js";
 
-const DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS = 20_000;
 const COMPACTION_STATUS_KEY = "observational-memory-compaction";
-
-function observationsPoolMaxTokens(runtime: Runtime): number {
-	const value = (runtime.config as { observationsPoolMaxTokens?: unknown }).observationsPoolMaxTokens;
-	return typeof value === "number" && Number.isFinite(value) && value > 0
-		? value
-		: DEFAULT_OBSERVATIONS_POOL_MAX_TOKENS;
-}
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event: any, ctx: any) => {
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					"Observational memory: another compaction is already in progress; cancelling duplicate",
+					"pi-contemplator: another compaction is already in progress; cancelling duplicate",
 					"warning",
 				);
 			}
@@ -37,7 +30,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, `OM compaction: running (${reason}${pending})`);
 			if (!initiatedByOm) {
 				const continuation = event.willRetry ? "; the interrupted agent run will resume automatically" : "";
-				ctx.ui.notify(`Observational memory: compaction started (${reason})${continuation}`, "info");
+				ctx.ui.notify(`pi-contemplator: compaction started (${reason})${continuation}`, "info");
 			}
 		}
 		event.signal?.addEventListener?.("abort", () => {
@@ -55,12 +48,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				launchCompactionObserver(pi, runtime, ctx as ConsolidationCtx, branch);
 			}
 			const { firstKeptEntryId, tokensBefore } = preparation;
-			const projection = buildCompactionProjection(
-				branch,
-				firstKeptEntryId,
-				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
-			);
-			const summary = renderSummary(projection.reflections, projection.observations);
+			const projection = buildCompactionProjection(branch, firstKeptEntryId);
+			const summary = renderSummary(projection.summaries, projection.observations);
 			// Compaction removes older custom entries from the active branch. Keep
 			// session-scoped overrides in the compaction details so they can be
 			// restored after a reload from the surviving branch. Bake the merged
@@ -96,6 +85,32 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		let continuation = "";
 		if (event.willRetry) continuation = "; resuming the interrupted agent run";
 		else if (omWillResume) continuation = "; resuming the agent run";
-		ctx.ui.notify(`Observational memory: compaction complete (${reason})${continuation}`, "info");
+		ctx.ui.notify(`pi-contemplator: compaction complete (${reason})${continuation}`, "info");
+	});
+
+	pi.on("session_compact_failed", (event, ctx) => {
+		const initiatedByOm = runtime.compactInFlight && event.reason === "manual";
+		const reason = initiatedByOm ? (runtime.compactOrigin ?? "proactive") : event.reason;
+		debugLog("compaction.failed", {
+			reason,
+			piReason: event.reason,
+			errorMessage: event.errorMessage,
+			aborted: event.aborted,
+			willRetry: event.willRetry,
+			fromExtension: event.fromExtension,
+			initiatedByOm,
+		});
+
+		// OM-initiated ctx.compact() calls already have an onError callback that
+		// clears UI state and applies the origin-specific continuation policy. Do
+		// not duplicate that work here; Pi emits this event before invoking it.
+		if (initiatedByOm) return;
+		if (ctx.hasUI) ctx.ui.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+		if (!event.aborted && ctx.hasUI) {
+			ctx.ui.notify(
+				`pi-contemplator: compaction failed (${reason}): ${event.errorMessage ?? "unknown error"}`,
+				"error",
+			);
+		}
 	});
 }

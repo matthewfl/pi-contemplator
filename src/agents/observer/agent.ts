@@ -8,7 +8,7 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
-import type { Observation, Relevance } from "../../session-ledger/index.js";
+import type { Observation, Relevance, Retention } from "../../session-ledger/index.js";
 import { estimateStringTokens } from "../../tokens.js";
 import type { LlmUsageInput } from "../../runtime.js";
 
@@ -16,7 +16,7 @@ interface RunObserverArgs {
 	model: Model<any>;
 	apiKey: string;
 	headers?: Record<string, string>;
-	priorReflections: string[];
+	priorSummaries?: string[];
 	priorObservations: string[];
 	chunk: string;
 	allowedSourceEntryIds: string[];
@@ -34,6 +34,12 @@ const RelevanceSchema = Type.Union([
 	Type.Literal("critical"),
 ]);
 
+const RetentionSchema = Type.Union([
+	Type.Literal("ephemeral"),
+	Type.Literal("contextual"),
+	Type.Literal("durable"),
+]);
+
 export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
 
 const RecordObservationsSchema = Type.Object({
@@ -48,6 +54,7 @@ const RecordObservationsSchema = Type.Object({
 				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
+			retention: Type.Optional(RetentionSchema),
 			sourceEntryIds: Type.Array(
 				Type.String({ minLength: 1 }),
 				{
@@ -86,7 +93,7 @@ export function normalizeSourceEntryIds(
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
+	const { model, apiKey, headers, priorSummaries = [], priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -121,6 +128,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 					content,
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
+					retention: (obs.retention ?? "contextual") as Retention,
 					sourceEntryIds,
 					tokenCount: estimateStringTokens(content),
 				});
@@ -142,13 +150,13 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 	const now = nowTimestamp();
 	const userText = `Current local time: ${now}
 
-CURRENT REFLECTIONS:
-${joinOrEmpty(priorReflections)}
+CURRENT SUMMARIES:
+${joinOrEmpty(priorSummaries)}
 
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current summaries or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
