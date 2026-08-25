@@ -207,6 +207,7 @@ describe("Runtime V3 behavior", () => {
 		runtime.compactOrigin = "agent-requested";
 		runtime.lastObserverStartedAt = 1;
 		runtime.lastObserverCompletedAt = 2;
+		runtime.lastObserverRun = { startedAt: 1, completedAt: 2, status: "completed", messages: [], chunkTokens: 10, backlogTokens: 20, sourceEntryIds: ["x"] };
 		runtime.lastSummarizerStartedAt = 3;
 		runtime.lastSummarizerCompletedAt = 4;
 
@@ -217,6 +218,7 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.compactOrigin).toBeUndefined();
 		expect(runtime.lastObserverStartedAt).toBeUndefined();
 		expect(runtime.lastObserverCompletedAt).toBeUndefined();
+		expect(runtime.lastObserverRun).toBeUndefined();
 		expect(runtime.lastSummarizerStartedAt).toBeUndefined();
 		expect(runtime.lastSummarizerCompletedAt).toBeUndefined();
 	});

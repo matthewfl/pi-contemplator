@@ -26,6 +26,7 @@ interface RunObserverArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	recordUsage?: (usage: LlmUsageInput) => void;
 	onProgress?: () => void;
+	onMessages?: (messages: readonly AgentMessage[]) => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -223,6 +224,10 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 			messages: history.slice(),
 			tools: [recordObservations as AgentTool<any>, doneTool],
 		};
+		// Publish a live launch-local transcript for /om:view observer. Keep an
+		// invocation-local list because agentLoop owns its internal context copy.
+		let liveMessages: AgentMessage[] = [...history, prompt];
+		args.onMessages?.(liveMessages.slice());
 		const invocationConfig: AgentLoopConfig = afterLength && reasoning
 			? { ...baseConfig, reasoning: "minimal" }
 			: baseConfig;
@@ -230,7 +235,17 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 		for await (const event of stream) {
 			args.onProgress?.();
 			logAgentStreamError("observer", event);
-			const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+			const typedEvent = event as { type?: string; message?: AgentMessage & { role?: string; stopReason?: string; errorMessage?: string } };
+			const message = typedEvent.message;
+			if (message && message !== prompt && message.role !== "user") {
+				if (typedEvent.type === "message_start") liveMessages.push(message);
+				else if (typedEvent.type === "message_update" || typedEvent.type === "message_end") {
+					const index = liveMessages.map((item) => item.role).lastIndexOf(message.role);
+					if (index >= 0) liveMessages[index] = message;
+					else liveMessages.push(message);
+				}
+				args.onMessages?.(liveMessages.slice());
+			}
 			if (message?.role === "assistant" && ["error", "aborted", "length"].includes(message.stopReason ?? "")) {
 				terminalFailure = { stopReason: message.stopReason!, errorMessage: message.errorMessage };
 			}
@@ -238,6 +253,8 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 		const result = await stream.result();
 		if (!Array.isArray(result)) return;
 		history.push(...result);
+		liveMessages = history.slice();
+		args.onMessages?.(liveMessages);
 		for (const message of result) {
 			if (message.role === "assistant" && ["error", "aborted", "length"].includes(message.stopReason ?? "")) {
 				terminalFailure = { stopReason: message.stopReason, errorMessage: message.errorMessage };

@@ -50,6 +50,27 @@ describe("runObserver", () => {
 		expect(userPrompt).toMatch(/END NEW CONVERSATION CHUNK[\s\S]*Now call record_observations/);
 	});
 
+	it("publishes the live observer transcript including streamed thinking", async () => {
+		const snapshots: any[][] = [];
+		const assistant = { role: "assistant", content: [{ type: "thinking", thinking: "working through the chunk" }], stopReason: "stop" };
+		const loop = ((prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_update", message: assistant };
+				yield { type: "message_end", message: assistant };
+			},
+			result: async () => {
+				await context.tools.find((tool: any) => tool.name === "done").execute("done", {});
+				return [...prompts, assistant];
+			},
+		})) as any;
+
+		await runObserver({ ...baseArgs, agentLoop: loop, onMessages: (messages) => snapshots.push(messages.slice() as any[]) });
+
+		expect(snapshots[0][0].role).toBe("user");
+		expect(snapshots.some((messages) => messages.some((message) => message.role === "assistant" && message.content?.[0]?.thinking === "working through the chunk"))).toBe(true);
+	});
+
 	it("keeps core observer prompt rules", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {

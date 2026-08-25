@@ -4,6 +4,7 @@ import { copyTextToClipboard } from "../clipboard.js";
 import { renderContemplator, stripAnsi } from "./contemplator-view.js";
 import { renderReviewer } from "./reviewer-view.js";
 import { renderSummarizer } from "./summarizer-view.js";
+import { renderObserver } from "./observer-view.js";
 import { executeRecall, formatRecallResultForTui } from "../tools/recall-observation.js";
 import {
 	chronologicalMemories,
@@ -76,7 +77,7 @@ export function registerViewCommand(
 
 	pi.registerCommand("om:view", {
 		description:
-			"Print and copy pi-contemplator memory content (visible, full, memory, contemplator, summarizer, reviewer, or reviews)",
+			"Print and copy pi-contemplator memory content (visible, full, memory, contemplator, observer, summarizer, reviewer, or reviews)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -111,6 +112,18 @@ export function registerViewCommand(
 				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
 				ctx.ui.notify(
 					`${output}\n\n${copied ? "Copied /om:view contemplator output to clipboard." : "Warning: failed to copy /om:view contemplator output to clipboard."}`,
+					"info",
+				);
+				return;
+			}
+
+			if (mode === "observer") {
+				const output = renderObserver(runtime.lastObserverRun);
+				const copied = await copyToClipboard(stripAnsi(output)).catch(() => false);
+				ctx.ui.notify(
+					`${output}
+
+${copied ? "Copied /om:view observer output to clipboard." : "Warning: failed to copy /om:view observer output to clipboard."}`,
 					"info",
 				);
 				return;
@@ -154,7 +167,7 @@ export function registerViewCommand(
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [visible|full|memory <id>|contemplator|summarizer|reviewer|reviews]", "info");
+				ctx.ui.notify("Usage: /om:view [visible|full|memory <id>|contemplator|observer|summarizer|reviewer|reviews]", "info");
 				return;
 			}
 

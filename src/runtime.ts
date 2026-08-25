@@ -56,6 +56,18 @@ export interface MemoryUpdateCtx extends LaunchCtx {
 
 export type SettingsUpdate = Partial<SessionSettings>;
 
+export interface ObserverRunView {
+	startedAt: number;
+	completedAt?: number;
+	status: "running" | "completed" | "failed";
+	messages: readonly unknown[];
+	chunkTokens: number;
+	backlogTokens: number;
+	sourceEntryIds: readonly string[];
+	summary?: string;
+	error?: string;
+}
+
 export interface SummarizerRunView {
 	startedAt: number;
 	completedAt?: number;
@@ -187,6 +199,8 @@ export class Runtime {
 	lastObserverCompletedAt: number | undefined;
 	lastSummarizerStartedAt: number | undefined;
 	lastSummarizerCompletedAt: number | undefined;
+	/** Current or most recent observer chunk transcript in this launch/session context. */
+	lastObserverRun: ObserverRunView | undefined;
 	/** Most recent summarizer transcript in this extension launch/session context. */
 	lastSummarizerRun: SummarizerRunView | undefined;
 	/** Launch-local liveness and trigger diagnostics published by the contemplator. */
@@ -277,6 +291,7 @@ export class Runtime {
 		this.lastObserverCompletedAt = undefined;
 		this.lastSummarizerStartedAt = undefined;
 		this.lastSummarizerCompletedAt = undefined;
+		this.lastObserverRun = undefined;
 		this.lastSummarizerRun = undefined;
 		this.contemplatorState = {
 			running: false,

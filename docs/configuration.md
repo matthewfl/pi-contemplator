@@ -108,7 +108,7 @@ Agent model overrides use:
 - `/om:settings summarizer on|off` toggles summarizer runs.
 - `/om:settings messages on|off` controls visibility, not delivery, of contemplator cards.
 - `/om:status` reports visible/summarized counts, new/old memory pools, the next summarizer threshold, and worker state.
-- `/om:view`, `/om:view full`, `/om:view contemplator`, `/om:view summarizer`, and `/om:view reviewer` inspect memory and private transcripts. The summarizer view is launch-local because summarizer transcripts are not persisted to the ledger.
+- `/om:view`, `/om:view full`, `/om:view contemplator`, `/om:view observer`, `/om:view summarizer`, and `/om:view reviewer` inspect memory and private transcripts. Observer and summarizer views are launch-local because those worker transcripts are not persisted to the ledger.
 
 ## Environment
 

@@ -74,14 +74,25 @@ describe("observer backlog draining", () => {
 		expect(runtime.consolidationInFlight).toBe(true);
 		await runtime.consolidationPromise;
 
-		expect(runtime.lastObserverStartedAt).toBeTypeOf("number");
+		// Model resolution failed before an observer chunk actually started.
+		expect(runtime.lastObserverStartedAt).toBeUndefined();
+		expect(runtime.lastObserverRun).toBeUndefined();
 		expect(runtime.consolidationInFlight).toBe(false);
 		expect(runtime.lastObserverError).toContain("no model available");
 	});
 
 	it("walks oldest-first through bounded clean-empty chunks until the backlog is clear", async () => {
-		observerMocks.runObserver.mockResolvedValue(undefined);
 		const { pi, runtime, ctx, getEntries } = setup();
+		const starts: Array<{ sourceEntryIds: readonly string[]; completedAt?: number }> = [];
+		observerMocks.runObserver.mockImplementation(async (args) => {
+			if (!args) return undefined;
+			starts.push({
+				sourceEntryIds: runtime.lastObserverRun.sourceEntryIds,
+				completedAt: runtime.lastObserverRun.completedAt,
+			});
+			args.onMessages?.([{ role: "assistant", content: [{ type: "thinking", thinking: `inspecting ${args.allowedSourceEntryIds[0]}` }] }]);
+			return undefined;
+		});
 
 		await runConsolidationPipeline(pi as any, runtime as any, ctx as any);
 
@@ -91,6 +102,19 @@ describe("observer backlog draining", () => {
 			["raw-2"],
 			["raw-3"],
 		]);
+		expect(starts).toEqual([
+			{ sourceEntryIds: ["raw-1"], completedAt: undefined },
+			{ sourceEntryIds: ["raw-2"], completedAt: undefined },
+			{ sourceEntryIds: ["raw-3"], completedAt: undefined },
+		]);
+		expect(runtime.lastObserverRun).toMatchObject({
+			status: "completed",
+			sourceEntryIds: ["raw-3"],
+			summary: expect.stringContaining("chunk covered through raw-3"),
+		});
+		expect(runtime.lastObserverRun.messages[0].content[0].thinking).toContain("raw-3");
+		expect(runtime.lastObserverStartedAt).toBe(runtime.lastObserverRun.startedAt);
+		expect(runtime.lastObserverCompletedAt).toBe(runtime.lastObserverRun.completedAt);
 		const coverage = getEntries().filter((entry) => entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED);
 		expect(coverage).toHaveLength(3);
 		expect(coverage.map((entry: any) => entry.data)).toEqual([

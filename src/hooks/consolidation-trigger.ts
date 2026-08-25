@@ -227,7 +227,6 @@ export async function runConsolidationPipeline(
 
 	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
-	runtime.lastObserverStartedAt = Date.now();
 	try {
 		// A large backlog is drained in bounded, oldest-first chunks. The normal
 		// trigger threshold controls when the batch stops; a static compaction
@@ -253,8 +252,6 @@ export async function runConsolidationPipeline(
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
-	} finally {
-		runtime.lastObserverCompletedAt = Date.now();
 	}
 	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
@@ -477,6 +474,20 @@ async function runObserverStage(
 		priorObservations: priorObservations.length,
 	});
 
+	const observerStartedAt = Date.now();
+	runtime.lastObserverStartedAt = observerStartedAt;
+	// Clear the previous end when a new chunk starts so /om:status never pairs
+	// this chunk's start with the preceding chunk's completion.
+	runtime.lastObserverCompletedAt = undefined;
+	runtime.lastObserverRun = {
+		startedAt: observerStartedAt,
+		status: "running",
+		messages: [],
+		chunkTokens,
+		backlogTokens: tokens,
+		sourceEntryIds: sourceEntryIds.slice(),
+	};
+	let acceptsObserverMessages = true;
 	let observations;
 	let failedMessage: string | undefined;
 	const observerWatchdog = createWorkerStallWatchdog("observer");
@@ -493,6 +504,17 @@ async function runObserverStage(
 			thinkingLevel: runtime.config.model?.thinking ?? "low",
 			recordUsage: (usage) => runtime.recordAgentUsage(usage),
 			onProgress: observerWatchdog.progress,
+			onMessages: (messages) => {
+				if (!acceptsObserverMessages || options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) return;
+				runtime.lastObserverRun = {
+					startedAt: observerStartedAt,
+					status: "running",
+					messages: messages.slice(),
+					chunkTokens,
+					backlogTokens: tokens,
+					sourceEntryIds: sourceEntryIds.slice(),
+				};
+			},
 			signal: observerWatchdog.signal,
 		}));
 	} catch (error) {
@@ -509,8 +531,19 @@ async function runObserverStage(
 			chunkTokens,
 		});
 		observations = undefined;
+		if (runtime.lastObserverRun?.startedAt === observerStartedAt) {
+			runtime.lastObserverRun = { ...runtime.lastObserverRun, status: "failed", error: failedMessage };
+		}
 	} finally {
+		acceptsObserverMessages = false;
 		observerWatchdog.dispose();
+		if (options.contextGeneration === undefined || options.contextGeneration === runtime.getContextGeneration()) {
+			const completedAt = Date.now();
+			runtime.lastObserverCompletedAt = completedAt;
+			if (runtime.lastObserverRun?.startedAt === observerStartedAt) {
+				runtime.lastObserverRun = { ...runtime.lastObserverRun, completedAt };
+			}
+		}
 	}
 	if (options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("observer.stale", { reason: "session_or_branch_changed" });
@@ -531,6 +564,15 @@ async function runObserverStage(
 		});
 	}
 	const accepted = observations ?? [];
+	if (!failedMessage && runtime.lastObserverRun?.startedAt === observerStartedAt) {
+		runtime.lastObserverRun = {
+			...runtime.lastObserverRun,
+			status: "completed",
+			summary: accepted.length > 0
+				? `${accepted.length} observation${accepted.length === 1 ? "" : "s"} recorded; chunk covered through ${effectiveCoversUpToId}.`
+				: `No observations recorded; chunk covered through ${effectiveCoversUpToId}.`,
+		};
+	}
 	const data = buildObservationsRecordedData(accepted, effectiveCoversUpToId);
 	if (!data) return "continue";
 	debugLog(failedMessage ? "observer.failed_coverage" : accepted.length > 0 ? "observer.records" : "observer.coverage_only", {

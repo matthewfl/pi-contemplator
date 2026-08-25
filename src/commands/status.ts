@@ -142,8 +142,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			}
 
 			lines.push("", "── Last worker runs ──");
-			lines.push(`Last observer start:     ${runtime.lastObserverStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastObserverStartedAt)}`);
-			lines.push(`Last observer end:       ${runtime.lastObserverCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastObserverCompletedAt)}`);
+			lines.push(`Observer chunk start:    ${runtime.lastObserverStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastObserverStartedAt)}`);
+			lines.push(`Observer chunk end:      ${runtime.lastObserverCompletedAt === undefined ? runtime.lastObserverRun?.status === "running" ? "running" : "not completed this launch" : formatRunAge(runtime.lastObserverCompletedAt)}`);
 			lines.push(`Last summarizer start:   ${runtime.lastSummarizerStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastSummarizerStartedAt)}`);
 			lines.push(`Last summarizer end:     ${runtime.lastSummarizerCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastSummarizerCompletedAt)}`);
 			lines.push(`Last contemplator start: ${runtime.contemplatorState.lastStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
