@@ -5,7 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { OBSERVER_AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance, Retention } from "../../session-ledger/index.js";
@@ -25,6 +25,7 @@ interface RunObserverArgs {
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
 	recordUsage?: (usage: LlmUsageInput) => void;
+	onProgress?: () => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -182,7 +183,11 @@ ${joinOrEmpty(priorObservations)}
 Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current summaries or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. When the chunk is fully covered, call done alone. If the chunk contains no useful new information, call done without calling record_observations.
 
 NEW CONVERSATION CHUNK:
-${conversation}`;
+${conversation}
+
+END NEW CONVERSATION CHUNK
+
+IMPORTANT: Now call record_observations to record the useful new observations from this conversation chunk. When the chunk is covered, call done; if there are no useful observations, call done without recording any.`;
 
 	const initialPrompt: Message = {
 		role: "user",
@@ -198,7 +203,7 @@ ${conversation}`;
 		model,
 		apiKey,
 		headers,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
+		maxTokens: boundedMaxTokens(model, OBSERVER_AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		shouldStopAfterTurn: () => {
@@ -219,6 +224,7 @@ ${conversation}`;
 		};
 		const stream = loop([prompt], context, baseConfig, signal, streamSimple);
 		for await (const event of stream) {
+			args.onProgress?.();
 			logAgentStreamError("observer", event);
 			const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
 			if (message?.role === "assistant" && ["error", "aborted", "length"].includes(message.stopReason ?? "")) {
@@ -246,18 +252,15 @@ ${conversation}`;
 		await runInvocation(reminder);
 	}
 
-	// Accepted observations remain useful even if the model neglected the final
-	// confirmation. Zero-observation coverage is advanced only by an explicit
-	// done call; failures, truncation, malformed records, and repeated prose do
-	// not silently discard the source chunk.
+	// `done` is a behavioral aid and terminal shortcut, not a transaction gate.
+	// Accepted observations commit even if it was omitted. A second prose-only
+	// zero-observation stop is also a valid empty result after the reminder;
+	// actual stream failures, truncation, and malformed records still throw.
 	if (accumulated.size === 0 && terminalFailure) {
 		throw new ObserverStreamError(terminalFailure.stopReason, terminalFailure.errorMessage);
 	}
 	if (accumulated.size === 0 && rejectedTotal > 0) {
 		throw new ObserverStreamError("invalid_observations", `${rejectedTotal} proposed observation${rejectedTotal === 1 ? " was" : "s were"} rejected`);
-	}
-	if (accumulated.size === 0 && !doneCalled) {
-		throw new ObserverStreamError("incomplete", "observer stopped twice without recording observations or calling done");
 	}
 	if (accumulated.size === 0) return undefined;
 	return Array.from(accumulated.values());

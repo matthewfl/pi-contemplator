@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
+import { COMPACTION_CALLBACK_TIMEOUT_MS, registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
 import { compactionEntry, textCustomMessage, type TestEntry } from "./fixtures/session.js";
 
 function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
@@ -103,6 +103,22 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"pi-contemplator: compaction started (~3 tokens)",
 			"info",
+		);
+	});
+
+	it("releases the compaction lock when Pi never invokes a callback", async () => {
+		const { settledHandler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
+
+		settledHandler({}, ctx);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(runtime.compactInFlight).toBe(true);
+		await vi.advanceTimersByTimeAsync(COMPACTION_CALLBACK_TIMEOUT_MS);
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"pi-contemplator: compaction callback timed out; releasing the compaction lock",
+			"error",
 		);
 	});
 

@@ -170,6 +170,28 @@ describe("Contemplator lifecycle", () => {
 		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
 		expect(harness.runtime.contemplatorState.lastError).toBe("400: reasoning is mandatory");
 		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
+		expect(harness.runtime.contemplatorState.responsesSinceRun).toBe(0);
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("responses");
+
+		// One fresh primary response permits one bounded retry. A second failure
+		// releases this poisoned update instead of charging every later checkpoint.
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(0);
+
+		// Future memory still gets its own opportunity; the released batch does not
+		// permanently disable the contemplator.
+		harness.setEntries([
+			...harness.getEntries(),
+			textCustomMessage("raw-after-error", "future work"),
+			observationsRecordedEntry("obs-after-error", {
+				observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-after-error"] })],
+				coversUpToId: "raw-after-error",
+			}),
+		]);
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(3));
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
 	});
 
 	it("persists each update prompt once when agentLoop returns that input prompt", async () => {
@@ -252,6 +274,45 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1);
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.contemplator.suggestion")).toHaveLength(1);
 		expect((harness.contemplator as any).queuedProbeIds.has("probe-idle")).toBe(true);
+	});
+
+	it("does not deadlock contemplation when observer setup is unavailable", async () => {
+		const firstSource = textCustomMessage("raw-degraded", "old source");
+		const observed = observation("abcdef654321", { timestamp: "2026-05-02 10:00", sourceEntryIds: ["raw-degraded"] });
+		const firstBatch = observationsRecordedEntry("batch-degraded", { observations: [observed], coversUpToId: "raw-degraded" });
+		const backlog = textCustomMessage("raw-unavailable", "x".repeat(80_000));
+		const harness = setup([firstSource, firstBatch, backlog]);
+		harness.runtime.lastObserverError = "no model available";
+		(harness.contemplator as any).turnsSinceRun = 1;
+
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect((harness.contemplator as any).seenObservationIds.has("abcdef654321")).toBe(true);
+	});
+
+	it("waits for the observer to drain a catch-up backlog before consuming its memories", async () => {
+		const firstSource = textCustomMessage("raw-old", "old source");
+		const observed = observation("abcdef123456", { timestamp: "2026-05-02 10:00", sourceEntryIds: ["raw-old"] });
+		const firstBatch = observationsRecordedEntry("batch-old", { observations: [observed], coversUpToId: "raw-old" });
+		const backlog = textCustomMessage("raw-backlog", "x".repeat(80_000));
+		const harness = setup([firstSource, firstBatch, backlog]);
+		(harness.contemplator as any).turnsSinceRun = 1;
+
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("observer");
+		expect((harness.contemplator as any).seenObservationIds.has("abcdef123456")).toBe(false);
+
+		harness.setEntries([
+			...harness.getEntries(),
+			observationsRecordedEntry("batch-backlog", { observations: [], coversUpToId: "raw-backlog" }),
+		]);
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect((harness.contemplator as any).seenObservationIds.has("abcdef123456")).toBe(true);
 	});
 
 	it("keeps visible and hidden probes on the steer delivery path", () => {

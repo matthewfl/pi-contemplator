@@ -9,6 +9,7 @@ import {
 } from "./compaction-resume.js";
 
 const COMPACTION_STATUS_KEY = "observational-memory-compaction";
+export const COMPACTION_CALLBACK_TIMEOUT_MS = 30 * 60_000;
 type CompactionOrigin = "agent-requested" | "length-stop" | "proactive";
 
 type TriggerOptions = {
@@ -37,6 +38,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		const { origin, resume, threshold, shortContinuationPrompt } = options;
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
+		const generation = runtime.getContextGeneration?.() ?? 0;
 
 		runtime.compactInFlight = true;
 		runtime.compactOrigin = origin;
@@ -74,23 +76,39 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					);
 				}
 				if (origin === "agent-requested") runtime.compactContinuationPrompt = undefined;
-				ctx.compact({
-					onComplete: () => {
-						runtime.compactInFlight = false;
-						runtime.compactOrigin = undefined;
-						if (hasUI && !resume) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
-						if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, false, shortContinuationPrompt);
-					},
-					onError: (error: { message: string }) => {
-						runtime.compactInFlight = false;
-						runtime.compactOrigin = undefined;
-						if (hasUI) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
-						if (error.message !== "Compaction cancelled" && hasUI) {
-							ui?.notify(`pi-contemplator: ${error.message}`, "error");
-						}
-						if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
-					},
-				});
+				let settled = false;
+				const callbackTimeout = setTimeout(() => {
+					if (settled || generation !== (runtime.getContextGeneration?.() ?? 0)) return;
+					settled = true;
+					runtime.compactInFlight = false;
+					runtime.compactOrigin = undefined;
+					if (hasUI) {
+						ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+						ui?.notify("pi-contemplator: compaction callback timed out; releasing the compaction lock", "error");
+					}
+					if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, true, shortContinuationPrompt);
+				}, COMPACTION_CALLBACK_TIMEOUT_MS);
+				(callbackTimeout as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+				const settle = (failed: boolean, error?: { message: string }) => {
+					if (settled || generation !== (runtime.getContextGeneration?.() ?? 0)) return;
+					settled = true;
+					clearTimeout(callbackTimeout);
+					runtime.compactInFlight = false;
+					runtime.compactOrigin = undefined;
+					if (hasUI && (failed || !resume)) ui?.setStatus?.(COMPACTION_STATUS_KEY, undefined);
+					if (failed && error?.message !== "Compaction cancelled" && hasUI) ui?.notify(`pi-contemplator: ${error?.message ?? "compaction failed"}`, "error");
+					if (resume) resumeAfterCompaction(pi, runtime, { hasUI, ui }, failed, shortContinuationPrompt);
+				};
+				try {
+					ctx.compact({
+						onComplete: () => settle(false),
+						onError: (error: { message: string }) => settle(true, error),
+					});
+				} catch (error) {
+					settled = true;
+					clearTimeout(callbackTimeout);
+					throw error;
+				}
 			} catch (error) {
 				runtime.compactInFlight = false;
 				if (origin === "agent-requested") runtime.compactContinuationPrompt = undefined;

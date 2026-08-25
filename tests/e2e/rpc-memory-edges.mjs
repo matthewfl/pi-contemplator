@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWorkspace, sendSse, stopPi, waitFor } from "./harness.mjs";
+import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWorkspace, sendSse, stopPi, textOf, waitFor } from "./harness.mjs";
 
 const MARKER = "E2E_HUGE_MEMORY_EDGE";
 const COLLISION_CONTENT = "E2E deterministic duplicate observation collision";
 const started = Date.now();
 const log = (text) => console.log(`[memory-edges-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observerInitials: 0, emptyProseAttempted: false, reminderDoneSeen: false, invalidAttempted: false, sawOmission: false, maxObserverText: 0, recallCollision: false };
+const state = { main: 0, observerInitials: 0, emptyProseAttempted: false, reminderDoneSeen: false, lengthAttempted: false, invalidAttempted: false, sawOmission: false, maxObserverText: 0, maxObserverChunkText: 0, recallCollision: false };
 
 const server = new ModelServer(async (request, res) => {
 	const toolMessages = (request.body.messages ?? []).filter((message) => message.role === "tool");
@@ -27,11 +27,20 @@ const server = new ModelServer(async (request, res) => {
 		}
 		state.observerInitials++;
 		state.maxObserverText = Math.max(state.maxObserverText, request.text.length);
+		const renderedPrompt = (request.body.messages ?? []).map(textOf).join("\n");
+		const chunkMarker = "NEW CONVERSATION CHUNK:";
+		const chunkStart = renderedPrompt.lastIndexOf(chunkMarker);
+		const renderedChunk = chunkStart >= 0 ? renderedPrompt.slice(chunkStart + chunkMarker.length) : "";
+		state.maxObserverChunkText = Math.max(state.maxObserverChunkText, renderedChunk.length);
+		state.sawOmission ||= /omitted|truncat|bounded/i.test(renderedChunk);
 		if (!state.emptyProseAttempted) {
 			state.emptyProseAttempted = true;
 			return sendSse(res, { text: "This source has no useful durable information." });
 		}
-		state.sawOmission ||= /omitted|truncat|bounded/i.test(request.text);
+		if (state.reminderDoneSeen && !state.lengthAttempted) {
+			state.lengthAttempted = true;
+			return sendSse(res, { text: "unproductive observer reasoning", finishReason: "length", outputTokens: 128_000 });
+		}
 		const sourceId = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
 		assert(sourceId, "Observer prompt lacked a source id");
 		if (!state.invalidAttempted) {
@@ -53,7 +62,7 @@ const server = new ModelServer(async (request, res) => {
 			assert(id, `Collision search returned no id: ${toolText}`);
 			return sendSse(res, { tool: { id: "recall-collision", name: "recall", arguments: { id } } });
 		}
-		state.recallCollision = /matched (?:multiple observations|more than one durable record)|"collision":true/.test(toolText) && toolText.includes(MARKER);
+		state.recallCollision = /matched (?:multiple observations|more than one durable record)|"collision":true/.test(toolText) && toolText.includes(COLLISION_CONTENT);
 		if (!state.recallCollision) console.error("Recall tool transcript:", toolText);
 		assert(state.recallCollision, `Recall did not safely return all colliding observation sources: ${toolText}`);
 		return sendSse(res, { text: "MEMORY_EDGE_COMPLETE" });
@@ -66,7 +75,7 @@ const server = new ModelServer(async (request, res) => {
 	return sendSse(res, { text: "HUGE_SOURCE_COMPLETE", outputTokens: 100 });
 });
 
-console.log("RPC memory-edge E2E: bounded backlog draining, explicit empty coverage, malformed source retry, collisions, search, and recall");
+console.log("RPC memory-edge E2E: bounded backlog draining, empty/done and failed-length coverage, malformed source retry, collisions, search, and recall");
 const workspace = await createWorkspace("pi-memory-edges-e2e-");
 let pi;
 try {
@@ -85,17 +94,19 @@ try {
 	const observationEntries = before.filter((entry) => entry.customType === "om.observations.recorded");
 	const observations = observationEntries.flatMap((entry) => entry.data?.observations ?? []);
 	assert(state.reminderDoneSeen, "Observer prose-only stop was not retried with a count reminder and explicit done");
-	assert(observationEntries.some((entry) => Array.isArray(entry.data?.observations) && entry.data.observations.length === 0 && entry.data?.coversUpToId), "Explicit done did not persist clean empty coverage");
+	const emptyCoverage = observationEntries.filter((entry) => Array.isArray(entry.data?.observations) && entry.data.observations.length === 0 && entry.data?.coversUpToId);
+	assert(emptyCoverage.length >= 2, `Expected clean-done and failed-length coverage markers, got ${emptyCoverage.length}`);
+	assert(state.lengthAttempted, "Observer output-length failure scenario was not exercised");
 	assert(!observations.some((observation) => observation.content === "MUST_NOT_PERSIST_INVALID"), "Observer persisted a record with an unknown source id");
 	assert(new Set(observations.filter((observation) => observation.content === COLLISION_CONTENT).map((observation) => observation.id)).size === 1, "Deterministic duplicate content did not create the intended id collision");
-	assert(state.sawOmission || state.maxObserverText < 15_000, `Huge source was not bounded in the observer prompt (${state.maxObserverText} chars)`);
+	assert(state.sawOmission || state.maxObserverChunkText < 5_000, `Huge source chunk was not bounded (${state.maxObserverChunkText} chars; full request ${state.maxObserverText} chars)`);
 	const second = pi.rpc.events.length;
 	await pi.rpc.command({ type: "prompt", message: "Use search_memories and recall to recover all colliding sources." });
 	await pi.rpc.waitSettled(second);
 	assert(state.recallCollision, "Main-agent memory tools did not complete collision recovery");
 	assert(!pi.rpc.events.some((event) => event.type === "extension_error"), "Extension error in memory-edge scenario");
 	await stopPi(pi); pi = undefined;
-	log("PASS backlog drained in bounded chunks, empty coverage used a normal done reminder, invalid ids retried, and colliding memories remained recallable");
+	log("PASS backlog drained in bounded chunks, empty coverage used a normal done reminder, a length failure advanced safely, invalid ids retried, and colliding memories remained recallable");
 } catch (error) {
 	console.error(`State: ${JSON.stringify(state)}; requests: ${server.requests.map((request) => request.role).join(",")}`);
 	console.error("Main request flow:", server.requests.filter((request) => request.role === "main").map((request) => {

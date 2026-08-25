@@ -11,6 +11,8 @@ const server = new ModelServer(async (request, res) => {
 	const toolMessages = (request.body.messages ?? []).filter((message) => message.role === "tool");
 	if (request.role === "observer") {
 		if (toolMessages.length) return sendSse(res, { text: "observer batch complete" });
+		const chunk = request.text.slice(request.text.lastIndexOf("NEW CONVERSATION CHUNK:"));
+		if (chunk.includes("PRIMARY_SUMMARIZER_ROUND_")) return sendSse(res, { tool: { id: `observer-done-${server.requests.length}`, name: "done", arguments: {} } });
 		state.observer++;
 		const sourceId = request.text.match(/Source entry id:\s*([\w-]+)/)?.[1];
 		assert(sourceId, "Observer prompt lacked source entry id");
@@ -95,7 +97,7 @@ try {
 		const start = pi.rpc.events.length;
 		await pi.rpc.command({ type: "prompt", message: prompts[index] });
 		await pi.rpc.waitSettled(start);
-		await waitFor(async () => (await pi.rpc.entries()).filter((entry) => entry.customType === "om.observations.recorded").length >= index + 1, `observer batch ${index + 1}`, 20_000);
+		await waitFor(async () => (await pi.rpc.entries()).filter((entry) => entry.customType === "om.observations.recorded").flatMap((entry) => entry.data?.observations ?? []).length >= index + 1, `observer memory ${index + 1}`, 20_000);
 		if (index < 2) {
 			// Give every normal scheduling callback time to run. At one memory the
 			// old pool is empty; at two it equals (but does not exceed) the target.

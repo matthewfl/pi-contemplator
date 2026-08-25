@@ -91,6 +91,29 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.consolidationPhase).toBeUndefined();
 	});
 
+	it("detaches stale task locks without letting old finalizers unlock new tasks", async () => {
+		const runtime = new Runtime();
+		let releaseOld!: () => void;
+		let releaseNew!: () => void;
+		const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+		const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+		const oldTask = runtime.launchConsolidationTask({ hasUI: false }, async () => { await oldGate; });
+
+		runtime.advanceContextGeneration();
+		expect(runtime.consolidationInFlight).toBe(false);
+		const newTask = runtime.launchConsolidationTask({ hasUI: false }, async () => { await newGate; });
+		expect(runtime.consolidationInFlight).toBe(true);
+
+		releaseOld();
+		await oldTask;
+		expect(runtime.consolidationInFlight).toBe(true);
+		expect(runtime.consolidationPromise).toBe(newTask);
+
+		releaseNew();
+		await newTask;
+		expect(runtime.consolidationInFlight).toBe(false);
+	});
+
 	it("rejects overlapping structural review tasks", async () => {
 		const runtime = new Runtime();
 		let release!: () => void;

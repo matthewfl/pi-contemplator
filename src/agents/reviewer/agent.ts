@@ -30,6 +30,7 @@ export interface RunStructuralReviewArgs {
 	recordUsage?: (usage: LlmUsageInput) => void;
 	/** Receives the reviewer's assistant output for durable debug/view rendering. */
 	onMessages?: (messages: AgentMessage[]) => void;
+	onProgress?: () => void;
 	/** Previously persisted reviewer transcript; a non-empty history resumes work. */
 	history?: AgentMessage[];
 }
@@ -177,7 +178,10 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		history.push(promptMessage);
 		args.onMessages?.([promptMessage]);
 		const stream = loop([prompt], context, config, args.signal, budgetedStreamSimple);
-		for await (const event of stream) logAgentStreamError("reviewer", event);
+		for await (const event of stream) {
+			args.onProgress?.();
+			logAgentStreamError("reviewer", event);
+		}
 		const newMessages = await stream.result();
 		history.push(...newMessages);
 		args.onMessages?.(newMessages);

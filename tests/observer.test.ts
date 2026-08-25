@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
 import { estimateStringTokens } from "../src/tokens.js";
+import { OBSERVER_AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
 	return ((prompts: any[], context: any, config: any) => ({
@@ -36,6 +37,18 @@ describe("runObserver", () => {
 		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
 		allowedSourceEntryIds: ["entry-a"],
 	};
+
+	it("ends the source chunk with an explicit tool-call instruction", async () => {
+		let userPrompt = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userPrompt = prompts[0].content[0].text;
+		});
+
+		await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(userPrompt).toContain("END NEW CONVERSATION CHUNK");
+		expect(userPrompt).toMatch(/END NEW CONVERSATION CHUNK[\s\S]*Now call record_observations/);
+	});
 
 	it("keeps core observer prompt rules", async () => {
 		let systemPrompt = "";
@@ -106,6 +119,22 @@ describe("runObserver", () => {
 		expect(observations?.[0].content).toBe("Same content");
 	});
 
+	it("commits recorded observations even when done is omitted", async () => {
+		const loop = ((_prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				await context.tools.find((tool: any) => tool.name === "record_observations").execute("record", {
+					observations: [{ timestamp: "2026-05-02 10:30", content: "Useful result without done", relevance: "medium", sourceEntryIds: ["entry-a"] }],
+				});
+				return [];
+			},
+		})) as any;
+
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toEqual([
+			expect.objectContaining({ content: "Useful result without done" }),
+		]);
+	});
+
 	it("returns undefined when done confirms a zero-observation chunk", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
@@ -135,6 +164,20 @@ describe("runObserver", () => {
 		expect(configs[1].onPayload).toBeUndefined();
 	});
 
+	it("accepts an empty result when the model ignores done after the reminder", async () => {
+		let invocations = 0;
+		const loop = (() => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				invocations++;
+				return [];
+			},
+		})) as any;
+
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		expect(invocations).toBe(2);
+	});
+
 	it("rejects a zero-observation output-limit stop instead of treating it as clean coverage", async () => {
 		const loop = (() => ({
 			async *[Symbol.asyncIterator]() {
@@ -143,6 +186,17 @@ describe("runObserver", () => {
 			result: async () => [],
 		})) as any;
 		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({ stopReason: "length" });
+	});
+
+	it("uses the expanded observer output allowance when the model supports it", async () => {
+		let configuredMaxTokens: number | undefined;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			configuredMaxTokens = config.maxTokens;
+		});
+
+		await runObserver({ ...baseArgs, model: { maxTokens: 256_000 } as any, agentLoop: loop });
+
+		expect(configuredMaxTokens).toBe(OBSERVER_AGENT_LOOP_MAX_TOKENS);
 	});
 
 	it("uses maxTurns as an observer turn cap", async () => {

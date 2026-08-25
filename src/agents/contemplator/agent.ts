@@ -5,7 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, recallMemorySources, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
+import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, rawTokensSinceObservationCoverage, recallMemorySources, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
@@ -17,6 +17,7 @@ import { forceRequiredToolPayload, requiredToolChoice } from "../../required-too
 import { memoryReferenceIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
+import { createWorkerStallWatchdog } from "../../worker-watchdog.js";
 
 interface PendingUpdate {
 	observations: string[];
@@ -213,6 +214,10 @@ export class Contemplator {
 	private history: AgentMessage[] = [];
 	private pending: PendingUpdate | undefined;
 	private running = false;
+	/** Invalidates stale/hard-timed-out flush finalizers across session changes. */
+	private flushEpoch = 0;
+	/** Bounds retries of one poisoned memory update so future updates can run. */
+	private consecutiveFlushFailures = 0;
 	private seenObservationIds = new Set<string>();
 	private seenSummaryIds = new Set<string>();
 	private seenReviewIds = new Set<string>();
@@ -263,6 +268,9 @@ export class Contemplator {
 		});
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			this.flushEpoch++;
+			this.running = false;
+			this.consecutiveFlushFailures = 0;
 			const generation = this.sessionGeneration;
 			this.agentActiveSince = undefined;
 			// AgentSession preserves its steering queue across extension reloads. An
@@ -278,12 +286,18 @@ export class Contemplator {
 		});
 		this.pi.on("session_tree", (_event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
+			this.flushEpoch++;
+			this.running = false;
+			this.consecutiveFlushFailures = 0;
 			this.agentActiveSince = undefined;
 			// Pending steering messages remain queued while navigating the tree.
 			this.restore(ctx, true, true);
 		});
 		this.pi.on("session_shutdown", () => {
 			this.sessionGeneration++;
+			this.flushEpoch++;
+			this.running = false;
+			this.consecutiveFlushFailures = 0;
 			this.agentActiveSince = undefined;
 			this.history = [];
 			this.pending = undefined;
@@ -555,6 +569,23 @@ export class Contemplator {
 			return;
 		}
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
+		const observerBacklogTokens = rawTokensSinceObservationCoverage(branchEntries);
+		if (
+			observerBacklogTokens >= this.runtime.config.observeAfterTokens &&
+			(this.runtime.consolidationInFlight || this.runtime.lastObserverError === undefined)
+		) {
+			// A catch-up observer pipeline may append several partial batches while it
+			// drains old source. Do not let primary-agent checkpoints feed those
+			// fragments to the contemplator one at a time. The pipeline emits one
+			// memory update after the backlog falls below the observer trigger.
+			this.publishState("observer");
+			debugLog("contemplator.waiting", {
+				reason: "observer_backlog",
+				observerBacklogTokens,
+				observeAfterTokens: this.runtime.config.observeAfterTokens,
+			});
+			return;
+		}
 		const projection = fullProjection(branchEntries);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
 		const summaries = projection.summaries.map((item) => `[${item.id}] ${item.content}`);
@@ -637,6 +668,7 @@ export class Contemplator {
 		this.pending = undefined;
 		const turnsBeforeRun = this.turnsSinceRun;
 		const sessionGeneration = this.sessionGeneration;
+		const flushEpoch = ++this.flushEpoch;
 		this.running = true;
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
@@ -644,6 +676,7 @@ export class Contemplator {
 		let failureMessage: string | undefined;
 		let workerNotified = false;
 		let promptPersisted = false;
+		let workerWatchdog: ReturnType<typeof createWorkerStallWatchdog> | undefined;
 		this.publishState("running", { lastStartedAt: startedAt, lastError: undefined });
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
@@ -664,16 +697,22 @@ export class Contemplator {
 				failureMessage = resolved.reason;
 				debugLog("contemplator.model_unavailable", { reason: resolved.reason });
 				if (sessionGeneration === this.sessionGeneration) {
-					const pending = this.pending as PendingUpdate | undefined;
-					this.pending = {
-						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-						summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
-						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
-						mainAgentOutputTokens: update.mainAgentOutputTokens,
-						mainAgentToolCalls: update.mainAgentToolCalls,
-						mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
-					};
-					this.turnsSinceRun = turnsBeforeRun;
+					this.consecutiveFlushFailures++;
+					if (this.consecutiveFlushFailures < 2) {
+						const pending = this.pending as PendingUpdate | undefined;
+						this.pending = {
+							observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
+							summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
+							reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
+							mainAgentOutputTokens: update.mainAgentOutputTokens,
+							mainAgentToolCalls: update.mainAgentToolCalls,
+							mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
+						};
+					} else {
+						debugLog("contemplator.poisoned_update_released", { reason: resolved.reason, observationCount: update.observations.length, summaryCount: update.summaries.length, reviewCount: update.reviews.length });
+						this.consecutiveFlushFailures = 0;
+					}
+					this.turnsSinceRun = 0; // Back off until fresh primary responses arrive; never retry every checkpoint.
 				}
 				return;
 			}
@@ -687,6 +726,7 @@ export class Contemplator {
 				modelId: selectedModel.id,
 				contextWindow: selectedModel.contextWindow,
 			});
+			workerWatchdog = createWorkerStallWatchdog("contemplator");
 			if (this.runtime.config.showWorkerNotifications && ctx.hasUI) {
 				ctx.ui?.notify("pi-contemplator: contemplator running", "info");
 				workerNotified = true;
@@ -774,9 +814,15 @@ export class Contemplator {
 				// while individual provider APIs also support required/any. Preserve the
 				// runtime hint and final-payload enforcement without weakening base types.
 				if (invocation > 1) (invocationConfig as any).toolChoice = requiredToolChoice(api);
-				const stream = agentLoop([nextPrompt], context, invocationConfig, undefined, streamSimple);
-				for await (const event of stream) logAgentStreamError("contemplator", event);
-				const result = await stream.result();
+				workerWatchdog.progress();
+				const stream = agentLoop([nextPrompt], context, invocationConfig, workerWatchdog.signal, streamSimple);
+				const result = await workerWatchdog.race((async () => {
+					for await (const event of stream) {
+						workerWatchdog!.progress();
+						logAgentStreamError("contemplator", event);
+					}
+					return stream.result();
+				})());
 				// agentLoop returns its input prompt as the first new message. We already
 				// added nextPrompt above, so do not duplicate each update in the durable
 				// contemplator history or in a subsequent retry's context.
@@ -840,25 +886,37 @@ export class Contemplator {
 					});
 				}
 			}
-			if (sessionGeneration === this.sessionGeneration) await this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration);
+			if (sessionGeneration === this.sessionGeneration) {
+				workerWatchdog.progress();
+				await workerWatchdog.race(this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration, flushEpoch));
+			}
 		} catch (error) {
 			failed = true;
 			failureMessage = error instanceof Error ? error.message : String(error);
 			debugLog("contemplator.error", { errorMessage: failureMessage });
 			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
-				const pending = this.pending as PendingUpdate | undefined;
-				this.pending = {
-					observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-					summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
-					reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
-					mainAgentOutputTokens: update.mainAgentOutputTokens,
-					mainAgentToolCalls: update.mainAgentToolCalls,
-					mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
-				};
-				this.turnsSinceRun = turnsBeforeRun;
+				this.consecutiveFlushFailures++;
+				if (this.consecutiveFlushFailures < 2) {
+					const pending = this.pending as PendingUpdate | undefined;
+					this.pending = {
+						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
+						summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
+						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
+						mainAgentOutputTokens: update.mainAgentOutputTokens,
+						mainAgentToolCalls: update.mainAgentToolCalls,
+						mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
+					};
+				} else {
+					debugLog("contemplator.poisoned_update_released", { reason: failureMessage, observationCount: update.observations.length, summaryCount: update.summaries.length, reviewCount: update.reviews.length });
+					this.consecutiveFlushFailures = 0;
+				}
+				this.turnsSinceRun = 0; // Back off until fresh primary responses arrive; never retry every checkpoint.
 			}
 		} finally {
+			workerWatchdog?.dispose();
+			if (flushEpoch !== this.flushEpoch) return;
 			this.running = false;
+			if (!failed) this.consecutiveFlushFailures = 0;
 			const pendingHasEnoughMemories = this.pending !== undefined && (
 				this.pending.reviews.length > 0 ||
 				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations ||
@@ -951,15 +1009,20 @@ export class Contemplator {
 		const session = this.reviewerSessions.get(request.id) ?? { scope: request.scope, history: options.history ?? [], messageEntryIds: [], foldedEntryIds: new Set() };
 		this.reviewerSessions.set(request.id, session);
 		const task = this.runtime.launchReviewTask(ctx, async () => {
+			const watchdog = createWorkerStallWatchdog("structural reviewer");
+			let acceptsMessages = true;
 			try {
 				debugLog("reviewer.started", { reviewRequestId: request.id, scope: request.scope, resumed: session.history.length > 0 });
-				const result = await runStructuralReview({
+				const result = await watchdog.race(runStructuralReview({
 					request, model, apiKey, headers,
+					signal: watchdog.signal,
+					onProgress: watchdog.progress,
 					getBranch: () => ctx.sessionManager.getBranch() as Entry[],
 					recordUsage: (usage) => this.runtime.recordAgentUsage(usage),
 					history: session.history,
 					onMessages: (messages) => {
-						if (sessionGeneration !== this.sessionGeneration || !this.reviewIsPending(ctx, request.id)) return;
+						watchdog.progress();
+						if (!acceptsMessages || sessionGeneration !== this.sessionGeneration || !this.reviewIsPending(ctx, request.id)) return;
 						for (const message of messages) {
 							session.history.push(message);
 							const entryId = this.appendEntryWithId(ctx, OM_REVIEWER_MESSAGE, { version: 1, reviewRequestId: request.id, scope: request.scope, message }, request.id);
@@ -969,7 +1032,7 @@ export class Contemplator {
 							}
 						}
 					},
-				});
+				}));
 				if (sessionGeneration !== this.sessionGeneration) {
 					debugLog("reviewer.failed", { reviewRequestId: request.id, reason: "session_changed" });
 					return;
@@ -997,6 +1060,8 @@ export class Contemplator {
 				}
 				this.runtime.notifyMemoryUpdate(ctx);
 			} finally {
+				acceptsMessages = false;
+				watchdog.dispose();
 				this.inFlightReviewIds.delete(request.id);
 				if (key) this.inFlightReviewKeys.delete(key);
 			}
@@ -1080,7 +1145,7 @@ export class Contemplator {
 		return own?.id;
 	}
 
-	private async compactHistory(model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number): Promise<void> {
+	private async compactHistory(model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number, flushEpoch: number): Promise<void> {
 		const serializedLength = this.history.reduce((total, message) => total + JSON.stringify(message).length, 0);
 		if (this.history.length < 12 || serializedLength < 60_000) return;
 		const previousMessageCount = this.history.length;
@@ -1091,7 +1156,7 @@ export class Contemplator {
 		const history = this.history.slice();
 		const summaryWithUsage = await generateSummaryWithUsage(history as AgentMessage[], model, 4_000, apiKey, headers);
 		this.runtime.recordAgentUsage(summaryWithUsage.usage);
-		if (sessionGeneration !== this.sessionGeneration) {
+		if (sessionGeneration !== this.sessionGeneration || flushEpoch !== this.flushEpoch) {
 			debugLog("contemplator.compaction_stale", { reason: "session_or_branch_changed" });
 			return;
 		}

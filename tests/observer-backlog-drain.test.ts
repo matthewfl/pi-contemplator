@@ -7,7 +7,8 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 }));
 
 import { DEFAULTS } from "../src/config.js";
-import { runConsolidationPipeline } from "../src/hooks/consolidation-trigger.js";
+import { Runtime } from "../src/runtime.js";
+import { registerConsolidationTrigger, runConsolidationPipeline } from "../src/hooks/consolidation-trigger.js";
 import { OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, type Entry } from "../src/session-ledger/index.js";
 import { textCustomMessage } from "./fixtures/session.js";
 
@@ -56,6 +57,28 @@ function setup() {
 describe("observer backlog draining", () => {
 	beforeEach(() => observerMocks.runObserver.mockReset());
 
+	it("launches observer catch-up from long-turn activity checkpoints", async () => {
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		runtime.config = { ...runtime.config, observeAfterTokens: 1, passive: false };
+		const entries = [textCustomMessage("raw-live", "new source during a long turn")] as Entry[];
+		const pi = { on: vi.fn(), appendEntry: vi.fn() };
+		const ctx = {
+			cwd: "/tmp/project", hasUI: false, model: undefined,
+			modelRegistry: {},
+			sessionManager: { getBranch: () => entries, getSessionId: () => "live" },
+		};
+		registerConsolidationTrigger(pi as any, runtime);
+
+		runtime.notifyAgentActivity(ctx as any);
+		expect(runtime.consolidationInFlight).toBe(true);
+		await runtime.consolidationPromise;
+
+		expect(runtime.lastObserverStartedAt).toBeTypeOf("number");
+		expect(runtime.consolidationInFlight).toBe(false);
+		expect(runtime.lastObserverError).toContain("no model available");
+	});
+
 	it("walks oldest-first through bounded clean-empty chunks until the backlog is clear", async () => {
 		observerMocks.runObserver.mockResolvedValue(undefined);
 		const { pi, runtime, ctx, getEntries } = setup();
@@ -77,6 +100,7 @@ describe("observer backlog draining", () => {
 		]);
 		expect(rawTokensSinceObservationCoverage(getEntries())).toBe(0);
 		expect(pi.appendEntry).toHaveBeenCalledTimes(3);
+		expect(runtime.notifyMemoryUpdate).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not advance or spin when no observer model is available", async () => {

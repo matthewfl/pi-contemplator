@@ -4,6 +4,7 @@ import { runObserver } from "../agents/observer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
+import { createWorkerStallWatchdog } from "../worker-watchdog.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_SUMMARIZER_COMMIT,
@@ -43,28 +44,10 @@ export const SUMMARIZER_STALL_TIMEOUT_MS = 15 * 60_000;
 export function createSummarizerStallWatchdog(
 	timeoutMs: number,
 	onStall: (signal: AbortSignal) => void,
-): { signal: AbortSignal; progress: () => void; dispose: () => void } {
-	const controller = new AbortController();
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const progress = () => {
-		if (controller.signal.aborted) return;
-		if (timer !== undefined) clearTimeout(timer);
-		timer = setTimeout(() => {
-			timer = undefined;
-			controller.abort(new Error(`summarizer produced no progress for ${Math.round(timeoutMs / 60_000)} minutes`));
-			onStall(controller.signal);
-		}, timeoutMs);
-		(timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
-	};
-	progress();
-	return {
-		signal: controller.signal,
-		progress,
-		dispose: () => {
-			if (timer !== undefined) clearTimeout(timer);
-			timer = undefined;
-		},
-	};
+) {
+	let watchdog!: ReturnType<typeof createWorkerStallWatchdog>;
+	watchdog = createWorkerStallWatchdog("summarizer", timeoutMs, () => onStall(watchdog.signal));
+	return watchdog;
 }
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
@@ -96,6 +79,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			runtime.resolveFailureNotified = false;
 			return cached;
 		}
+		runtime.lastObserverError = cached.reason;
 		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
 		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
 			ctx.ui.notify(`pi-contemplator: ${stage} skipped — ${cached.reason}`, "warning");
@@ -109,6 +93,14 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	const launch = (_event: unknown, ctx: ConsolidationCtx) => {
 		maybeLaunchConsolidation(pi, runtime, ctx);
 	};
+	pi.on("session_start", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
+	pi.on("session_tree", (event, ctx) => {
+		launch(event, ctx);
+		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
+	});
 	pi.on("agent_start", (event, ctx) => {
 		launch(event, ctx);
 		syncAndScheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
@@ -119,8 +111,10 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	});
 	runtime.setAgentActivityListener((ctx) => {
 		runtime.ensureConfig(ctx.cwd);
-		// Token pools are re-evaluated at every primary-agent progress checkpoint;
-		// idle wall-clock time has no scheduling meaning.
+		// Long autonomous turns may run for hours without agent_start/turn_end.
+		// Re-evaluate both source coverage and memory pressure at every primary
+		// progress checkpoint so neither worker can silently stop for the turn.
+		maybeLaunchConsolidation(pi, runtime, ctx as ConsolidationCtx);
 		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
 	runtime.setSettingsUpdateListener((ctx, settings) => {
@@ -166,7 +160,7 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	};
 
 	const sessionMetadata = debugSessionMetadata(ctx);
-	void runtime.launchConsolidationTask(ctx, async () => withDebugLogContext({
+	const task = runtime.launchConsolidationTask(ctx, async () => withDebugLogContext({
 		enabled: runtime.config.debugLog === true,
 		cwd: ctx.cwd,
 		...sessionMetadata,
@@ -174,6 +168,13 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	}, async () => {
 		await runConsolidationPipeline(pi, runtime, consolidationCtx);
 	}));
+	// launchTrackedTask releases its lock before this continuation. If observer
+	// setup failed before coverage could move, wake the contemplator once in
+	// degraded mode rather than leaving all advisory work gated forever. Future
+	// primary activity still retries the observer.
+	void task.then(() => {
+		if (runtime.lastObserverError) runtime.notifyMemoryUpdate(ctx);
+	});
 }
 
 export function launchCompactionObserver(
@@ -314,7 +315,9 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 	}, async () => {
 		let stalled = false;
 		let successfullyCompleted = false;
+		let modelRunAttempted = false;
 		let disposeStallWatchdog = () => {};
+		let acceptsSummarizerMessages = true;
 		const startedAt = Date.now();
 		runtime.lastSummarizerStartedAt = startedAt;
 		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
@@ -334,7 +337,8 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: ${reason}; cancelling and leaving the backlog eligible for retry`, "warning");
 			});
 			disposeStallWatchdog = watchdog.dispose;
-			const result = await runSummarizer({
+			modelRunAttempted = true;
+			const result = await watchdog.race(runSummarizer({
 				signal: watchdog.signal,
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
@@ -348,9 +352,9 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
 					watchdog.progress();
-					if (generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };
+					if (acceptsSummarizerMessages && generation === runtime.getContextGeneration()) runtime.lastSummarizerRun = { startedAt, status: "running", messages: messages.slice() };
 				},
-			});
+			}));
 			if (generation !== runtime.getContextGeneration()) return;
 			if (!result.completed) {
 				runtime.lastSummarizerRun = stalled
@@ -377,6 +381,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 			}
 			throw error;
 		} finally {
+			acceptsSummarizerMessages = false;
 			disposeStallWatchdog();
 			if (generation === runtime.getContextGeneration()) {
 				const completedAt = Date.now();
@@ -385,7 +390,11 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				const postRunPools = currentMemoryPools(runtime, ctx.sessionManager.getBranch() as Entry[]);
 				const target = runtime.config.oldMemoryPoolTargetTokens;
 				runtime.summarizerNextTriggerTokens = summarizerTriggerAfterRun(
-					successfullyCompleted,
+					// A failed/no-progress model pass must not be retried with the
+					// identical pool at every primary-agent checkpoint. Require fresh
+					// old-memory growth before trying another (potentially different)
+					// sample. Model-resolution failures spend no tokens and stay eligible.
+					successfullyCompleted || modelRunAttempted,
 					runtime.summarizerNextTriggerTokens,
 					target,
 					postRunPools.oldTokens,
@@ -464,18 +473,41 @@ async function runObserverStage(
 		priorObservations: priorObservations.length,
 	});
 
-	const observations = await runObserver({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		priorSummaries,
-		priorObservations,
-		chunk,
-		allowedSourceEntryIds: sourceEntryIds,
-		maxTurns: runtime.config.agentMaxTurns,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		recordUsage: (usage) => runtime.recordAgentUsage(usage),
-	});
+	let observations;
+	let failedMessage: string | undefined;
+	const observerWatchdog = createWorkerStallWatchdog("observer");
+	try {
+		observations = await observerWatchdog.race(runObserver({
+			model: resolved.model as any,
+			apiKey: resolved.apiKey,
+			headers: resolved.headers,
+			priorSummaries,
+			priorObservations,
+			chunk,
+			allowedSourceEntryIds: sourceEntryIds,
+			maxTurns: runtime.config.agentMaxTurns,
+			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			recordUsage: (usage) => runtime.recordAgentUsage(usage),
+			onProgress: observerWatchdog.progress,
+			signal: observerWatchdog.signal,
+		}));
+	} catch (error) {
+		// A permanently pathological old chunk must not pin every newer source
+		// entry and block the contemplator forever. Accepted observations are
+		// already returned normally by runObserver; only a zero-progress failure
+		// reaches here. Record the failure visibly, then advance this bounded
+		// range with an empty coverage marker so catch-up can continue.
+		failedMessage = runtime.recordConsolidationStageError(ctx, "observer", error);
+		debugLog("observer.failed_chunk_advanced", {
+			failedMessage,
+			coversUpToId,
+			sourceEntryIds,
+			chunkTokens,
+		});
+		observations = undefined;
+	} finally {
+		observerWatchdog.dispose();
+	}
 	if (options.contextGeneration !== undefined && options.contextGeneration !== runtime.getContextGeneration()) {
 		debugLog("observer.stale", { reason: "session_or_branch_changed" });
 		return "abort";
@@ -497,18 +529,18 @@ async function runObserverStage(
 	const accepted = observations ?? [];
 	const data = buildObservationsRecordedData(accepted, effectiveCoversUpToId);
 	if (!data) return "continue";
-	debugLog(accepted.length > 0 ? "observer.records" : "observer.coverage_only", {
+	debugLog(failedMessage ? "observer.failed_coverage" : accepted.length > 0 ? "observer.records" : "observer.coverage_only", {
 		count: accepted.length,
 		observationTokens: accepted.reduce((sum, observation) => sum + observation.tokenCount, 0),
 		coversUpToId: effectiveCoversUpToId,
+		...(failedMessage ? { failedMessage } : {}),
 	});
-	// A clean zero-observation verdict is still successful coverage. Persist an
-	// empty batch so the next bounded pass starts after this chunk instead of
-	// retrying the same low-information source forever. Failures throw above and
-	// therefore never reach this coverage commit.
+	// A clean zero-observation verdict and a zero-progress failed chunk both use
+	// an empty coverage marker. This prevents low-information or pathological old
+	// source from pinning the entire observer/contemplator pipeline forever.
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
 	debugLog("observer.appended", { count: accepted.length, coversUpToId: effectiveCoversUpToId });
-	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
+	if (!failedMessage && shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		accepted.length > 0
 			? `pi-contemplator: ${accepted.length} observation${accepted.length === 1 ? "" : "s"} recorded`
 			: "pi-contemplator: observer found no new information; processed chunk marked covered",

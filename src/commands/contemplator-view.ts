@@ -63,11 +63,13 @@ function liveStateLine(state: ContemplatorRunState): string {
 	const timing = `Last start: ${state.lastStartedAt === undefined ? "not run this launch" : new Date(state.lastStartedAt).toISOString()} · Last end: ${state.lastCompletedAt === undefined ? "not completed this launch" : new Date(state.lastCompletedAt).toISOString()}`;
 	const error = state.lastError ? `\nLast error: ${state.lastError}` : "";
 	if (state.running) return `LIVE · running for ${Math.max(0, Math.floor((Date.now() - (state.lastStartedAt ?? Date.now())) / 60_000))}m · ${pending}\n${timing}${error}`;
-	const reason = state.waitingFor === "memories"
-		? "waiting for memory threshold"
-		: state.waitingFor === "responses"
-			? "waiting for response spacing"
-			: state.waitingFor === "ready"
+	const reason = state.waitingFor === "observer"
+		? "waiting for observer backlog"
+		: state.waitingFor === "memories"
+			? "waiting for memory threshold"
+			: state.waitingFor === "responses"
+				? "waiting for response spacing"
+				: state.waitingFor === "ready"
 				? "ready to launch"
 				: state.waitingFor === "disabled"
 					? "disabled"

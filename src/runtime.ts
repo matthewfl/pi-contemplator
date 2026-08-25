@@ -72,7 +72,7 @@ export interface ContemplatorRunState {
 	pendingReviews: number;
 	/** Completed primary-model responses since the previous contemplator run. */
 	responsesSinceRun: number;
-	waitingFor: "disabled" | "passive" | "memories" | "responses" | "ready" | "running" | "idle";
+	waitingFor: "disabled" | "passive" | "observer" | "memories" | "responses" | "ready" | "running" | "idle";
 	lastStartedAt?: number;
 	lastCompletedAt?: number;
 	lastError?: string;
@@ -254,6 +254,16 @@ export class Runtime {
 		// against a different branch and would otherwise leak across sessions
 		// (e.g. a request made in session A compacting session B's branch, or a
 		// never-cleared compactInFlight bricking all future compactions).
+		// Detach stale background tasks immediately. Their promise finalizers are
+		// identity-guarded below, so an old session can never retain or later clear
+		// a lock owned by the new session.
+		this.consolidationInFlight = false;
+		this.consolidationPromise = null;
+		this.consolidationPhase = undefined;
+		this.summarizerInFlight = false;
+		this.summarizerPromise = null;
+		this.reviewInFlight = false;
+		this.reviewPromise = null;
 		this.compactInFlight = false;
 		this.compactRequested = false;
 		this.compactContinuationPrompt = undefined;
@@ -336,9 +346,10 @@ export class Runtime {
 		this.consolidationPhase = undefined;
 		this.lastObserverError = undefined;
 		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
+			if (this.consolidationPromise !== promise) return;
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
-			if (this.consolidationPromise === promise) this.consolidationPromise = null;
+			this.consolidationPromise = null;
 		});
 		this.consolidationPromise = promise;
 		return promise;
@@ -351,9 +362,10 @@ export class Runtime {
 		this.summarizerInFlight = true;
 		this.lastSummarizerError = undefined;
 		const promise = this.launchTrackedTask(ctx, "summarizer", work, (error) => {
+			if (this.summarizerPromise !== promise) return;
 			this.summarizerInFlight = false;
 			this.lastSummarizerError = error;
-			if (this.summarizerPromise === promise) this.summarizerPromise = null;
+			this.summarizerPromise = null;
 		});
 		this.summarizerPromise = promise;
 		return promise;
@@ -365,8 +377,9 @@ export class Runtime {
 		if (this.reviewInFlight) return undefined;
 		this.reviewInFlight = true;
 		const promise = this.launchTrackedTask(ctx, "structural review", work, () => {
+			if (this.reviewPromise !== promise) return;
 			this.reviewInFlight = false;
-			if (this.reviewPromise === promise) this.reviewPromise = null;
+			this.reviewPromise = null;
 		});
 		this.reviewPromise = promise;
 		return promise;
