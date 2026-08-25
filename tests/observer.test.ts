@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/agents/observer/agent.js";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
 import { estimateStringTokens } from "../src/tokens.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -10,6 +10,7 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 		},
 		result: async () => {
 			await handler(prompts, context, config);
+			await context.tools.find((tool: any) => tool.name === "done")?.execute("done", {});
 			return {};
 		},
 	})) as any;
@@ -86,7 +87,7 @@ describe("runObserver", () => {
 			});
 		});
 
-		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toThrow(ObserverStreamError);
 	});
 
 	it("dedupes deterministic ids", async () => {
@@ -105,22 +106,55 @@ describe("runObserver", () => {
 		expect(observations?.[0].content).toBe("Same content");
 	});
 
-	it("returns undefined when no tool call records observations", async () => {
+	it("returns undefined when done confirms a zero-observation chunk", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 
+	it("injects a normal reminder with the recorded count when the first response omits done", async () => {
+		const promptsSeen: string[] = [];
+		const configs: any[] = [];
+		let invocation = 0;
+		const loop = ((prompts: any[], context: any, config: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				promptsSeen.push(prompts[0].content[0].text);
+				configs.push(config);
+				invocation++;
+				if (invocation === 2) await context.tools.find((tool: any) => tool.name === "done").execute("done", {});
+				return [];
+			},
+		})) as any;
+
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		expect(promptsSeen).toHaveLength(2);
+		expect(promptsSeen[1]).toContain("Observations recorded so far: 0");
+		expect(promptsSeen[1]).toContain("call done now");
+		expect(configs[0].toolChoice).toBeUndefined();
+		expect(configs[1].toolChoice).toBeUndefined();
+		expect(configs[1].onPayload).toBeUndefined();
+	});
+
+	it("rejects a zero-observation output-limit stop instead of treating it as clean coverage", async () => {
+		const loop = (() => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", content: [], stopReason: "length" } };
+			},
+			result: async () => [],
+		})) as any;
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({ stopReason: "length" });
+	});
+
 	it("uses maxTurns as an observer turn cap", async () => {
-		let shouldStopAfterTurn: any;
+		let stopResults: boolean[] = [];
 		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			shouldStopAfterTurn = config.shouldStopAfterTurn;
+			expect(config.shouldStopAfterTurn).toBeTypeOf("function");
+			stopResults = [config.shouldStopAfterTurn({}), config.shouldStopAfterTurn({})];
 		});
 
 		await runObserver({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
 
-		expect(shouldStopAfterTurn).toBeTypeOf("function");
-		expect(shouldStopAfterTurn({})).toBe(false);
-		expect(shouldStopAfterTurn({})).toBe(true);
+		expect(stopResults).toEqual([false, true]);
 	});
 
 	it("uses configured observer thinking level for reasoning models", async () => {
@@ -147,11 +181,12 @@ describe("runObserver", () => {
 
 	it("reports agentLoop usage through recordUsage", async () => {
 		const usage = { input: 4000, output: 500, cacheRead: 0, cacheWrite: 0, cost: { total: 0.002 } };
-		const loop = ((_prompts: any, _context: any, _config: any) => ({
+		const loop = ((_prompts: any, context: any, _config: any) => ({
 			async *[Symbol.asyncIterator]() {},
-			result: async () => [
-				{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() },
-			],
+			result: async () => {
+				await context.tools.find((tool: any) => tool.name === "done").execute("done", {});
+				return [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop", timestamp: Date.now() }];
+			},
 		})) as any;
 		const recorded: unknown[] = [];
 

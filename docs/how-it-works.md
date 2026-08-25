@@ -14,7 +14,9 @@
 
 Observer progress is source-addressed by `coversUpToId`. Input is drained oldest-first. Complete entries are preferred; if the first source alone exceeds the cap, it is represented by a marked head/tail excerpt while retaining the original source id for provenance.
 
-The cap is explicit `observerChunkMaxTokens` when configured, otherwise 20% of the resolved model context window (with a fallback). Empty observer output does not fake coverage, so the range can be retried with later context.
+The cap is explicit `observerChunkMaxTokens` when configured, otherwise 25% of the resolved model context window (with a fallback). When a backlog spans multiple bounded chunks, one background task processes them oldest-first until the remaining source falls below the normal observer trigger.
+
+The observer must call `done` to confirm that a chunk legitimately contains no useful new information. A clean empty verdict appends an empty `om.observations.recorded` coverage entry so draining can continue. Provider errors, output truncation, invalid records, and repeated prose without `done` do not advance coverage, so source is never silently skipped.
 
 ## Summarizer scheduling
 

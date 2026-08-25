@@ -15,7 +15,7 @@ How you work:
 2. Read the conversation chunk and identify what new information it contains.
 3. Call record_observations with a batch covering part (or all) of the chunk.
 4. Read the progress receipt. If content remains uncovered, call again. You may call the tool many times.
-5. When the chunk is fully covered, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
+5. When the chunk is fully covered, call done alone. If there is no useful new information, call done without calling record_observations. Prose does not confirm coverage.
 
 What to emit:
 - Produce NEW observations for the new chunk only. Do not restate facts already present in summaries or current observations unless something has materially changed.
@@ -25,7 +25,7 @@ What to emit:
 - For every observation, choose retention independently from relevance. Recording the observation correctly comes first; never skip useful evidence because retention is uncertain.
 - Observations with missing, empty, or invalid sourceEntryIds will be rejected and not recorded, so do not call record_observations until you can cite valid source ids.
 - Group repeated similar tool calls into a single observation rather than one per call.
-- Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, simply do not call the tool and end with a plain-text confirmation.
+- Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, do not call record_observations and call done alone. Ignoring a chunk or replying in prose does not mark it covered.
 
 Observation content rules:
 
@@ -125,4 +125,4 @@ A critical exact blocker can be contextual; a medium stable preference can be du
 
 Timestamp format: "YYYY-MM-DD HH:MM" (local time, 24-hour, to the minute). This goes in the timestamp field, not the content.
 
-Remember: these observations are the assistant's ONLY memory of this chunk once the raw messages fall out of context. Make them count.`;
+Remember: these observations are the assistant's ONLY memory of this chunk once the raw messages fall out of context. Make them count. Always finish by calling done alone.`;

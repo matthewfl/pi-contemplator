@@ -235,7 +235,6 @@ export function isObservationsRecordedData(value: unknown): value is Observation
 	if (!isPlainRecord(value)) return false;
 	return (
 		Array.isArray(value.observations) &&
-		value.observations.length > 0 &&
 		value.observations.every(isObservation) &&
 		isNonEmptyString(value.coversUpToId)
 	);
@@ -345,7 +344,7 @@ export function buildObservationsRecordedData(
 	observations: Observation[],
 	coversUpToId: string,
 ): ObservationsRecordedEntryData | undefined {
-	if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
+	if (!isNonEmptyString(coversUpToId)) return undefined;
 	const candidate = { observations, coversUpToId };
 	return isObservationsRecordedData(candidate) ? candidate : undefined;
 }

@@ -1,4 +1,4 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -71,6 +71,16 @@ const RecordObservationsSchema = Type.Object({
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
 
+/** A terminal provider/agent-loop failure that must not advance observation coverage. */
+export class ObserverStreamError extends Error {
+	readonly stopReason: string;
+	constructor(stopReason: string, errorMessage?: string) {
+		super(`observer stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		this.name = "ObserverStreamError";
+		this.stopReason = stopReason;
+	}
+}
+
 function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
@@ -98,14 +108,15 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 	if (!conversation) return undefined;
 
 	const accumulated = new Map<string, Observation>();
+	let rejectedTotal = 0;
+	let doneCalled = false;
 
 	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
 		name: "record_observations",
 		label: "Record observations",
 		description:
 			"Record a batch of new observations distilled from the conversation chunk. " +
-			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
-			"then emit a short plain-text confirmation to end the run.",
+			"Call this multiple times as you work through the chunk, then call done alone when coverage is complete.",
 		parameters: RecordObservationsSchema,
 		execute: async (_id, params: RecordObservationsArgs) => {
 			let added = 0;
@@ -134,6 +145,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				});
 				added++;
 			}
+			rejectedTotal += rejected;
 			const rejectedPart = rejected > 0
 				? ` ${rejected} observation${rejected === 1 ? "" : "s"} rejected for missing or invalid sourceEntryIds.`
 				: "";
@@ -142,8 +154,19 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
 				rejectedPart +
 				` Total so far this run: ${accumulated.size}. ` +
-				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
+				`Continue if the chunk still has uncovered content; otherwise call done alone.`;
 			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+		},
+	};
+
+	const doneTool: AgentTool<any> = {
+		name: "done",
+		label: "Done",
+		description: "Confirm that the entire provided conversation chunk has been inspected and all useful new observations have been recorded. Call alone, including when there is nothing new to record.",
+		parameters: Type.Object({}),
+		execute: async () => {
+			doneCalled = true;
+			return { content: [{ type: "text", text: "Observer coverage confirmed." }], details: {}, terminate: true };
 		},
 	};
 
@@ -156,60 +179,86 @@ ${joinOrEmpty(priorSummaries)}
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current summaries or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current summaries or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. When the chunk is fully covered, call done alone. If the chunk contains no useful new information, call done without calling record_observations.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
 
-	const prompts: Message[] = [
-		{
-			role: "user",
-			content: [{ type: "text", text: userText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const context: AgentContext = {
-		systemPrompt: OBSERVER_SYSTEM,
-		messages: [],
-		tools: [recordObservations as AgentTool<any>],
+	const initialPrompt: Message = {
+		role: "user",
+		content: [{ type: "text", text: userText }],
+		timestamp: Date.now(),
 	};
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
-	const config: AgentLoopConfig = {
+	const baseConfig: AgentLoopConfig = {
 		model,
 		apiKey,
 		headers,
 		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
+		shouldStopAfterTurn: () => {
+			turnCount++;
+			return doneCalled || (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns);
+		},
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined
-			? {
-				shouldStopAfterTurn: () => {
-					turnCount++;
-					return turnCount >= effectiveMaxTurns;
-				},
-			}
-			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
-	for await (const event of stream) {
-		// Drain events; the tool's execute already collects records.
-		logAgentStreamError("observer", event);
-	}
-	const result = await stream.result();
-	if (args.recordUsage) {
-		for (const message of result) {
-			if (message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+	const history: AgentMessage[] = [];
+	let terminalFailure: { stopReason: string; errorMessage?: string } | undefined;
+	const runInvocation = async (prompt: Message): Promise<void> => {
+		const context: AgentContext = {
+			systemPrompt: OBSERVER_SYSTEM,
+			messages: history.slice(),
+			tools: [recordObservations as AgentTool<any>, doneTool],
+		};
+		const stream = loop([prompt], context, baseConfig, signal, streamSimple);
+		for await (const event of stream) {
+			logAgentStreamError("observer", event);
+			const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+			if (message?.role === "assistant" && ["error", "aborted", "length"].includes(message.stopReason ?? "")) {
+				terminalFailure = { stopReason: message.stopReason!, errorMessage: message.errorMessage };
+			}
 		}
+		const result = await stream.result();
+		if (!Array.isArray(result)) return;
+		history.push(...result);
+		for (const message of result) {
+			if (message.role === "assistant" && ["error", "aborted", "length"].includes(message.stopReason ?? "")) {
+				terminalFailure = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+			}
+			if (args.recordUsage && message.role === "assistant" && message.usage) args.recordUsage(message.usage);
+		}
+	};
+
+	await runInvocation(initialPrompt);
+	if (accumulated.size === 0 && !doneCalled && !terminalFailure && rejectedTotal === 0) {
+		const reminder: Message = {
+			role: "user",
+			content: [{ type: "text", text: `You stopped without confirming coverage. Observations recorded so far: ${accumulated.size}. If the chunk is fully covered, call done now. Otherwise call record_observations for anything still missing, then call done.` }],
+			timestamp: Date.now(),
+		};
+		await runInvocation(reminder);
 	}
 
+	// Accepted observations remain useful even if the model neglected the final
+	// confirmation. Zero-observation coverage is advanced only by an explicit
+	// done call; failures, truncation, malformed records, and repeated prose do
+	// not silently discard the source chunk.
+	if (accumulated.size === 0 && terminalFailure) {
+		throw new ObserverStreamError(terminalFailure.stopReason, terminalFailure.errorMessage);
+	}
+	if (accumulated.size === 0 && rejectedTotal > 0) {
+		throw new ObserverStreamError("invalid_observations", `${rejectedTotal} proposed observation${rejectedTotal === 1 ? " was" : "s were"} rejected`);
+	}
+	if (accumulated.size === 0 && !doneCalled) {
+		throw new ObserverStreamError("incomplete", "observer stopped twice without recording observations or calling done");
+	}
 	if (accumulated.size === 0) return undefined;
 	return Array.from(accumulated.values());
 }

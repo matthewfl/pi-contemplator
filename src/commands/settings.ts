@@ -1,13 +1,14 @@
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Input, SelectList, Spacer, Text, fuzzyFilter, type Focusable, type SelectItem } from "@earendil-works/pi-tui";
-import type { ConfiguredModel } from "../config.js";
+import { OBSERVER_CHUNK_CONTEXT_RATIO, resolveObserverChunkMaxTokens, type ConfiguredModel } from "../config.js";
 import { OM_SETTINGS, type Runtime, type SessionSettings } from "../runtime.js";
 
 type ModelRegistryLike = {
 	refresh?(): Promise<void>;
 	getAvailable(): Array<{ provider: string; id: string }>;
 	getAll(): Array<{ provider: string; id: string }>;
+	find?(provider: string, id: string): { contextWindow?: number } | undefined;
 };
 type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "summarizerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
@@ -42,6 +43,26 @@ function scalarLabel(runtime: Runtime, key: NumberSetting | BooleanSetting | "co
 function extensionEnabledLabel(runtime: Runtime): string {
 	const enabled = !runtime.config.passive;
 	return hasOverride(runtime.getSessionSettings(), "passive") ? String(enabled) : `${enabled} (default)`;
+}
+
+export function observerInputCapLabel(runtime: Runtime, contextWindow: number | undefined): string {
+	const explicit = runtime.config.observerChunkMaxTokens;
+	if (explicit !== undefined) {
+		return `${explicit.toLocaleString()} tokens${hasOverride(runtime.getSessionSettings(), "observerChunkMaxTokens") ? "" : " (default)"}`;
+	}
+	const cap = resolveObserverChunkMaxTokens(runtime.config, contextWindow);
+	if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+		const percent = OBSERVER_CHUNK_CONTEXT_RATIO * 100;
+		return `${percent}% of ${contextWindow.toLocaleString()} = ${cap.toLocaleString()} tokens (derived default)`;
+	}
+	return `${cap.toLocaleString()} tokens (fallback default; model context unavailable)`;
+}
+
+function observerContextWindow(runtime: Runtime, ctx: ExtensionContext): number | undefined {
+	const configured = runtime.config.model;
+	const registry = ctx.modelRegistry as unknown as ModelRegistryLike;
+	const model = configured ? registry.find?.(configured.provider, configured.id) ?? ctx.model : ctx.model;
+	return (model as { contextWindow?: number } | undefined)?.contextWindow;
 }
 
 interface ModelOption extends SelectItem {
@@ -207,7 +228,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Observe source during compaction: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
 				`Observer and summarizer model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `${modelLabel(runtime.getDefaultConfig().model)} (default)`}`,
 				`Observer source backlog trigger (tokens): ${scalarLabel(runtime, "observeAfterTokens")}`,
-				`Observer input cap (tokens): ${scalarLabel(runtime, "observerChunkMaxTokens")}`,
+				`Observer input cap: ${observerInputCapLabel(runtime, observerContextWindow(runtime, ctx))}`,
 				`Observer and summarizer max rounds: ${scalarLabel(runtime, "agentMaxTurns")}`,
 				`Automatic compaction source backlog trigger (tokens): ${scalarLabel(runtime, "compactAfterTokens")}`,
 				`Automatic compaction threshold mode: ${hasOverride(settings, "compactAfterTokensMode") ? runtime.config.compactAfterTokensMode : `${runtime.getDefaultConfig().compactAfterTokensMode} (default)`}`,
@@ -245,7 +266,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else {
 				const numberChoice: Array<[string, NumberSetting, string]> = [
 					["Observer source backlog trigger (tokens):", "observeAfterTokens", "Observer source backlog trigger (tokens)"],
-					["Observer input cap (tokens):", "observerChunkMaxTokens", "Observer input cap (tokens)"],
+					["Observer input cap:", "observerChunkMaxTokens", "Observer input cap (tokens)"],
 					["Observer and summarizer max rounds:", "agentMaxTurns", "Observer and summarizer max rounds"],
 					["Automatic compaction source backlog trigger (tokens):", "compactAfterTokens", "Automatic compaction source backlog trigger (tokens)"],
 					["New memory pool protection budget (tokens):", "newMemoryPoolMaxTokens", "New memory pool protection budget (tokens)"],

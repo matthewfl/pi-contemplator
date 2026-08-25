@@ -200,12 +200,6 @@ class MockModelServer {
 			assert(sourceIds.length > 0, "Observer request did not contain a source entry id");
 			const seesProbe = serializedMessages.includes(PROBE_TEXT);
 			const seesProbeResponse = serializedMessages.includes(PROBE_RESPONSE_TEXT);
-			if (scenario === "SCENARIO_FEEDBACK" && seesProbe && !seesProbeResponse) {
-				// Do not advance observation coverage for the probe alone. The mock main
-				// response is intentionally delayed until this run finishes, ensuring the
-				// next real observer run receives both sides of the exchange together.
-				return sendSse(res, { text: "Waiting for the primary agent's response before recording this exchange.", delayMs: 250 });
-			}
 			const isProbeFeedback = scenario === "SCENARIO_FEEDBACK" && seesProbe && seesProbeResponse;
 			if (isProbeFeedback) this.feedbackObserverSawProbeAndResponse = true;
 			return sendSse(res, {
@@ -218,7 +212,9 @@ class MockModelServer {
 							timestamp: "2026-08-15 00:00",
 							content: isProbeFeedback
 								? PROBE_FEEDBACK_OBSERVATION
-								: `${scenario}: the primary agent repeatedly depends on an assumption that needs an independent check.`,
+								: scenario === "SCENARIO_FEEDBACK" && seesProbe
+									? PROBE_TEXT
+									: `${scenario}: the primary agent repeatedly depends on an assumption that needs an independent check.`,
 							relevance: "high",
 							retention: "contextual",
 							sourceEntryIds: isProbeFeedback ? sourceIds : [sourceIds[0]],

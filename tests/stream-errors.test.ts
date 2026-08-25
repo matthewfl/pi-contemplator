@@ -107,7 +107,7 @@ describe("agent stream error logging", () => {
 		})) as any;
 
 		await withDebugLogContext({ enabled: true, sessionId: "session-stream-4" }, async () => {
-			const observations = await runObserver({
+			await expect(runObserver({
 				model: {} as any,
 				apiKey: "test",
 				priorSummaries: [],
@@ -115,8 +115,7 @@ describe("agent stream error logging", () => {
 				chunk: "[Source entry id: entry-a]\nSome content.",
 				allowedSourceEntryIds: ["entry-a"],
 				agentLoop: failingLoop,
-			});
-			expect(observations).toBeUndefined();
+			})).rejects.toThrow("upstream 400");
 		});
 
 		const events = readLoggedEvents("session-stream-4");

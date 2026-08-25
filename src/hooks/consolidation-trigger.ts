@@ -227,12 +227,27 @@ export async function runConsolidationPipeline(
 	runtime.consolidationPhase = "observer";
 	runtime.lastObserverStartedAt = Date.now();
 	try {
-		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
-			force: options.forceObserver === true,
-			entries: options.observerEntries,
-			contextGeneration,
-		});
-		if (observerOutcome === "abort") return;
+		// A large backlog is drained in bounded, oldest-first chunks. The normal
+		// trigger threshold controls when the batch stops; a static compaction
+		// snapshot is intentionally processed only once. Coverage must advance on
+		// every iteration, otherwise stop rather than spin on a failed chunk.
+		while (true) {
+			const beforeEntries = ctx.sessionManager.getBranch() as Entry[];
+			const beforeCoverage = latestCoverageIndex(beforeEntries, OM_OBSERVATIONS_RECORDED);
+			const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
+				force: options.forceObserver === true,
+				entries: options.observerEntries,
+				contextGeneration,
+			});
+			if (observerOutcome === "abort") return;
+			if (options.observerEntries) break;
+
+			const afterEntries = ctx.sessionManager.getBranch() as Entry[];
+			const afterCoverage = latestCoverageIndex(afterEntries, OM_OBSERVATIONS_RECORDED);
+			const remainingTokens = rawTokensSinceObservationCoverage(afterEntries);
+			if (afterCoverage <= beforeCoverage || remainingTokens < runtime.config.observeAfterTokens) break;
+			debugLog("observer.backlog_continue", { remainingTokens, afterCoverage });
+		}
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
@@ -465,15 +480,6 @@ async function runObserverStage(
 		debugLog("observer.stale", { reason: "session_or_branch_changed" });
 		return "abort";
 	}
-	if (!observations || observations.length === 0) {
-		debugLog("observer.empty", { coversUpToId });
-		if (ctx.hasUI) ctx.ui?.notify(
-			"pi-contemplator: observer returned no observations",
-			"warning",
-		);
-		return "continue";
-	}
-
 	const currentEntries = ctx.sessionManager.getBranch() as Entry[];
 	let effectiveCoversUpToId = coversUpToId;
 	if (!currentEntries.some((entry) => entry.id === coversUpToId)) {
@@ -488,17 +494,24 @@ async function runObserverStage(
 			compactionId: compaction?.id,
 		});
 	}
-	const data = buildObservationsRecordedData(observations, effectiveCoversUpToId);
+	const accepted = observations ?? [];
+	const data = buildObservationsRecordedData(accepted, effectiveCoversUpToId);
 	if (!data) return "continue";
-	debugLog("observer.records", {
-		count: observations.length,
-		observationTokens: observations.reduce((sum, observation) => sum + observation.tokenCount, 0),
+	debugLog(accepted.length > 0 ? "observer.records" : "observer.coverage_only", {
+		count: accepted.length,
+		observationTokens: accepted.reduce((sum, observation) => sum + observation.tokenCount, 0),
 		coversUpToId: effectiveCoversUpToId,
 	});
+	// A clean zero-observation verdict is still successful coverage. Persist an
+	// empty batch so the next bounded pass starts after this chunk instead of
+	// retrying the same low-information source forever. Failures throw above and
+	// therefore never reach this coverage commit.
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
-	debugLog("observer.appended", { count: observations.length, coversUpToId: effectiveCoversUpToId });
+	debugLog("observer.appended", { count: accepted.length, coversUpToId: effectiveCoversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`pi-contemplator: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
+		accepted.length > 0
+			? `pi-contemplator: ${accepted.length} observation${accepted.length === 1 ? "" : "s"} recorded`
+			: "pi-contemplator: observer found no new information; processed chunk marked covered",
 		"info",
 	);
 	return "continue";

@@ -125,11 +125,11 @@ export const OBSERVER_CHUNK_MIN_TOKENS = 256;
 /**
  * Fraction of the memory model's context window used for the derived observer
  * chunk cap. Chunk sizes are estimated at ~4 chars/token, which can undercount
- * real tokens by up to ~4x on non-ASCII content, so 0.2 keeps even the worst
- * case at ~80% of the window with room left for the system prompt, prior
- * memory, and the response.
+ * real tokens substantially on non-ASCII content. The estimator remains
+ * approximate; the remaining 75% of the advertised window accommodates injected memory, the
+ * system prompt, and model output.
  */
-export const OBSERVER_CHUNK_CONTEXT_RATIO = 0.2;
+export const OBSERVER_CHUNK_CONTEXT_RATIO = 0.25;
 
 /**
  * Resolve the maximum estimated tokens the observer serializes into one chunk.
@@ -143,7 +143,7 @@ export const OBSERVER_CHUNK_CONTEXT_RATIO = 0.2;
  * after repeated observer failures, or when the extension is enabled mid-way
  * into a long session) makes every observer call fail, so coverage never
  * advances and the session can never recover. With the cap, oversized backlogs
- * are drained oldest-first across successive runs.
+ * are drained oldest-first across successive bounded passes.
  */
 export function resolveObserverChunkMaxTokens(config: Config, contextWindow: number | undefined): number {
 	if (config.observerChunkMaxTokens !== undefined && config.observerChunkMaxTokens > 0) {

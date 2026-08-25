@@ -74,7 +74,7 @@ function isNonEmptyArray(value: unknown): value is unknown[] {
 function isValidCoverageEntry(entry: Entry, customType: MemoryCoverageCustomType): entry is Entry & { data: { coversUpToId: string } } {
 	if (entry.type !== "custom" || entry.customType !== customType) return false;
 	if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
-	if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);
+	if (customType === OM_OBSERVATIONS_RECORDED) return Array.isArray(entry.data.observations);
 	return customType === OM_SUMMARIZER_COMMIT && isNonEmptyArray(entry.data.summaries);
 }
 
