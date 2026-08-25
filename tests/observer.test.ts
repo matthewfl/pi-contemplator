@@ -178,6 +178,38 @@ describe("runObserver", () => {
 		expect(invocations).toBe(2);
 	});
 
+	it("continues a first output-length stop with its partial work and minimal reasoning", async () => {
+		let invocation = 0;
+		const prompts: string[] = [];
+		const reasonings: unknown[] = [];
+		const contextMessages: any[][] = [];
+		const loop = ((input: any[], context: any, config: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				invocation++;
+				prompts.push(input[0].content[0].text);
+				reasonings.push(config.reasoning);
+				contextMessages.push(context.messages);
+				if (invocation === 1) return [{ role: "assistant", content: [{ type: "text", text: "partial analysis" }], stopReason: "length" }];
+				await context.tools.find((tool: any) => tool.name === "record_observations").execute("record", {
+					observations: [{ timestamp: "2026-05-02 10:30", content: "Recovered after length", relevance: "medium", sourceEntryIds: ["entry-a"] }],
+				});
+				return [];
+			},
+		})) as any;
+
+		const result = await runObserver({ ...baseArgs, model: { reasoning: true } as any, thinkingLevel: "high", agentLoop: loop });
+
+		expect(result?.[0].content).toBe("Recovered after length");
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("previous response reached the provider output limit");
+		expect(prompts[1]).not.toContain("NEW CONVERSATION CHUNK");
+		expect(contextMessages[1]).toEqual(expect.arrayContaining([
+			expect.objectContaining({ role: "assistant", stopReason: "length" }),
+		]));
+		expect(reasonings).toEqual(["high", "minimal"]);
+	});
+
 	it("rejects a zero-observation output-limit stop instead of treating it as clean coverage", async () => {
 		const loop = (() => ({
 			async *[Symbol.asyncIterator]() {
@@ -185,7 +217,10 @@ describe("runObserver", () => {
 			},
 			result: async () => [],
 		})) as any;
-		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({ stopReason: "length" });
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+			stopReason: "length",
+			message: expect.stringContaining("reached the output limit twice"),
+		});
 	});
 
 	it("uses the expanded observer output allowance when the model supports it", async () => {

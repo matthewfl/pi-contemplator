@@ -5,11 +5,15 @@ const MARKER = "E2E_HUGE_MEMORY_EDGE";
 const COLLISION_CONTENT = "E2E deterministic duplicate observation collision";
 const started = Date.now();
 const log = (text) => console.log(`[memory-edges-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observerInitials: 0, emptyProseAttempted: false, reminderDoneSeen: false, lengthAttempted: false, invalidAttempted: false, sawOmission: false, maxObserverText: 0, maxObserverChunkText: 0, recallCollision: false };
+const state = { main: 0, observerInitials: 0, emptyProseAttempted: false, reminderDoneSeen: false, lengthAttempted: false, lengthRetrySeen: false, invalidAttempted: false, sawOmission: false, maxObserverText: 0, maxObserverChunkText: 0, recallCollision: false };
 
 const server = new ModelServer(async (request, res) => {
 	const toolMessages = (request.body.messages ?? []).filter((message) => message.role === "tool");
 	if (request.role === "observer") {
+		if (/previous response reached the provider output limit/i.test(request.text)) {
+			state.lengthRetrySeen = true;
+			return sendSse(res, { text: "still unproductive observer reasoning", finishReason: "length", outputTokens: 128_000 });
+		}
 		if (/Observations recorded so far:\s*0|call done now/i.test(request.text)) {
 			assert(state.emptyProseAttempted, "Observer reminder arrived before the deliberate prose-only stop");
 			assert(request.body.tool_choice !== "required", "Observer reminder retry unexpectedly required a tool call");
@@ -96,7 +100,7 @@ try {
 	assert(state.reminderDoneSeen, "Observer prose-only stop was not retried with a count reminder and explicit done");
 	const emptyCoverage = observationEntries.filter((entry) => Array.isArray(entry.data?.observations) && entry.data.observations.length === 0 && entry.data?.coversUpToId);
 	assert(emptyCoverage.length >= 2, `Expected clean-done and failed-length coverage markers, got ${emptyCoverage.length}`);
-	assert(state.lengthAttempted, "Observer output-length failure scenario was not exercised");
+	assert(state.lengthAttempted && state.lengthRetrySeen, "Observer output-length retry/fail-forward scenario was not fully exercised");
 	assert(!observations.some((observation) => observation.content === "MUST_NOT_PERSIST_INVALID"), "Observer persisted a record with an unknown source id");
 	assert(new Set(observations.filter((observation) => observation.content === COLLISION_CONTENT).map((observation) => observation.id)).size === 1, "Deterministic duplicate content did not create the intended id collision");
 	assert(state.sawOmission || state.maxObserverChunkText < 5_000, `Huge source chunk was not bounded (${state.maxObserverChunkText} chars; full request ${state.maxObserverText} chars)`);

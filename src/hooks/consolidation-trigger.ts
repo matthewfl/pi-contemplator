@@ -5,6 +5,7 @@ import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
 import { createWorkerStallWatchdog } from "../worker-watchdog.js";
+import { boundedMaxTokens, OBSERVER_AGENT_LOOP_MAX_TOKENS } from "../model-budget.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_SUMMARIZER_COMMIT,
@@ -466,6 +467,9 @@ async function runObserverStage(
 	debugLog("observer.start", {
 		tokens,
 		chunkTokens,
+		requestedMaxOutputTokens: OBSERVER_AGENT_LOOP_MAX_TOKENS,
+		effectiveMaxOutputTokens: boundedMaxTokens(resolved.model as any, OBSERVER_AGENT_LOOP_MAX_TOKENS),
+		advertisedModelMaxTokens: (resolved.model as { maxTokens?: number }).maxTokens,
 		coversUpToId,
 		sourceEntryIds,
 		sourceEntryCount: sourceEntryIds.length,

@@ -216,13 +216,17 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 	const loop = args.agentLoop ?? agentLoop;
 	const history: AgentMessage[] = [];
 	let terminalFailure: { stopReason: string; errorMessage?: string } | undefined;
-	const runInvocation = async (prompt: Message): Promise<void> => {
+	let lengthRetryAttempted = false;
+	const runInvocation = async (prompt: Message, afterLength = false): Promise<void> => {
 		const context: AgentContext = {
 			systemPrompt: OBSERVER_SYSTEM,
 			messages: history.slice(),
 			tools: [recordObservations as AgentTool<any>, doneTool],
 		};
-		const stream = loop([prompt], context, baseConfig, signal, streamSimple);
+		const invocationConfig: AgentLoopConfig = afterLength && reasoning
+			? { ...baseConfig, reasoning: "minimal" }
+			: baseConfig;
+		const stream = loop([prompt], context, invocationConfig, signal, streamSimple);
 		for await (const event of stream) {
 			args.onProgress?.();
 			logAgentStreamError("observer", event);
@@ -243,6 +247,23 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 	};
 
 	await runInvocation(initialPrompt);
+	if (accumulated.size === 0 && terminalFailure?.stopReason === "length") {
+		lengthRetryAttempted = true;
+		// A provider can impose a lower output ceiling than the advertised model
+		// maximum. agentLoop stops on `length` when no tool call was completed; it
+		// does not automatically send a continuation request. Preserve the partial
+		// response so the model can continue from work it already performed rather
+		// than paying to reproduce it, then append a short tool-focused instruction
+		// and reduce reasoning to minimal. A second length stop fails forward at the
+		// bounded-chunk level.
+		terminalFailure = undefined;
+		const retryPrompt: Message = {
+			role: "user",
+			content: [{ type: "text", text: "IMPORTANT: The previous response reached the provider output limit before recording anything. Continue from the work already above and call record_observations now instead of spending another response budget analyzing." }],
+			timestamp: Date.now(),
+		};
+		await runInvocation(retryPrompt, true);
+	}
 	if (accumulated.size === 0 && !doneCalled && !terminalFailure && rejectedTotal === 0) {
 		const reminder: Message = {
 			role: "user",
@@ -257,7 +278,10 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 	// zero-observation stop is also a valid empty result after the reminder;
 	// actual stream failures, truncation, and malformed records still throw.
 	if (accumulated.size === 0 && terminalFailure) {
-		throw new ObserverStreamError(terminalFailure.stopReason, terminalFailure.errorMessage);
+		const detail = terminalFailure.stopReason === "length" && lengthRetryAttempted
+			? `provider reached the output limit twice without recording an observation (effective max output request: ${baseConfig.maxTokens} tokens)`
+			: terminalFailure.errorMessage;
+		throw new ObserverStreamError(terminalFailure.stopReason, detail);
 	}
 	if (accumulated.size === 0 && rejectedTotal > 0) {
 		throw new ObserverStreamError("invalid_observations", `${rejectedTotal} proposed observation${rejectedTotal === 1 ? " was" : "s were"} rejected`);
