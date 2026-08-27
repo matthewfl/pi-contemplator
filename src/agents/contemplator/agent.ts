@@ -229,9 +229,11 @@ export class Contemplator {
 	private deliveredProbeIds = new Set<string>();
 	/** Probe ids passed to pi.sendMessage by this live extension runtime. */
 	private queuedProbeIds = new Set<string>();
+	/** Probes whose provider-context delivery will establish the next response-spacing anchor. */
+	private probeCooldownPendingIds = new Set<string>();
 	private sessionGeneration = 0;
 	private latestCtx: MemoryUpdateCtx | undefined;
-	/** Completed primary-model responses since the previous contemplator run. */
+	/** Completed primary-model responses since the current completion/probe-delivery spacing anchor. */
 	private turnsSinceRun = 0;
 	/** Used to avoid counting the final turn_end after its assistant message_end. */
 	private assistantResponsesInCurrentTurn = 0;
@@ -311,6 +313,7 @@ export class Contemplator {
 			this.reviewerSessions.clear();
 			this.deliveredProbeIds.clear();
 			this.queuedProbeIds.clear();
+			this.probeCooldownPendingIds.clear();
 			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
 			this.assistantResponsesInCurrentTurn = 0;
@@ -359,9 +362,12 @@ export class Contemplator {
 		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const deliveredMessages = event.messages?.filter((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string") ?? [];
+			let cooldownAnchored = false;
 			for (const delivered of deliveredMessages) {
 				if (this.deliveredProbeIds.has(delivered.details.probeId)) continue;
 				this.deliveredProbeIds.add(delivered.details.probeId);
+				this.probeCooldownPendingIds.delete(delivered.details.probeId);
+				cooldownAnchored = true;
 				// Once Pi includes the probe in a provider context it is no longer in
 				// either in-memory delivery queue. Keeping this id indefinitely caused
 				// later tree restores to suppress a genuinely needed requeue.
@@ -374,6 +380,12 @@ export class Contemplator {
 				});
 				this.markTipPersisted(ctx);
 				debugLog("contemplator.suggestion_delivered", { probeId: delivered.details.probeId });
+			}
+			if (cooldownAnchored) {
+				// Probe spacing begins only once Pi proves the probe reached an actual
+				// provider context. Responses generated before this point do not count.
+				this.turnsSinceRun = 0;
+				this.withDebugContext(ctx, () => this.observeTurn(ctx));
 			}
 		});
 		this.pi.on("turn_end", (_event: any, ctx: ExtensionContext) => {
@@ -437,6 +449,7 @@ export class Contemplator {
 		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
+			this.probeCooldownPendingIds.clear();
 			if (!retainQueuedIds) this.queuedProbeIds.clear();
 			this.inFlightReviewIds.clear();
 			this.resolvingReviewIds.clear();
@@ -545,6 +558,9 @@ export class Contemplator {
 		}
 		this.restoredTipId = tipId;
 		for (const [probeId, question] of undeliveredSuggestions) {
+			// An undelivered durable probe remains the cooldown anchor even when Pi's
+			// live queue survived an extension reload and must not be duplicated.
+			this.probeCooldownPendingIds.add(probeId);
 			// A durable custom_message proves only that Pi inserted the probe at some
 			// point; it does not prove an in-memory queue still owns it, and compaction
 			// may have removed it from active model context. Suppress requeue only for
@@ -620,7 +636,7 @@ export class Contemplator {
 			};
 		}
 		if (!this.pending) {
-			this.publishState(this.running ? "running" : "idle");
+			this.publishState(this.running ? "running" : this.probeCooldownPendingIds.size > 0 ? "probe" : "idle");
 			return;
 		}
 		// Activity values are cumulative send-time snapshots, not values frozen when
@@ -630,6 +646,11 @@ export class Contemplator {
 		this.pending.mainAgentToolCalls = assistantToolCallCount(branchEntries);
 		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
 		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries;
+		if (this.probeCooldownPendingIds.size > 0) {
+			this.publishState("probe");
+			debugLog("contemplator.waiting", { reason: "probe_delivery", pendingProbeCount: this.probeCooldownPendingIds.size });
+			return;
+		}
 		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
 			this.publishState(!enoughMemories ? "memories" : "responses");
 			debugLog("contemplator.waiting", {
@@ -676,6 +697,7 @@ export class Contemplator {
 		let failureMessage: string | undefined;
 		let workerNotified = false;
 		let promptPersisted = false;
+		let emittedProbeId: string | undefined;
 		let workerWatchdog: ReturnType<typeof createWorkerStallWatchdog> | undefined;
 		this.publishState("running", { lastStartedAt: startedAt, lastError: undefined });
 		debugLog("contemplator.start", {
@@ -863,7 +885,7 @@ export class Contemplator {
 					this.markTipPersisted(ctx);
 				}
 			}
-			if (intervention?.kind === "probe" && sessionGeneration === this.sessionGeneration) this.queueProbe(ctx, intervention.question, "send_probe");
+			if (intervention?.kind === "probe" && sessionGeneration === this.sessionGeneration) emittedProbeId = this.queueProbe(ctx, intervention.question, "send_probe");
 			if (intervention?.kind === "review" && this.runtime.config.reviewerEnabled && sessionGeneration === this.sessionGeneration) {
 				const reviewerModel = await this.runtime.resolveModel({
 					model: ctx.model,
@@ -917,13 +939,21 @@ export class Contemplator {
 			if (flushEpoch !== this.flushEpoch) return;
 			this.running = false;
 			if (!failed) this.consecutiveFlushFailures = 0;
+			// Normal runs establish their spacing anchor at completion. A probe run
+			// instead anchors at provider-context delivery: if delivery already occurred
+			// during this run, retain responses counted since it; otherwise the pending
+			// probe gate blocks launches until the context event resets the counter.
+			if (emittedProbeId === undefined) this.turnsSinceRun = 0;
+			const waitingForProbe = this.probeCooldownPendingIds.size > 0;
 			const pendingHasEnoughMemories = this.pending !== undefined && (
 				this.pending.reviews.length > 0 ||
 				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations ||
 				this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries
 			);
-			const waitingFor = !this.pending
-				? "idle"
+			const waitingFor = waitingForProbe
+				? "probe"
+				: !this.pending
+					? "idle"
 				: !pendingHasEnoughMemories
 					? "memories"
 					: this.turnsSinceRun < this.runtime.config.contemplatorMinTurns
@@ -948,7 +978,7 @@ export class Contemplator {
 		}
 	}
 
-	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore", existingProbeId?: string): void {
+	private queueProbe(ctx: MemoryUpdateCtx, question: string, source: "send_probe" | "restore", existingProbeId?: string): string {
 		const probeId = existingProbeId ?? `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 		// Persist intent before touching Pi's in-memory queue. A crash in between
 		// leaves a recoverable pending probe rather than an invisible lost one.
@@ -967,6 +997,7 @@ export class Contemplator {
 		// unrelated observer update or compaction callback cannot restore and enqueue
 		// a duplicate while the original idle steer is still pending.
 		this.queuedProbeIds.add(probeId);
+		this.probeCooldownPendingIds.add(probeId);
 		this.pi.sendMessage({
 			customType: CONTEMPLATOR_SUGGESTION,
 			content: `Background contemplator probe (advisory):\n${question}\n\nReferenced memories can be reviewed using the recall tool.`,
@@ -981,6 +1012,7 @@ export class Contemplator {
 			triggerTurn: "omitted",
 			source,
 		});
+		return probeId;
 	}
 
 	private queueStructuralReview(options: QueueStructuralReviewOptions): void {

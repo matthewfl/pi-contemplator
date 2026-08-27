@@ -35,6 +35,11 @@ function selectNoIntervention(context: { tools?: Array<{ name: string; execute: 
 	if (tool) void tool.execute("test-no-intervention", {});
 }
 
+function selectProbe(context: { tools?: Array<{ name: string; execute: (id: string, args: any) => Promise<unknown> }> }, question = "Check the current approach?"): void {
+	const tool = context.tools?.find((candidate) => candidate.name === "send_probe");
+	if (tool) void tool.execute("test-send-probe", { question });
+}
+
 function setup(initialEntries: TestEntry[] = []) {
 	let entries = [...initialEntries];
 	const handlers: Record<string, Array<(event: any, ctx: any) => void>> = {};
@@ -567,6 +572,100 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.runtime.contemplatorState.lastStartedAt).toEqual(expect.any(Number));
 		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
 		expect(harness.runtime.contemplatorState.responsesSinceRun).toBe(0);
+	});
+
+	it("measures response spacing from contemplator completion rather than start", async () => {
+		const gate = deferred();
+		agentMocks.agentLoop
+			.mockImplementationOnce((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream(gate.promise);
+			})
+			.mockImplementation((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
+		const rawA = textCustomMessage("raw-finish-a", "first work");
+		const obsA = observationsRecordedEntry("obs-finish-a", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-finish-a"] })],
+			coversUpToId: "raw-finish-a",
+		});
+		const harness = setup([]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+		harness.fire("session_start");
+		harness.setEntries([rawA, obsA]);
+		harness.fire("message_end", { message: { role: "assistant" } });
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+
+		const rawB = textCustomMessage("raw-finish-b", "work arriving during contemplation");
+		const obsB = observationsRecordedEntry("obs-finish-b", {
+			observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-finish-b"] })],
+			coversUpToId: "raw-finish-b",
+		});
+		harness.setEntries([...harness.getEntries(), rawB, obsB]);
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+		// These responses occur during the first contemplator run and must not
+		// pre-pay the spacing requirement for its successor.
+		for (let i = 0; i < 3; i++) harness.fire("message_end", { message: { role: "assistant" } });
+		gate.resolve();
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		expect(harness.runtime.contemplatorState).toMatchObject({ responsesSinceRun: 0, waitingFor: "responses", pendingObservations: 1 });
+		harness.fire("message_end", { message: { role: "assistant" } });
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+	});
+
+	it("anchors probe spacing at provider-context delivery and waits safely while queued", async () => {
+		agentMocks.agentLoop
+			.mockImplementationOnce((_prompts, context) => {
+				selectProbe(context);
+				return stream();
+			})
+			.mockImplementation((_prompts, context) => {
+				selectNoIntervention(context);
+				return stream();
+			});
+		const rawA = textCustomMessage("raw-probe-a", "first work");
+		const obsA = observationsRecordedEntry("obs-probe-a", {
+			observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-probe-a"] })],
+			coversUpToId: "raw-probe-a",
+		});
+		const harness = setup([]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMinTurns: 2 };
+		harness.fire("session_start");
+		harness.setEntries([rawA, obsA]);
+		harness.fire("message_end", { message: { role: "assistant" } });
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(harness.pi.sendMessage).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+
+		const rawB = textCustomMessage("raw-probe-b", "work after the probe was queued");
+		const obsB = observationsRecordedEntry("obs-probe-b", {
+			observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-probe-b"] })],
+			coversUpToId: "raw-probe-b",
+		});
+		harness.setEntries([...harness.getEntries(), rawB, obsB]);
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+		for (let i = 0; i < 3; i++) harness.fire("message_end", { message: { role: "assistant" } });
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("probe");
+
+		const queued = harness.pi.sendMessage.mock.calls[0][0];
+		const delivered = { role: "custom", ...queued };
+		// Insertion into the conversation stream alone is not delivery to the model.
+		harness.fire("message_end", { message: delivered });
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("probe");
+		harness.fire("context", { messages: [delivered] });
+		expect(harness.runtime.contemplatorState).toMatchObject({ responsesSinceRun: 0, waitingFor: "responses" });
+
+		harness.fire("message_end", { message: { role: "assistant" } });
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
 	});
 
 	it("does not double-count turn_end after an assistant response", () => {

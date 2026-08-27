@@ -65,6 +65,8 @@ function liveStateLine(state: ContemplatorRunState): string {
 	if (state.running) return `LIVE · running for ${Math.max(0, Math.floor((Date.now() - (state.lastStartedAt ?? Date.now())) / 60_000))}m · ${pending}\n${timing}${error}`;
 	const reason = state.waitingFor === "observer"
 		? "waiting for observer backlog"
+		: state.waitingFor === "probe"
+			? "waiting for queued probe delivery"
 		: state.waitingFor === "memories"
 			? "waiting for memory threshold"
 			: state.waitingFor === "responses"
@@ -76,7 +78,7 @@ function liveStateLine(state: ContemplatorRunState): string {
 					: state.waitingFor === "passive"
 						? "passive mode"
 						: "idle";
-	return `LIVE · ${reason} · ${pending} · ${state.responsesSinceRun} primary responses since last run\n${timing}${error}`;
+	return `LIVE · ${reason} · ${pending} · ${state.responsesSinceRun} primary responses since cooldown anchor\n${timing}${error}`;
 }
 
 export function renderContemplator(entries: Entry[], state?: ContemplatorRunState): string {

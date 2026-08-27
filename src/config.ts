@@ -61,7 +61,7 @@ export interface Config {
 	reviewerModel?: ConfiguredModel;
 	contemplatorMinNewObservations: number;
 	contemplatorMinNewSummaries: number;
-	/** Minimum completed primary-model responses between contemplator runs. */
+	/** Minimum primary-model responses after contemplator completion, or after delivery of its probe, before the next run. */
 	contemplatorMinTurns: number;
 	/** Stateless loss-aware summarizer for the old memory pool. */
 	summarizerEnabled: boolean;

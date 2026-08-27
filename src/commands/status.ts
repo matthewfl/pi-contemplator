@@ -43,6 +43,7 @@ function formatRunAge(timestamp: number): string {
 function contemplatorWaitingLabel(waitingFor: Runtime["contemplatorState"]["waitingFor"]): string {
 	switch (waitingFor) {
 		case "observer": return "waiting for observer backlog";
+		case "probe": return "waiting for queued probe delivery";
 		case "memories": return "waiting for memory threshold";
 		case "responses": return "waiting for response spacing";
 		case "ready": return "ready to launch";

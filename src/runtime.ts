@@ -82,9 +82,9 @@ export interface ContemplatorRunState {
 	pendingObservations: number;
 	pendingSummaries: number;
 	pendingReviews: number;
-	/** Completed primary-model responses since the previous contemplator run. */
+	/** Completed primary-model responses since the current completion/probe-delivery spacing anchor. */
 	responsesSinceRun: number;
-	waitingFor: "disabled" | "passive" | "observer" | "memories" | "responses" | "ready" | "running" | "idle";
+	waitingFor: "disabled" | "passive" | "observer" | "probe" | "memories" | "responses" | "ready" | "running" | "idle";
 	lastStartedAt?: number;
 	lastCompletedAt?: number;
 	lastError?: string;
