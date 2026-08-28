@@ -18,6 +18,7 @@ import {
 	observationToSummaryLine,
 	partitionMemoryPools,
 	rawTokensSinceObservationCoverage,
+	rawTokensSinceObservationCoverageThrough,
 	summaryToSummaryLine,
 	type Entry,
 } from "../session-ledger/index.js";
@@ -51,8 +52,12 @@ export function createSummarizerStallWatchdog(
 	return watchdog;
 }
 
-function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
-	return entries.slice(index + 1).filter(isSourceEntry);
+function sourceEntriesAfter(entries: Entry[], index: number, throughEntryId?: string): Entry[] {
+	const throughIndex = throughEntryId === undefined
+		? entries.length - 1
+		: entries.findIndex((entry) => entry.id === throughEntryId);
+	if (throughIndex < 0 || throughIndex <= index) return [];
+	return entries.slice(index + 1, throughIndex + 1).filter(isSourceEntry);
 }
 
 function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void {
@@ -161,6 +166,7 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	};
 
 	const sessionMetadata = debugSessionMetadata(ctx);
+	const launchGeneration = runtime.getContextGeneration();
 	const task = runtime.launchConsolidationTask(ctx, async () => withDebugLogContext({
 		enabled: runtime.config.debugLog === true,
 		cwd: ctx.cwd,
@@ -174,7 +180,15 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	// degraded mode rather than leaving all advisory work gated forever. Future
 	// primary activity still retries the observer.
 	void task.then(() => {
-		if (runtime.lastObserverError) runtime.notifyMemoryUpdate(ctx);
+		if (launchGeneration !== runtime.getContextGeneration()) return;
+		if (runtime.lastObserverError) {
+			runtime.notifyMemoryUpdate(ctx);
+			return;
+		}
+		// Source appended while the finite catch-up snapshot was running belongs
+		// to a later snapshot. Recheck after the lock is released; the completed
+		// pipeline has already given the contemplator its memory-update opportunity.
+		maybeLaunchConsolidation(pi, runtime, ctx);
 	});
 }
 
@@ -225,19 +239,25 @@ export async function runConsolidationPipeline(
 	const resolveModel = makeModelResolver(runtime, ctx);
 	const contextGeneration = runtime.getContextGeneration();
 
+	const pipelineEntries = options.observerEntries ?? (ctx.sessionManager.getBranch() as Entry[]);
+	const initialCoverage = latestCoverageIndex(pipelineEntries, OM_OBSERVATIONS_RECORDED);
+	const catchUpThroughId = sourceEntriesAfter(pipelineEntries, initialCoverage).at(-1)?.id;
 	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
+	runtime.observerBacklogBlocking = catchUpThroughId !== undefined;
 	try {
-		// A large backlog is drained in bounded, oldest-first chunks. The normal
-		// trigger threshold controls when the batch stops; a static compaction
-		// snapshot is intentionally processed only once. Coverage must advance on
-		// every iteration, otherwise stop rather than spin on a failed chunk.
+		// Drain only the finite source snapshot captured at pipeline launch, using
+		// bounded oldest-first chunks. Concurrent source belongs to a later pipeline,
+		// so a fast primary agent cannot indefinitely extend this blocking backlog.
+		// A static compaction snapshot is intentionally processed only once. Coverage
+		// must advance on every iteration, otherwise stop rather than spin.
 		while (true) {
 			const beforeEntries = ctx.sessionManager.getBranch() as Entry[];
 			const beforeCoverage = latestCoverageIndex(beforeEntries, OM_OBSERVATIONS_RECORDED);
 			const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
 				force: options.forceObserver === true,
 				entries: options.observerEntries,
+				throughSourceEntryId: options.observerEntries ? undefined : catchUpThroughId,
 				contextGeneration,
 			});
 			if (observerOutcome === "abort") return;
@@ -245,13 +265,19 @@ export async function runConsolidationPipeline(
 
 			const afterEntries = ctx.sessionManager.getBranch() as Entry[];
 			const afterCoverage = latestCoverageIndex(afterEntries, OM_OBSERVATIONS_RECORDED);
-			const remainingTokens = rawTokensSinceObservationCoverage(afterEntries);
+			const remainingTokens = catchUpThroughId === undefined
+				? 0
+				: rawTokensSinceObservationCoverageThrough(afterEntries, catchUpThroughId);
 			if (afterCoverage <= beforeCoverage || remainingTokens < runtime.config.observeAfterTokens) break;
 			debugLog("observer.backlog_continue", { remainingTokens, afterCoverage });
 		}
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
+	} finally {
+		// New source appended after catchUpThroughId was never part of this
+		// pipeline's blocking backlog. Clear before notifying the contemplator.
+		if (contextGeneration === runtime.getContextGeneration()) runtime.observerBacklogBlocking = false;
 	}
 	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
@@ -408,10 +434,12 @@ async function runObserverStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
-	options: { force?: boolean; entries?: Entry[]; contextGeneration?: number } = {},
+	options: { force?: boolean; entries?: Entry[]; throughSourceEntryId?: string; contextGeneration?: number } = {},
 ): Promise<StageOutcome> {
 	const entries = options.entries ?? (ctx.sessionManager.getBranch() as Entry[]);
-	const tokens = rawTokensSinceObservationCoverage(entries);
+	const tokens = options.throughSourceEntryId === undefined
+		? rawTokensSinceObservationCoverage(entries)
+		: rawTokensSinceObservationCoverageThrough(entries, options.throughSourceEntryId);
 	if (!options.force && tokens < runtime.config.observeAfterTokens) return "continue";
 
 	// Resolve the model before building the chunk: the default chunk cap
@@ -424,7 +452,7 @@ async function runObserverStage(
 	}
 
 	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
-	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx);
+	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx, options.throughSourceEntryId);
 
 	// Budget the text that is actually sent to the observer, including source
 	// labels and rendered message content. Complete entries are kept intact.

@@ -182,6 +182,8 @@ export class Runtime {
 	private settingsUpdateListener: ((ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void) | undefined;
 	private contextGeneration = 0;
 	consolidationPhase: ConsolidationPhase | undefined;
+	/** True only while the observer is draining the finite source snapshot captured at pipeline start. */
+	observerBacklogBlocking = false;
 	compactInFlight = false;
 	compactRequested = false;
 	/** Agent-authored instructions to deliver after an explicit compact_context request. */
@@ -274,6 +276,7 @@ export class Runtime {
 		this.consolidationInFlight = false;
 		this.consolidationPromise = null;
 		this.consolidationPhase = undefined;
+		this.observerBacklogBlocking = false;
 		this.summarizerInFlight = false;
 		this.summarizerPromise = null;
 		this.reviewInFlight = false;

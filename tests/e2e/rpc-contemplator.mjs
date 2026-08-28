@@ -593,8 +593,17 @@ async function run() {
 			if (scenario === "SCENARIO_FEEDBACK") {
 				await waitFor(() => server.feedbackObserverSawProbeAndResponse, "observer request containing both the delivered probe and its primary-agent response", 30_000);
 				progress(`${scenario}: observer received the delivered probe and primary-agent response together`);
+				await waitFor(async () => (await rpc.entries()).some((entry) =>
+					entry.customType === "om.observations.recorded" && JSON.stringify(entry.data).includes(PROBE_FEEDBACK_OBSERVATION)
+				), "persisted probe-response observation", 30_000);
+				// A finite observer snapshot can legitimately let contemplation run on the
+				// delivered probe before source produced concurrently (the response) is
+				// observed. The response observation then obeys the response-spaced minimum:
+				// drive one real subsequent turn and verify it reaches contemplation.
+				await rpc.command({ type: "prompt", message: `${scenario}: continue after the observer feedback checkpoint.` });
+				await rpc.waitSettled(eventStart);
 				await waitFor(() => server.feedbackObservationReachedContemplator, "probe-response observation delivered back to contemplator", 30_000);
-				progress(`${scenario}: resulting observation reached a subsequent contemplator update`);
+				progress(`${scenario}: resulting observation reached a subsequent contemplator update after one response-spaced turn`);
 			}
 			// agent_settled covers the primary run, not fire-and-forget memory workers.
 			// Do not begin the next scenario while a prior consolidation still owns

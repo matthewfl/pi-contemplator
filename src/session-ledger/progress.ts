@@ -138,6 +138,23 @@ export function rawTokensSinceObservationCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_RECORDED);
 }
 
+/**
+ * Sum uncovered observer source only through a fixed branch entry. Source
+ * appended after that boundary is intentionally excluded so one catch-up pass
+ * has a finite backlog even while the primary agent keeps producing output.
+ */
+export function rawTokensSinceObservationCoverageThrough(entries: Entry[], throughEntryId: string): number {
+	const throughIndex = entryIndexForId(entries, throughEntryId);
+	if (throughIndex < 0) return 0;
+	const coverageIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	if (coverageIndex >= throughIndex) return 0;
+	let total = 0;
+	for (let i = Math.max(0, coverageIndex + 1); i <= throughIndex; i++) {
+		if (isSourceEntry(entries[i])) total += estimateEntryTokens(entries[i]);
+	}
+	return total;
+}
+
 export function findLastCompactionIndex(entries: Entry[]): number {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		if (entries[i].type === "compaction") return i;

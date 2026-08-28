@@ -204,6 +204,7 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		runtime.compactInFlight = true;
 		runtime.compactRequested = true;
+		runtime.observerBacklogBlocking = true;
 		runtime.compactOrigin = "agent-requested";
 		runtime.lastObserverStartedAt = 1;
 		runtime.lastObserverCompletedAt = 2;
@@ -215,6 +216,7 @@ describe("Runtime V3 behavior", () => {
 
 		expect(runtime.compactInFlight).toBe(false);
 		expect(runtime.compactRequested).toBe(false);
+		expect(runtime.observerBacklogBlocking).toBe(false);
 		expect(runtime.compactOrigin).toBeUndefined();
 		expect(runtime.lastObserverStartedAt).toBeUndefined();
 		expect(runtime.lastObserverCompletedAt).toBeUndefined();

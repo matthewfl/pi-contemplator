@@ -586,18 +586,21 @@ export class Contemplator {
 		}
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 		const observerBacklogTokens = rawTokensSinceObservationCoverage(branchEntries);
-		if (
+		const waitingForCapturedObserverBacklog = this.runtime.observerBacklogBlocking || (
+			!this.runtime.consolidationInFlight &&
 			observerBacklogTokens >= this.runtime.config.observeAfterTokens &&
-			(this.runtime.consolidationInFlight || this.runtime.lastObserverError === undefined)
-		) {
+			this.runtime.lastObserverError === undefined
+		);
+		if (waitingForCapturedObserverBacklog) {
 			// A catch-up observer pipeline may append several partial batches while it
-			// drains old source. Do not let primary-agent checkpoints feed those
-			// fragments to the contemplator one at a time. The pipeline emits one
-			// memory update after the backlog falls below the observer trigger.
+			// drains the finite source snapshot captured at launch. Do not feed those
+			// fragments to the contemplator one at a time. Source appended concurrently
+			// belongs to the next snapshot and must not extend this waiting period.
 			this.publishState("observer");
 			debugLog("contemplator.waiting", {
 				reason: "observer_backlog",
 				observerBacklogTokens,
+				observerBacklogBlocking: this.runtime.observerBacklogBlocking,
 				observeAfterTokens: this.runtime.config.observeAfterTokens,
 			});
 			return;

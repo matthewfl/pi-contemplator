@@ -51,7 +51,7 @@ function setup() {
 		modelRegistry: {},
 		sessionManager: { getBranch: () => entries, getSessionId: () => "observer-drain-test" },
 	};
-	return { pi, runtime, ctx, getEntries: () => entries };
+	return { pi, runtime, ctx, getEntries: () => entries, setEntries: (next: Entry[]) => { entries = next; } };
 }
 
 describe("observer backlog draining", () => {
@@ -79,6 +79,72 @@ describe("observer backlog draining", () => {
 		expect(runtime.lastObserverRun).toBeUndefined();
 		expect(runtime.consolidationInFlight).toBe(false);
 		expect(runtime.lastObserverError).toContain("no model available");
+	});
+
+	it("gives contemplation a checkpoint before automatically draining concurrently produced source", async () => {
+		let entries = [
+			textCustomMessage("raw-1", "a".repeat(4_000)),
+			textCustomMessage("raw-2", "b".repeat(4_000)),
+			textCustomMessage("raw-3", "c".repeat(4_000)),
+		] as Entry[];
+		let appended = 0;
+		const pi = {
+			on: vi.fn(),
+			appendEntry: vi.fn((customType: string, data: unknown) => {
+				entries = [...entries, {
+					type: "custom", customType, data, id: `coverage-live-${++appended}`,
+					parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(),
+				} as Entry];
+			}),
+		};
+		const runtime = new Runtime();
+		runtime.configLoaded = true;
+		runtime.config = {
+			...runtime.config,
+			observeAfterTokens: 1,
+			observerChunkMaxTokens: 70,
+			passive: false,
+			summarizerEnabled: false,
+			showWorkerNotifications: false,
+		};
+		vi.spyOn(runtime, "resolveModel").mockResolvedValue({
+			ok: true,
+			model: { api: "openai-completions", contextWindow: 256_000, maxTokens: 32_000 } as any,
+			apiKey: "test",
+		});
+		const ctx = {
+			cwd: "/tmp/project", hasUI: false, model: {}, modelRegistry: {},
+			sessionManager: { getBranch: () => entries, getSessionId: () => "live-producer" },
+		};
+		const checkpoints: Array<{ backlog: number; blocking: boolean; inFlight: boolean }> = [];
+		runtime.setMemoryUpdateListener(() => checkpoints.push({
+			backlog: rawTokensSinceObservationCoverage(entries),
+			blocking: runtime.observerBacklogBlocking,
+			inFlight: runtime.consolidationInFlight,
+		}));
+		registerConsolidationTrigger(pi as any, runtime);
+
+		let concurrentAdded = false;
+		observerMocks.runObserver.mockImplementation(async () => {
+			if (!concurrentAdded) {
+				concurrentAdded = true;
+				entries = [...entries, textCustomMessage("raw-concurrent", "z".repeat(8_000)) as Entry];
+			}
+			return undefined;
+		});
+
+		runtime.notifyAgentActivity(ctx as any);
+		await vi.waitFor(() => {
+			expect(observerMocks.runObserver).toHaveBeenCalledTimes(4);
+			expect(runtime.consolidationInFlight).toBe(false);
+		});
+
+		expect(checkpoints).toHaveLength(2);
+		// The first finite snapshot releases the contemplator while source produced
+		// during it is still uncovered. Only afterward is that source observed.
+		expect(checkpoints[0]).toMatchObject({ blocking: false, inFlight: true });
+		expect(checkpoints[0].backlog).toBeGreaterThan(runtime.config.observeAfterTokens);
+		expect(checkpoints[1]).toEqual({ backlog: 0, blocking: false, inFlight: true });
 	});
 
 	it("walks oldest-first through bounded clean-empty chunks until the backlog is clear", async () => {
@@ -124,6 +190,29 @@ describe("observer backlog draining", () => {
 		]);
 		expect(rawTokensSinceObservationCoverage(getEntries())).toBe(0);
 		expect(pi.appendEntry).toHaveBeenCalledTimes(3);
+		expect(runtime.notifyMemoryUpdate).toHaveBeenCalledTimes(1);
+	});
+
+	it("defers source appended during catch-up to a later finite backlog snapshot", async () => {
+		const { pi, runtime, ctx, getEntries, setEntries } = setup();
+		let appendedConcurrentSource = false;
+		observerMocks.runObserver.mockImplementation(async () => {
+			if (!appendedConcurrentSource) {
+				appendedConcurrentSource = true;
+				const current = getEntries();
+				setEntries([...current, textCustomMessage("raw-concurrent", "z".repeat(8_000)) as Entry]);
+			}
+			return undefined;
+		});
+
+		await runConsolidationPipeline(pi as any, runtime as any, ctx as any);
+
+		expect(observerMocks.runObserver).toHaveBeenCalledTimes(3);
+		expect(observerMocks.runObserver.mock.calls.flatMap((call) => call[0]?.allowedSourceEntryIds ?? [])).toEqual([
+			"raw-1", "raw-2", "raw-3",
+		]);
+		expect(rawTokensSinceObservationCoverage(getEntries())).toBeGreaterThan(runtime.config.observeAfterTokens);
+		expect(runtime.observerBacklogBlocking).toBe(false);
 		expect(runtime.notifyMemoryUpdate).toHaveBeenCalledTimes(1);
 	});
 

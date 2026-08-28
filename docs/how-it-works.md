@@ -14,11 +14,11 @@
 
 Observer progress is source-addressed by `coversUpToId`. Input is drained oldest-first. Complete entries are preferred; if the first source alone exceeds the cap, it is represented by a marked head/tail excerpt while retaining the original source id for provenance.
 
-The cap is explicit `observerChunkMaxTokens` when configured, otherwise 25% of the resolved model context window (with a fallback). When a backlog spans multiple bounded chunks, one background task processes them oldest-first until the remaining source falls below the normal observer trigger.
+The cap is explicit `observerChunkMaxTokens` when configured, otherwise 25% of the resolved model context window (with a fallback). Each catch-up pipeline captures a finite source boundary at launch and processes that snapshot oldest-first in bounded chunks until its remaining source falls below the normal observer trigger. Source appended concurrently is deferred to a later snapshot instead of extending the running pipeline indefinitely.
 
 The observer is encouraged to call `done` as a terminal shortcut, but it is not a commit gate: any valid observations already recorded are committed even when `done` is omitted. A zero-observation prose stop receives one reminder showing the recorded count; if it still emits nothing, the chunk is treated as empty. Provider errors, output truncation, and wholly invalid records are reported as failed chunks. During backlog catch-up those zero-progress failures receive an empty coverage marker so one pathological old range cannot pin all newer memory and the contemplator forever.
 
-While uncovered source remains at or above `observeAfterTokens`, the same background pipeline keeps launching bounded observer passes. Intermediate batches are committed durably, but they do not wake the contemplator individually. The contemplator reports that it is waiting for the observer backlog and consumes the combined memory update only after backlog falls below the trigger.
+While the captured snapshot remains at or above `observeAfterTokens`, the same background pipeline keeps launching bounded observer passes. Intermediate batches are committed durably, but they do not wake the contemplator individually. At the end of that finite snapshot, the contemplator gets one combined memory-update opportunity even if the primary agent produced more source concurrently. If that deferred source already exceeds the trigger, the scheduler starts another finite snapshot only after releasing the current pipeline lock and issuing that notification.
 
 ## Summarizer scheduling
 

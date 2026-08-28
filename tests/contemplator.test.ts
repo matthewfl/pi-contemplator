@@ -320,6 +320,25 @@ describe("Contemplator lifecycle", () => {
 		expect((harness.contemplator as any).seenObservationIds.has("abcdef123456")).toBe(true);
 	});
 
+	it("does not let source arriving during a completed observer snapshot block contemplation", async () => {
+		const firstSource = textCustomMessage("raw-snapshot", "old source");
+		const observed = observation("abcdef123456", { timestamp: "2026-05-02 10:00", sourceEntryIds: ["raw-snapshot"] });
+		const firstBatch = observationsRecordedEntry("batch-snapshot", { observations: [observed], coversUpToId: "raw-snapshot" });
+		const concurrentSource = textCustomMessage("raw-concurrent", "x".repeat(80_000));
+		const harness = setup([firstSource, firstBatch, concurrentSource]);
+		harness.runtime.consolidationInFlight = true;
+		harness.runtime.observerBacklogBlocking = false;
+		(harness.contemplator as any).turnsSinceRun = 1;
+
+		// This models the completed snapshot's notification before its tracked
+		// consolidation lock is released. raw-concurrent is deferred, not part of
+		// the snapshot that contemplation was waiting for.
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		expect((harness.contemplator as any).seenObservationIds.has("abcdef123456")).toBe(true);
+	});
+
 	it("keeps visible and hidden probes on the steer delivery path", () => {
 		const visible = setup();
 		(visible.contemplator as any).queueProbe(visible.ctx, "Visible?", "send_probe", "probe-visible");
