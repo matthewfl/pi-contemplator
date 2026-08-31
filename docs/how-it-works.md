@@ -64,7 +64,7 @@ Agent-requested compaction resumes with the authored continuation prompt. Proact
 
 ## Contemplator private-history compaction
 
-The contemplator keeps a durable private transcript separate from the active memory pools. Its compaction threshold is context-aware: 25% of the contemplator model context window, capped at 40,000 estimated tokens (20,000 when the model does not advertise a context window). Compaction summarizes only an older prefix and retains approximately the newest 12,000 tokens verbatim at complete update boundaries.
+The contemplator keeps a durable private transcript separate from the active memory pools. Its compaction threshold is context-aware: 25% of the contemplator model context window, capped at 40,000 estimated tokens (20,000 when the model does not advertise a context window). Compaction summarizes only an older prefix and retains up to approximately the newest 12,000 tokens verbatim at complete update boundaries; for smaller-context models, the retained target is half the compaction threshold.
 
 A v2 compact checkpoint stores the generated summary plus ledger-entry references to the retained messages rather than copying their payloads. Restore reconstructs `summary + recent suffix` from those pointers. Summary generation has a 16,000-token reserve (an effective output ceiling of about 12,800 tokens in Pi's helper). If it reaches that ceiling, the contemplator retries once with a smaller oldest prefix. A second failure leaves the original history intact and postpones maintenance; because the intervention was already durably completed, private-history maintenance never changes that run to failed.
 

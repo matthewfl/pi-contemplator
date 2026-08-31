@@ -1218,15 +1218,22 @@ export class Contemplator {
 		}
 	}
 
-	/** Append one private-history entry and attribute its synchronous ledger id. */
+	/**
+	 * Append one private-history entry and attribute its synchronous ledger id.
+	 * Pi does not return the id from appendEntry(), so prefer the exact data
+	 * object and accept a cloned payload only when exactly one matching entry was
+	 * appended. Ambiguity returns undefined rather than pointing at another
+	 * writer's message.
+	 */
 	private appendContemplatorHistoryEntry(ctx: MemoryUpdateCtx, data: Record<string, unknown>): string | undefined {
 		const branch = ctx.sessionManager.getBranch() as readonly Entry[];
 		const before = branch.length;
 		this.pi.appendEntry(CONTEMPLATOR_MESSAGE, data);
-		return (ctx.sessionManager.getBranch() as readonly Entry[])
+		const candidates = (ctx.sessionManager.getBranch() as readonly Entry[])
 			.slice(before)
-			.find((entry) => entry.customType === CONTEMPLATOR_MESSAGE && entry.data === data)?.id
-			?? (ctx.sessionManager.getBranch() as readonly Entry[]).slice(before).find((entry) => entry.customType === CONTEMPLATOR_MESSAGE)?.id;
+			.filter((entry) => entry.customType === CONTEMPLATOR_MESSAGE);
+		return candidates.find((entry) => entry.data === data)?.id
+			?? (candidates.length === 1 ? candidates[0].id : undefined);
 	}
 
 	private markTipPersisted(ctx: MemoryUpdateCtx): string | undefined {
@@ -1333,8 +1340,21 @@ export class Contemplator {
 			stopReason: "stop",
 			timestamp: Date.now(),
 		} as AgentMessage;
-		const retainedMessages = history.slice(prefixEnd);
-		const retainedMessageEntryIds = historyEntryIds.slice(prefixEnd).filter((id): id is string => typeof id === "string");
+		// A flush currently owns private-history mutation while this awaits the
+		// model, and session/tree movement invalidates the generation above. Still,
+		// preserve any future append-only writer rather than replacing a stale
+		// snapshot and silently dropping messages. Non-append mutation is unsafe to
+		// merge, so postpone and let a later pass compact the live transcript.
+		const liveHistory = this.history;
+		const liveHistoryEntryIds = this.historyEntryIds;
+		const snapshotIsLivePrefix = liveHistory.length >= history.length
+			&& history.every((message, index) => liveHistory[index] === message && liveHistoryEntryIds[index] === historyEntryIds[index]);
+		if (!snapshotIsLivePrefix) {
+			debugLog("contemplator.compaction_postponed", { reason: "private history changed during compaction" });
+			return;
+		}
+		const retainedMessages = liveHistory.slice(prefixEnd);
+		const retainedMessageEntryIds = liveHistoryEntryIds.slice(prefixEnd).filter((id): id is string => typeof id === "string");
 		if (retainedMessageEntryIds.length !== retainedMessages.length) {
 			debugLog("contemplator.compaction_postponed", { reason: "retained history lacked durable entry ids", retainedMessageCount: retainedMessages.length, retainedReferenceCount: retainedMessageEntryIds.length });
 			return;

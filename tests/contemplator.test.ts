@@ -996,6 +996,33 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
 	});
 
+	it("discards an in-flight private-history compaction after tree movement", async () => {
+		const oldEntries: TestEntry[] = Array.from({ length: 12 }, (_, index) => {
+			const message = { role: index % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text: `old branch ${index} ${"x".repeat(10_000)}` }], timestamp: index };
+			return { id: `old-${index}`, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry;
+		});
+		const newBranchMessage = { role: "user", content: [{ type: "text", text: "new branch private history" }], timestamp: 100 };
+		const newEntries = [{ id: "new-branch", type: "custom", customType: "om.contemplator.message", data: { version: 1, message: newBranchMessage } } as TestEntry];
+		const harness = setup(oldEntries);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+		let finishSummary!: (value: any) => void;
+		compactionMocks.generateSummaryWithUsage.mockImplementationOnce(() => new Promise((resolve) => { finishSummary = resolve; }));
+
+		const compaction = state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+		await vi.waitFor(() => expect(compactionMocks.generateSummaryWithUsage).toHaveBeenCalledTimes(1));
+		harness.setEntries(newEntries);
+		harness.fire("session_tree", { oldLeafId: "old-11", newLeafId: "new-branch" });
+		finishSummary({
+			text: "stale old-branch summary",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		});
+		await compaction;
+
+		expect(state.history).toEqual([newBranchMessage]);
+		expect(harness.pi.appendEntry.mock.calls.some(([type, data]) => type === "om.contemplator.message" && (data as any).compacted === true)).toBe(false);
+	});
+
 	it("persists reviewer compaction state as entry references without copying history", () => {
 		const reviewRequest = {
 			id: "review-pending", scope: "workflow", evidence: "[aaaaaaaaaaaa] recurring work",
