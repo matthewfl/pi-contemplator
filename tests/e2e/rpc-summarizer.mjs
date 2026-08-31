@@ -3,7 +3,7 @@ import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWork
 
 const started = Date.now();
 const log = (text) => console.log(`[summarizer-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observer: 0, summarizer: 0, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false, firstDoneSummaryCount: undefined };
+const state = { main: 0, observer: 0, summarizer: 0, contemplator: 0, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false, firstDoneSummaryCount: undefined };
 let draftId;
 let sourceIds = [];
 
@@ -66,6 +66,10 @@ const server = new ModelServer(async (request, res) => {
 		}
 		return sendSse(res, { tool: { id: `summary-${state.summarizer}`, name: "summarize", arguments: { summaries: [`The implementation evidence establishes one verified durable outcome [${sourceIds.join(", ")}].`] } } });
 	}
+	if (request.role === "contemplator") {
+		state.contemplator++;
+		return sendSse(res, { tool: { id: `no-intervention-${state.contemplator}`, name: "no_intervention", arguments: {} } });
+	}
 	assert(request.role === "main", `Unexpected role ${request.role}`);
 	state.main++;
 	return sendSse(res, { text: `PRIMARY_SUMMARIZER_ROUND_${state.main}_COMPLETE`, outputTokens: 100 });
@@ -77,7 +81,7 @@ let pi;
 try {
 	const port = await server.start();
 	await prepareWorkspace(workspace, port, omSettings({
-		contemplatorEnabled: false, reviewerEnabled: false,
+		contemplatorEnabled: true, contemplatorMinNewObservations: 100, reviewerEnabled: false,
 		summarizerEnabled: true,
 		// Each deterministic observer memory is 50 estimated tokens. One stays
 		// protected as new; old memory must strictly exceed 50 before launch.
@@ -125,9 +129,11 @@ try {
 	assert(!commit.data.summaries[0].consumedMemoryIds.includes(observedIds[2]), "Newest protected memory was exposed to or consumed by the summarizer");
 	assert(commit.data.summaries[0].timestamp === "2026-08-16 02:00", `Summary timestamp did not use newest cited source: ${commit.data.summaries[0].timestamp}`);
 	assert(commit.data.metrics.estimatedTokenReduction > 0, "Commit did not record positive token reduction");
+	await sleep(300);
+	assert(state.contemplator === 0, `Summarizer commit incorrectly woke the contemplator ${state.contemplator} time(s)`);
 	assert(!pi.rpc.events.some((event) => event.type === "extension_error"), "Extension error in summarizer scenario");
 	await stopPi(pi); pi = undefined;
-	log(`PASS ${state.observer} observer runs, strict new/old pool gates, ${state.summarizer} summarizer requests, protected newest memory, final graph commit`);
+	log(`PASS ${state.observer} observer runs, strict new/old pool gates, ${state.summarizer} summarizer requests, protected newest memory, final graph commit, no contemplator wake`);
 } catch (error) {
 	console.error(`State: ${JSON.stringify(state)}; roles: ${server.requests.map((request) => request.role).join(",")}`);
 	if (pi) console.error(`Ledger tail: ${JSON.stringify((await pi.rpc.entries()).slice(-12), null, 2)}\nPi stderr: ${pi.rpc.stderr}`);

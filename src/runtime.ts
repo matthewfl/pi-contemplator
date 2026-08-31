@@ -25,7 +25,7 @@ export type SessionSettings = Partial<Pick<Config,
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
-	| "contemplatorMinNewObservations" | "contemplatorMinNewSummaries" | "contemplatorMinTurns"
+	| "contemplatorMinNewObservations" | "contemplatorMinTurns"
 	| "summarizerEnabled" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens"
 	| "debugLog"
 >> & {
@@ -80,7 +80,6 @@ export interface SummarizerRunView {
 export interface ContemplatorRunState {
 	running: boolean;
 	pendingObservations: number;
-	pendingSummaries: number;
 	pendingReviews: number;
 	/** Completed primary-model responses since the current completion/probe-delivery spacing anchor. */
 	responsesSinceRun: number;
@@ -140,7 +139,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		const numberKeys = [
 			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"newMemoryPoolMaxTokens", "oldMemoryPoolTargetTokens", "agentMaxTurns",
-			"contemplatorMinNewObservations", "contemplatorMinNewSummaries", "contemplatorMinTurns",
+			"contemplatorMinNewObservations", "contemplatorMinTurns",
 			"summarizerRetriggerTokens", "summarizerSamplingThresholdTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
@@ -209,7 +208,6 @@ export class Runtime {
 	contemplatorState: ContemplatorRunState = {
 		running: false,
 		pendingObservations: 0,
-		pendingSummaries: 0,
 		pendingReviews: 0,
 		responsesSinceRun: 0,
 		waitingFor: "idle",
@@ -299,7 +297,6 @@ export class Runtime {
 		this.contemplatorState = {
 			running: false,
 			pendingObservations: 0,
-			pendingSummaries: 0,
 			pendingReviews: 0,
 			responsesSinceRun: 0,
 			waitingFor: "idle",

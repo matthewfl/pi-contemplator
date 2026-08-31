@@ -21,7 +21,6 @@ import { createWorkerStallWatchdog } from "../../worker-watchdog.js";
 
 interface PendingUpdate {
 	observations: string[];
-	summaries: string[];
 	reviews: string[];
 	mainAgentOutputTokens: number;
 	mainAgentToolCalls: number;
@@ -219,7 +218,6 @@ export class Contemplator {
 	/** Bounds retries of one poisoned memory update so future updates can run. */
 	private consecutiveFlushFailures = 0;
 	private seenObservationIds = new Set<string>();
-	private seenSummaryIds = new Set<string>();
 	private seenReviewIds = new Set<string>();
 	private inFlightReviewKeys = new Set<string>();
 	private inFlightReviewIds = new Set<string>();
@@ -304,7 +302,6 @@ export class Contemplator {
 			this.history = [];
 			this.pending = undefined;
 			this.seenObservationIds.clear();
-			this.seenSummaryIds.clear();
 			this.seenReviewIds.clear();
 			this.inFlightReviewKeys.clear();
 			this.inFlightReviewIds.clear();
@@ -321,7 +318,6 @@ export class Contemplator {
 			this.runtime.contemplatorState = {
 				running: false,
 				pendingObservations: 0,
-				pendingSummaries: 0,
 				pendingReviews: 0,
 				responsesSinceRun: 0,
 				waitingFor: "idle",
@@ -431,7 +427,6 @@ export class Contemplator {
 			...this.runtime.contemplatorState,
 			running: this.running,
 			pendingObservations: this.pending?.observations.length ?? 0,
-			pendingSummaries: this.pending?.summaries.length ?? 0,
 			pendingReviews: this.pending?.reviews.length ?? 0,
 			responsesSinceRun: this.turnsSinceRun,
 			waitingFor,
@@ -457,7 +452,6 @@ export class Contemplator {
 			this.reviewerSessions.clear();
 			resetProjection = fullProjection(entries);
 			this.seenObservationIds.clear();
-			this.seenSummaryIds.clear();
 			this.seenReviewIds.clear();
 			this.pending = undefined;
 			this.turnsSinceRun = 0;
@@ -465,7 +459,6 @@ export class Contemplator {
 			this.runtime.contemplatorState = {
 				running: false,
 				pendingObservations: 0,
-				pendingSummaries: 0,
 				pendingReviews: 0,
 				responsesSinceRun: 0,
 				waitingFor: "idle",
@@ -547,12 +540,10 @@ export class Contemplator {
 				for (const id of memoryReferenceIds(text)) coveredIds.add(id);
 			}
 			this.seenObservationIds = new Set(resetProjection.observations.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
-			this.seenSummaryIds = new Set(resetProjection.summaries.filter((item) => coveredIds.has(item.id)).map((item) => item.id));
 			this.seenReviewIds = new Set((resetProjection.reviews ?? []).filter((item) => coveredIds.has(item.id)).map((item) => item.id));
 			const unprocessedObservations = resetProjection.observations.length - this.seenObservationIds.size;
-			const unprocessedSummaries = resetProjection.summaries.length - this.seenSummaryIds.size;
 			const unprocessedReviews = (resetProjection.reviews?.length ?? 0) - this.seenReviewIds.size;
-			if (unprocessedReviews > 0 || unprocessedObservations >= this.runtime.config.contemplatorMinNewObservations || unprocessedSummaries >= this.runtime.config.contemplatorMinNewSummaries) {
+			if (unprocessedReviews > 0 || unprocessedObservations >= this.runtime.config.contemplatorMinNewObservations) {
 				this.turnsSinceRun = this.runtime.config.contemplatorMinTurns;
 			}
 		}
@@ -607,31 +598,24 @@ export class Contemplator {
 		}
 		const projection = fullProjection(branchEntries);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
-		const summaries = projection.summaries.map((item) => `[${item.id}] ${item.content}`);
 		const reviews = projection.reviews ?? [];
 		const newObservationItems = projection.observations.filter((item) => !this.seenObservationIds.has(item.id));
-		const newSummaryItems = projection.summaries.filter((item) => !this.seenSummaryIds.has(item.id));
 		const newReviewItems = reviews.filter((item) => !this.seenReviewIds.has(item.id));
 		const newObservations = newObservationItems.map((item) => `[${item.id}] ${item.content}`);
-		const newSummaries = newSummaryItems.map((item) => `[${item.id}] ${item.content}`);
 		const newReviews = newReviewItems.map(reviewSummaryLine);
 		for (const item of newObservationItems) this.seenObservationIds.add(item.id);
-		for (const item of newSummaryItems) this.seenSummaryIds.add(item.id);
 		for (const item of newReviewItems) this.seenReviewIds.add(item.id);
 		debugLog("contemplator.update", {
 			observationCount: observations.length,
-			summaryCount: summaries.length,
 			newObservationCount: newObservations.length,
-			newSummaryCount: newSummaries.length,
 			newReviewCount: newReviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 			pending: this.pending !== undefined,
 			running: this.running,
 		});
-		if (newObservations.length > 0 || newSummaries.length > 0 || newReviews.length > 0) {
+		if (newObservations.length > 0 || newReviews.length > 0) {
 			this.pending = {
 				observations: mergeMemoryLines(this.pending?.observations ?? [], newObservations),
-				summaries: mergeMemoryLines(this.pending?.summaries ?? [], newSummaries),
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
 				mainAgentOutputTokens: assistantOutputTokens(branchEntries),
 				mainAgentToolCalls: assistantToolCallCount(branchEntries),
@@ -648,7 +632,7 @@ export class Contemplator {
 		this.pending.mainAgentOutputTokens = assistantOutputTokens(branchEntries);
 		this.pending.mainAgentToolCalls = assistantToolCallCount(branchEntries);
 		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
-		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations || this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries;
+		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations;
 		if (this.probeCooldownPendingIds.size > 0) {
 			this.publishState("probe");
 			debugLog("contemplator.waiting", { reason: "probe_delivery", pendingProbeCount: this.probeCooldownPendingIds.size });
@@ -661,14 +645,12 @@ export class Contemplator {
 				turnsSinceRun: this.turnsSinceRun,
 				minTurns: this.runtime.config.contemplatorMinTurns,
 				minNewObservations: this.runtime.config.contemplatorMinNewObservations,
-				minNewSummaries: this.runtime.config.contemplatorMinNewSummaries,
 			});
 			return;
 		}
 		this.publishState(this.running ? "running" : "ready");
 		debugLog("contemplator.triggered", {
 			pendingObservationCount: this.pending.observations.length,
-			pendingSummaryCount: this.pending.summaries.length,
 			pendingReviewCount: this.pending.reviews.length,
 			turnsSinceRun: this.turnsSinceRun,
 		});
@@ -705,7 +687,6 @@ export class Contemplator {
 		this.publishState("running", { lastStartedAt: startedAt, lastError: undefined });
 		debugLog("contemplator.start", {
 			newObservationCount: update.observations.length,
-			newSummaryCount: update.summaries.length,
 			newReviewCount: update.reviews.length,
 			historyMessageCount: this.history.length,
 		});
@@ -727,14 +708,13 @@ export class Contemplator {
 						const pending = this.pending as PendingUpdate | undefined;
 						this.pending = {
 							observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-							summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
 							reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 							mainAgentOutputTokens: update.mainAgentOutputTokens,
 							mainAgentToolCalls: update.mainAgentToolCalls,
 							mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
 						};
 					} else {
-						debugLog("contemplator.poisoned_update_released", { reason: resolved.reason, observationCount: update.observations.length, summaryCount: update.summaries.length, reviewCount: update.reviews.length });
+						debugLog("contemplator.poisoned_update_released", { reason: resolved.reason, observationCount: update.observations.length, reviewCount: update.reviews.length });
 						this.consecutiveFlushFailures = 0;
 					}
 					this.turnsSinceRun = 0; // Back off until fresh primary responses arrive; never retry every checkpoint.
@@ -759,7 +739,6 @@ export class Contemplator {
 			const reviewerEnabled = this.runtime.config.reviewerEnabled;
 			const updateSections: string[] = [];
 			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
-			if (update.summaries.length > 0) updateSections.push(`SUMMARIES:\n${update.summaries.join("\n")}`);
 			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
 			const finalActionNames = reviewerEnabled
@@ -925,14 +904,13 @@ export class Contemplator {
 					const pending = this.pending as PendingUpdate | undefined;
 					this.pending = {
 						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
-						summaries: mergeMemoryLines(pending?.summaries ?? [], update.summaries),
 						reviews: mergeMemoryLines(pending?.reviews ?? [], update.reviews),
 						mainAgentOutputTokens: update.mainAgentOutputTokens,
 						mainAgentToolCalls: update.mainAgentToolCalls,
 						mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
 					};
 				} else {
-					debugLog("contemplator.poisoned_update_released", { reason: failureMessage, observationCount: update.observations.length, summaryCount: update.summaries.length, reviewCount: update.reviews.length });
+					debugLog("contemplator.poisoned_update_released", { reason: failureMessage, observationCount: update.observations.length, reviewCount: update.reviews.length });
 					this.consecutiveFlushFailures = 0;
 				}
 				this.turnsSinceRun = 0; // Back off until fresh primary responses arrive; never retry every checkpoint.
@@ -950,8 +928,7 @@ export class Contemplator {
 			const waitingForProbe = this.probeCooldownPendingIds.size > 0;
 			const pendingHasEnoughMemories = this.pending !== undefined && (
 				this.pending.reviews.length > 0 ||
-				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations ||
-				this.pending.summaries.length >= this.runtime.config.contemplatorMinNewSummaries
+				this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations
 			);
 			const waitingFor = waitingForProbe
 				? "probe"

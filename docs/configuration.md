@@ -21,7 +21,6 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "contemplatorEnabled": true,
     "showContemplatorMessages": true,
     "contemplatorMinNewObservations": 8,
-    "contemplatorMinNewSummaries": 1,
     "contemplatorMinTurns": 10,
 
     "reviewerEnabled": true,
@@ -53,7 +52,6 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `contemplatorModel` | current model | Optional model override for the contemplator. Reasoning-capable models default to `medium` thinking unless this or the shared `model.thinking` explicitly overrides it. |
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
 | `contemplatorMinNewObservations` | `8` | Observation trigger component. |
-| `contemplatorMinNewSummaries` | `1` | Summary trigger component. |
 | `contemplatorMinTurns` | `10` | Minimum primary-model responses after contemplator completion—or after its probe reaches a provider context—before the next update. Tool-using rounds within one long user turn count separately. |
 | `reviewerEnabled` | `true` | Allows scoped structural review requests. |
 | `reviewerModel` | current model | Optional reviewer model override. |

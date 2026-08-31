@@ -184,7 +184,7 @@ export function omSettings(overrides = {}) {
 		observeAfterTokens: 1, compactAfterTokens: 1000000,
 		agentMaxTurns: 8, model: { provider: "e2e", id: "mock-model", thinking: "off" },
 		contemplatorEnabled: true, contemplatorModel: { provider: "e2e", id: "mock-model", thinking: "off" },
-		contemplatorMinNewObservations: 1, contemplatorMinNewSummaries: 1, contemplatorMinTurns: 1,
+		contemplatorMinNewObservations: 1, contemplatorMinTurns: 1,
 		showWorkerNotifications: false, showContemplatorMessages: true, reviewerEnabled: true, summarizerEnabled: false,
 		reviewerModel: { provider: "e2e", id: "mock-model", thinking: "off" }, compactionObserverEnabled: false,
 		debugLog: true, ...overrides,

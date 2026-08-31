@@ -30,9 +30,9 @@ describe("summarizer configuration and user tools", () => {
 	it("restores summarizer session settings through compaction snapshots and live entries", () => {
 		const settings = computeSessionSettings([
 			{ type: "compaction", details: { sessionSettings: { summarizerEnabled: false, summarizerSamplingThresholdTokens: 60_000 } } },
-			{ type: "custom", customType: "om.settings", data: { summarizerEnabled: true, contemplatorMinNewSummaries: 3 } },
+			{ type: "custom", customType: "om.settings", data: { summarizerEnabled: true, summarizerRetriggerTokens: 3_000 } },
 		]);
-		expect(settings).toMatchObject({ summarizerEnabled: true, summarizerSamplingThresholdTokens: 60_000, contemplatorMinNewSummaries: 3 });
+		expect(settings).toMatchObject({ summarizerEnabled: true, summarizerSamplingThresholdTokens: 60_000, summarizerRetriggerTokens: 3_000 });
 	});
 
 	it("renders the launch-local summarizer transcript and no-run state", () => {

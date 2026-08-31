@@ -393,7 +393,8 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary };
 				debugLog("summarizer.appended", { summaries: result.commit.summaries.length, consumed: result.commit.metrics.consumedMemoryCount, sampled: result.sample?.sampled ?? false });
 				if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`pi-contemplator: summarizer completed — ${summary}`, "info");
-				runtime.notifyMemoryUpdate(ctx);
+				// Summaries compact older memories; they are not new events and must not
+				// wake or enter the contemplator's incremental update stream.
 			} else {
 				successfullyCompleted = true;
 				runtime.lastSummarizerRun = { ...runtime.lastSummarizerRun!, status: "completed", summary: "No safe summaries were created." };

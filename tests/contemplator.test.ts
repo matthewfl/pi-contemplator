@@ -66,7 +66,6 @@ function setup(initialEntries: TestEntry[] = []) {
 		...runtime.config,
 		contemplatorEnabled: true,
 		contemplatorMinNewObservations: 1,
-		contemplatorMinNewSummaries: 1,
 		contemplatorMinTurns: 1,
 		passive: false,
 	};
@@ -281,6 +280,43 @@ describe("Contemplator lifecycle", () => {
 		expect((harness.contemplator as any).queuedProbeIds.has("probe-idle")).toBe(true);
 	});
 
+	it("ignores summaries as contemplator updates and excludes them from later prompts", async () => {
+		const source = textCustomMessage("raw-old", "old work");
+		const first = observation("aaaaaaaaaaaa", { content: "First old detail.", timestamp: "2026-05-02 09:00", sourceEntryIds: ["raw-old"] });
+		const second = observation("bbbbbbbbbbbb", { content: "Second old detail.", timestamp: "2026-05-02 09:01", sourceEntryIds: ["raw-old"] });
+		const oldBatch = observationsRecordedEntry("batch-old", { observations: [first, second], coversUpToId: "raw-old" });
+		const summary: TestEntry = {
+			id: "summary-commit", type: "custom", customType: "om.summarizer.commit",
+			data: {
+				version: 1,
+				summaries: [{
+					id: "cccccccccccc", content: "Condensed old work [aaaaaaaaaaaa, bbbbbbbbbbbb].",
+					timestamp: "2026-05-02 09:01", sourceMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"],
+					consumedMemoryIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: 8,
+				}],
+				coversUpToId: "batch-old", createdAt: 1, completedWithDone: true,
+				metrics: { consumedMemoryCount: 2, sourceTokens: 20, summaryTokens: 8, estimatedTokenReduction: 12 },
+			},
+		};
+		const summaryOnly = setup([source, oldBatch, summary]);
+		(summaryOnly.contemplator as any).turnsSinceRun = 1;
+		summaryOnly.runtime.notifyMemoryUpdate(summaryOnly.ctx as any);
+		await Promise.resolve();
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect((summaryOnly.contemplator as any).pending).toBeUndefined();
+
+		const freshSource = textCustomMessage("raw-new", "new work");
+		const fresh = observation("dddddddddddd", { content: "Fresh actionable evidence.", timestamp: "2026-05-02 10:00", sourceEntryIds: ["raw-new"] });
+		const freshBatch = observationsRecordedEntry("batch-new", { observations: [fresh], coversUpToId: "raw-new" });
+		const mixed = setup([source, oldBatch, summary, freshSource, freshBatch]);
+		(mixed.contemplator as any).turnsSinceRun = 1;
+		mixed.runtime.notifyMemoryUpdate(mixed.ctx as any);
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		const prompt = JSON.stringify(agentMocks.agentLoop.mock.calls[0][0]);
+		expect(prompt).toContain("Fresh actionable evidence");
+		expect(prompt).not.toContain("Condensed old work");
+	});
+
 	it("does not deadlock contemplation when observer setup is unavailable", async () => {
 		const firstSource = textCustomMessage("raw-degraded", "old source");
 		const observed = observation("abcdef654321", { timestamp: "2026-05-02 10:00", sourceEntryIds: ["raw-degraded"] });
@@ -472,7 +508,7 @@ describe("Contemplator lifecycle", () => {
 		const harness = setup(branchA);
 		harness.fire("session_start");
 		const state = harness.contemplator as any;
-		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], summaries: [] };
+		state.pending = { observations: ["[aaaaaaaaaaaa] branch a"], reviews: [], mainAgentOutputTokens: 0, mainAgentToolCalls: 0, mainAgentActiveTimeMs: 0 };
 		state.turnsSinceRun = 9;
 		state.seenObservationIds.add("aaaaaaaaaaaa");
 

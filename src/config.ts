@@ -60,7 +60,6 @@ export interface Config {
 	/** Optional model override used only by short-lived structural reviewers. */
 	reviewerModel?: ConfiguredModel;
 	contemplatorMinNewObservations: number;
-	contemplatorMinNewSummaries: number;
 	/** Minimum primary-model responses after contemplator completion, or after delivery of its probe, before the next run. */
 	contemplatorMinTurns: number;
 	/** Stateless loss-aware summarizer for the old memory pool. */
@@ -87,7 +86,6 @@ export const DEFAULTS: Config = {
 	showContemplatorMessages: true,
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
-	contemplatorMinNewSummaries: 1,
 	contemplatorMinTurns: 10,
 	summarizerEnabled: true,
 	summarizerRetriggerTokens: 2_000,
@@ -210,7 +208,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"oldMemoryPoolTargetTokens",
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
-		"contemplatorMinNewSummaries",
 		"contemplatorMinTurns",
 		"summarizerRetriggerTokens",
 		"summarizerSamplingThresholdTokens",

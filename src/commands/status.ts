@@ -130,7 +130,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Observe source during compaction: ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
-				`Contemplator trigger:     ${runtime.contemplatorState.pendingObservations} observations / ${runtime.contemplatorState.pendingSummaries} summaries / ${runtime.contemplatorState.pendingReviews} reviews pending; ${runtime.contemplatorState.responsesSinceRun} / ${runtime.config.contemplatorMinTurns} primary responses; ${contemplatorWaitingLabel(runtime.contemplatorState.waitingFor)}`,
+				`Contemplator trigger:     ${runtime.contemplatorState.pendingObservations} observations / ${runtime.contemplatorState.pendingReviews} reviews pending; ${runtime.contemplatorState.responsesSinceRun} / ${runtime.config.contemplatorMinTurns} primary responses; ${contemplatorWaitingLabel(runtime.contemplatorState.waitingFor)}`,
 				`Contemplator model:      ${runtime.config.contemplatorModel ? `${runtime.config.contemplatorModel.provider}/${runtime.config.contemplatorModel.id}` : "current session model"}`,
 				`Contemplator messages:   ${runtime.config.showContemplatorMessages ? "visible" : "hidden"}`,
 				`Structural reviewer:     ${runtime.config.reviewerEnabled === false ? "disabled" : "enabled"}`,

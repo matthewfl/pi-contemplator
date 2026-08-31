@@ -59,7 +59,7 @@ function renderMessage(message: StoredMessage, compacted: boolean): string {
 }
 
 function liveStateLine(state: ContemplatorRunState): string {
-	const pending = `${state.pendingObservations} observations / ${state.pendingSummaries} summaries / ${state.pendingReviews} reviews pending`;
+	const pending = `${state.pendingObservations} observations / ${state.pendingReviews} reviews pending`;
 	const timing = `Last start: ${state.lastStartedAt === undefined ? "not run this launch" : new Date(state.lastStartedAt).toISOString()} · Last end: ${state.lastCompletedAt === undefined ? "not completed this launch" : new Date(state.lastCompletedAt).toISOString()}`;
 	const error = state.lastError ? `\nLast error: ${state.lastError}` : "";
 	if (state.running) return `LIVE · running for ${Math.max(0, Math.floor((Date.now() - (state.lastStartedAt ?? Date.now())) / 60_000))}m · ${pending}\n${timing}${error}`;
