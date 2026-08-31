@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const agentMocks = vi.hoisted(() => ({ agentLoop: vi.fn() }));
+const compactionMocks = vi.hoisted(() => ({ generateSummaryWithUsage: vi.fn() }));
 vi.mock("@earendil-works/pi-agent-core", () => ({ agentLoop: agentMocks.agentLoop }));
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
+	generateSummaryWithUsage: compactionMocks.generateSummaryWithUsage,
+}));
 
 import { Contemplator } from "../src/agents/contemplator/agent.js";
 import { REVIEWER_TOTAL_TOKEN_LIMIT } from "../src/model-budget.js";
@@ -99,6 +104,11 @@ function setup(initialEntries: TestEntry[] = []) {
 
 beforeEach(() => {
 	agentMocks.agentLoop.mockReset();
+	compactionMocks.generateSummaryWithUsage.mockReset();
+	compactionMocks.generateSummaryWithUsage.mockResolvedValue({
+		text: "Compact private history checkpoint.",
+		usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	});
 	agentMocks.agentLoop.mockImplementation((_prompts, context) => {
 		selectNoIntervention(context);
 		return stream();
@@ -922,6 +932,68 @@ describe("Contemplator lifecycle", () => {
 		harness.fire("session_tree");
 		expect(harness.pi.appendEntry.mock.calls.filter(([type]) => type === "om.review.result")).toHaveLength(resultCount);
 		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+	});
+
+	it("compacts only old contemplator history, retains recent messages by reference, and retries a smaller prefix after a token cap", async () => {
+		const privateEntries: TestEntry[] = [];
+		const originalMessages: any[] = [];
+		for (let index = 0; index < 20; index++) {
+			const user = { role: "user", content: [{ type: "text", text: `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 };
+			const assistant = {
+				role: "assistant", content: [{ type: "text", text: `private decision ${index}` }],
+				api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: index * 2 + 1,
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			};
+			for (const message of [user, assistant]) {
+				const id = `private-${privateEntries.length}`;
+				originalMessages.push(message);
+				privateEntries.push({ id, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry);
+			}
+		}
+		const harness = setup(privateEntries);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+		compactionMocks.generateSummaryWithUsage.mockRejectedValueOnce(new Error("Summarization failed: generation hit the token cap and the summary is incomplete"));
+
+		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+
+		expect(compactionMocks.generateSummaryWithUsage).toHaveBeenCalledTimes(2);
+		expect(compactionMocks.generateSummaryWithUsage.mock.calls[0][2]).toBe(16_000);
+		const firstPrefix = compactionMocks.generateSummaryWithUsage.mock.calls[0][0];
+		const fallbackPrefix = compactionMocks.generateSummaryWithUsage.mock.calls[1][0];
+		expect(fallbackPrefix.length).toBeLessThan(firstPrefix.length);
+		expect(state.history[0].content[0].text).toContain("Compact private history checkpoint");
+		expect(state.history.slice(1)).toEqual(originalMessages.slice(fallbackPrefix.length));
+
+		const checkpointCall = harness.pi.appendEntry.mock.calls.find(([type, data]) => type === "om.contemplator.message" && (data as any).compacted === true);
+		expect(checkpointCall).toBeDefined();
+		const checkpoint = checkpointCall![1] as any;
+		expect(checkpoint.version).toBe(2);
+		expect(checkpoint).not.toHaveProperty("retainedMessages");
+		expect(checkpoint.retainedMessageEntryIds).toEqual(privateEntries.slice(fallbackPrefix.length).map((entry) => entry.id));
+
+		const restored = setup(harness.getEntries());
+		const restoredState = restored.contemplator as any;
+		restoredState.restore(restored.ctx);
+		expect(restoredState.history).toEqual(state.history);
+	});
+
+	it("keeps private history unchanged when both compaction attempts fail", async () => {
+		const entries: TestEntry[] = Array.from({ length: 12 }, (_, index) => {
+			const message = { role: index % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text: `history ${index} ${"x".repeat(10_000)}` }], timestamp: index };
+			return { id: `failure-${index}`, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry;
+		});
+		const harness = setup(entries);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+		const original = state.history.slice();
+		compactionMocks.generateSummaryWithUsage.mockRejectedValue(new Error("Summarization failed: generation hit the token cap and the summary is incomplete"));
+
+		await expect(state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch)).resolves.toBeUndefined();
+
+		expect(compactionMocks.generateSummaryWithUsage).toHaveBeenCalledTimes(2);
+		expect(state.history).toEqual(original);
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
 	});
 
 	it("persists reviewer compaction state as entry references without copying history", () => {

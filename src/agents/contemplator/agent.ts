@@ -2,7 +2,7 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, 
 import { Type, type Message, type Model } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
+import { estimateTokens as estimateAgentMessageTokens, generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullProjection, isReviewRequestEntry, isReviewResultEntry, OM_AGENT_ACTIVITY, OM_REVIEWER_MESSAGE, OM_REVIEWER_NOTICE, OM_REVIEWER_STATE, OM_REVIEW_REQUEST, OM_REVIEW_RESULT, rawTokensSinceObservationCoverage, recallMemorySources, type Entry, type ReviewResult, type StructuralReviewRequest } from "../../session-ledger/index.js";
@@ -18,6 +18,66 @@ import { memoryReferenceIds } from "../../memory-citations.js";
 import { buildContemplatorSystemPrompt } from "./prompts.js";
 import { runStructuralReview } from "../reviewer/agent.js";
 import { createWorkerStallWatchdog } from "../../worker-watchdog.js";
+
+const CONTEMPLATOR_HISTORY_FALLBACK_TRIGGER_TOKENS = 20_000;
+const CONTEMPLATOR_HISTORY_MAX_TRIGGER_TOKENS = 40_000;
+const CONTEMPLATOR_HISTORY_CONTEXT_FRACTION = 0.25;
+const CONTEMPLATOR_HISTORY_KEEP_RECENT_TOKENS = 12_000;
+const CONTEMPLATOR_HISTORY_SUMMARY_RESERVE_TOKENS = 16_000;
+const CONTEMPLATOR_HISTORY_SUMMARY_INSTRUCTIONS = "This is an older prefix of a private contemplator transcript. Be concise. Preserve durable user intent, decisions, evidence, unresolved reasoning gaps, and review/probe outcomes. Newer transcript messages are retained verbatim after this checkpoint.";
+
+function contemplatorMessageTokens(message: AgentMessage): number {
+	try {
+		return Math.max(1, estimateAgentMessageTokens(message));
+	} catch {
+		return Math.max(1, Math.ceil(JSON.stringify(message).length / 4));
+	}
+}
+
+function contemplatorHistoryTokens(history: readonly AgentMessage[]): number {
+	return history.reduce((total, message) => total + contemplatorMessageTokens(message), 0);
+}
+
+function contemplatorHistoryTriggerTokens(model: Model<any>): number {
+	const contextWindow = Number(model.contextWindow);
+	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return CONTEMPLATOR_HISTORY_FALLBACK_TRIGGER_TOKENS;
+	return Math.max(1, Math.min(CONTEMPLATOR_HISTORY_MAX_TRIGGER_TOKENS, Math.floor(contextWindow * CONTEMPLATOR_HISTORY_CONTEXT_FRACTION)));
+}
+
+/** Return a user-message boundary that leaves approximately targetTokens recent. */
+function recentHistoryStart(history: readonly AgentMessage[], entryIds: readonly (string | undefined)[], targetTokens: number): number | undefined {
+	let tokens = 0;
+	let start = history.length;
+	while (start > 0 && tokens < targetTokens) {
+		start--;
+		tokens += contemplatorMessageTokens(history[start]);
+	}
+	while (start > 0 && history[start].role !== "user") start--;
+	// Retained messages are durable pointers, not copied payloads. If a legacy
+	// snapshot supplied messages without entry ids, retain only the newer complete
+	// updates whose original om.contemplator.message entries can be referenced.
+	let lastMissingId = -1;
+	for (let index = start; index < entryIds.length; index++) {
+		if (entryIds[index] === undefined) lastMissingId = index;
+	}
+	if (lastMissingId >= 0) {
+		start = lastMissingId + 1;
+		while (start < history.length && history[start].role !== "user") start++;
+	}
+	return start > 0 && start < history.length ? start : undefined;
+}
+
+/** Pick a smaller complete oldest prefix after a length-truncated first attempt. */
+function smallerPrefixEnd(history: readonly AgentMessage[], initialEnd: number): number | undefined {
+	const target = Math.max(1, Math.floor(contemplatorHistoryTokens(history.slice(0, initialEnd)) / 2));
+	let tokens = 0;
+	for (let index = 0; index < initialEnd; index++) {
+		tokens += contemplatorMessageTokens(history[index]);
+		const next = index + 1;
+		if (tokens >= target && next < initialEnd && history[next].role === "user") return next;
+	}
+	return undefined;
+}
 
 interface PendingUpdate {
 	observations: string[];
@@ -211,6 +271,8 @@ export function createRequestReviewTool(
 
 export class Contemplator {
 	private history: AgentMessage[] = [];
+	/** Ledger entry id for each private-history message; used by compact checkpoints to retain a suffix without copying it. */
+	private historyEntryIds: Array<string | undefined> = [];
 	private pending: PendingUpdate | undefined;
 	private running = false;
 	/** Invalidates stale/hard-timed-out flush finalizers across session changes. */
@@ -300,6 +362,7 @@ export class Contemplator {
 			this.consecutiveFlushFailures = 0;
 			this.agentActiveSince = undefined;
 			this.history = [];
+			this.historyEntryIds = [];
 			this.pending = undefined;
 			this.seenObservationIds.clear();
 			this.seenReviewIds.clear();
@@ -441,6 +504,8 @@ export class Contemplator {
 		if (this.running && !resetTracking) return;
 		if (tipId === this.restoredTipId && !resetTracking) return;
 		this.history = [];
+		this.historyEntryIds = [];
+		const historyMessagesByEntryId = new Map<string, AgentMessage>();
 		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
@@ -468,14 +533,27 @@ export class Contemplator {
 		for (const entry of entries) {
 			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
 				const state = entry.data as { history?: unknown };
-				if (Array.isArray(state.history)) this.history = state.history.filter((message): message is AgentMessage => !!message && typeof message === "object");
+				if (Array.isArray(state.history)) {
+					this.history = state.history.filter((message): message is AgentMessage => !!message && typeof message === "object");
+					this.historyEntryIds = this.history.map(() => undefined);
+				}
 			}
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
-				const data = entry.data as { message?: unknown; compacted?: unknown };
+				const data = entry.data as { message?: unknown; compacted?: unknown; retainedMessageEntryIds?: unknown };
 				const message = data.message;
 				if (message && typeof message === "object") {
-					if (data.compacted === true) this.history = [message as AgentMessage];
-					else this.history.push(message as AgentMessage);
+					const typedMessage = message as AgentMessage;
+					historyMessagesByEntryId.set(entry.id, typedMessage);
+					if (data.compacted === true) {
+						const retainedIds = Array.isArray(data.retainedMessageEntryIds)
+							? data.retainedMessageEntryIds.filter((id): id is string => typeof id === "string" && historyMessagesByEntryId.has(id))
+							: [];
+						this.history = [typedMessage, ...retainedIds.map((id) => historyMessagesByEntryId.get(id)!)];
+						this.historyEntryIds = [entry.id, ...retainedIds];
+					} else {
+						this.history.push(typedMessage);
+						this.historyEntryIds.push(entry.id);
+					}
 				}
 			}
 			if (entry.customType === OM_REVIEWER_STATE && entry.data && typeof entry.data === "object") {
@@ -862,7 +940,7 @@ export class Contemplator {
 				for (const message of runMessages) {
 					if (message.role !== "user" && message.role !== "assistant") continue;
 					this.history.push(message);
-					this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, message });
+					this.historyEntryIds.push(this.appendContemplatorHistoryEntry(ctx, { version: 1, message }));
 					promptPersisted = true;
 					this.markTipPersisted(ctx);
 				}
@@ -892,7 +970,13 @@ export class Contemplator {
 			}
 			if (sessionGeneration === this.sessionGeneration) {
 				workerWatchdog.progress();
-				await workerWatchdog.race(this.compactHistory(resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration, flushEpoch));
+				try {
+					await workerWatchdog.race(this.compactHistory(ctx, resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration, flushEpoch, workerWatchdog.signal));
+				} catch (compactionError) {
+					// The intervention and its durable messages are already complete. Private
+					// history maintenance must never relabel that successful work as failed.
+					debugLog("contemplator.compaction_postponed", { reason: compactionError instanceof Error ? compactionError.message : String(compactionError) });
+				}
 			}
 		} catch (error) {
 			failed = true;
@@ -1134,6 +1218,17 @@ export class Contemplator {
 		}
 	}
 
+	/** Append one private-history entry and attribute its synchronous ledger id. */
+	private appendContemplatorHistoryEntry(ctx: MemoryUpdateCtx, data: Record<string, unknown>): string | undefined {
+		const branch = ctx.sessionManager.getBranch() as readonly Entry[];
+		const before = branch.length;
+		this.pi.appendEntry(CONTEMPLATOR_MESSAGE, data);
+		return (ctx.sessionManager.getBranch() as readonly Entry[])
+			.slice(before)
+			.find((entry) => entry.customType === CONTEMPLATOR_MESSAGE && entry.data === data)?.id
+			?? (ctx.sessionManager.getBranch() as readonly Entry[]).slice(before).find((entry) => entry.customType === CONTEMPLATOR_MESSAGE)?.id;
+	}
+
 	private markTipPersisted(ctx: MemoryUpdateCtx): string | undefined {
 		this.restoredTipId = (ctx.sessionManager.getBranch() as Entry[]).at(-1)?.id;
 		return this.restoredTipId;
@@ -1157,27 +1252,73 @@ export class Contemplator {
 		return own?.id;
 	}
 
-	private async compactHistory(model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number, flushEpoch: number): Promise<void> {
-		const serializedLength = this.history.reduce((total, message) => total + JSON.stringify(message).length, 0);
-		if (this.history.length < 12 || serializedLength < 60_000) return;
-		const previousMessageCount = this.history.length;
+	private async compactHistory(ctx: MemoryUpdateCtx, model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number, flushEpoch: number, signal?: AbortSignal): Promise<void> {
+		const history = this.history.slice();
+		const historyEntryIds = this.historyEntryIds.slice();
+		const historyTokens = contemplatorHistoryTokens(history);
+		const triggerTokens = contemplatorHistoryTriggerTokens(model);
+		if (history.length < 12 || historyTokens < triggerTokens) return;
+
+		const keepRecentTokens = Math.min(CONTEMPLATOR_HISTORY_KEEP_RECENT_TOKENS, Math.max(1, Math.floor(triggerTokens * 0.5)));
+		const initialPrefixEnd = recentHistoryStart(history, historyEntryIds, keepRecentTokens);
+		if (initialPrefixEnd === undefined) return;
+		const previousMessageCount = history.length;
 		debugLog("contemplator.compaction_start", {
 			historyMessageCount: previousMessageCount,
-			serializedLength,
+			historyTokens,
+			triggerTokens,
+			keepRecentTokens,
+			prefixMessageCount: initialPrefixEnd,
+			retainedMessageCount: history.length - initialPrefixEnd,
 		});
-		const history = this.history.slice();
-		const summaryWithUsage = await generateSummaryWithUsage(history as AgentMessage[], model, 4_000, apiKey, headers);
+
+		const summarizePrefix = async (prefixEnd: number) => generateSummaryWithUsage(
+			history.slice(0, prefixEnd),
+			model,
+			CONTEMPLATOR_HISTORY_SUMMARY_RESERVE_TOKENS,
+			apiKey,
+			headers,
+			signal,
+			CONTEMPLATOR_HISTORY_SUMMARY_INSTRUCTIONS,
+		);
+
+		let prefixEnd = initialPrefixEnd;
+		let summaryWithUsage: Awaited<ReturnType<typeof generateSummaryWithUsage>>;
+		try {
+			summaryWithUsage = await summarizePrefix(prefixEnd);
+		} catch (error) {
+			const failure = error instanceof Error ? error.message : String(error);
+			const fallbackEnd = /generation hit the token cap/i.test(failure)
+				? smallerPrefixEnd(history, initialPrefixEnd)
+				: undefined;
+			if (fallbackEnd === undefined) {
+				debugLog("contemplator.compaction_postponed", { reason: failure, historyTokens, prefixMessageCount: prefixEnd });
+				return;
+			}
+			prefixEnd = fallbackEnd;
+			debugLog("contemplator.compaction_retry_smaller_prefix", { reason: failure, prefixMessageCount: prefixEnd, retainedMessageCount: history.length - prefixEnd });
+			try {
+				summaryWithUsage = await summarizePrefix(prefixEnd);
+			} catch (fallbackError) {
+				debugLog("contemplator.compaction_postponed", {
+					reason: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+					historyTokens,
+					prefixMessageCount: prefixEnd,
+				});
+				return;
+			}
+		}
+
 		this.runtime.recordAgentUsage(summaryWithUsage.usage);
 		if (sessionGeneration !== this.sessionGeneration || flushEpoch !== this.flushEpoch) {
 			debugLog("contemplator.compaction_stale", { reason: "session_or_branch_changed" });
 			return;
 		}
-		const summary = summaryWithUsage.text;
 		const summaryModel = model as Model<any> & { api?: unknown; provider?: string; id?: string };
 		const summaryUsage = summaryWithUsage.usage;
-		this.history = [{
+		const summaryMessage = {
 			role: "assistant",
-			content: [{ type: "text", text: `Previous contemplator context summary:\n${summary}` }],
+			content: [{ type: "text", text: `Previous contemplator context summary:\n${summaryWithUsage.text}` }],
 			api: summaryModel.api,
 			provider: summaryModel.provider ?? "unknown",
 			model: summaryModel.id ?? "contemplator",
@@ -1191,12 +1332,24 @@ export class Contemplator {
 			},
 			stopReason: "stop",
 			timestamp: Date.now(),
-		} as AgentMessage];
-		this.pi.appendEntry(CONTEMPLATOR_MESSAGE, { version: 1, compacted: true, message: this.history[0] });
+		} as AgentMessage;
+		const retainedMessages = history.slice(prefixEnd);
+		const retainedMessageEntryIds = historyEntryIds.slice(prefixEnd).filter((id): id is string => typeof id === "string");
+		if (retainedMessageEntryIds.length !== retainedMessages.length) {
+			debugLog("contemplator.compaction_postponed", { reason: "retained history lacked durable entry ids", retainedMessageCount: retainedMessages.length, retainedReferenceCount: retainedMessageEntryIds.length });
+			return;
+		}
+		const checkpoint = { version: 2, compacted: true, message: summaryMessage, retainedMessageEntryIds };
+		const checkpointEntryId = this.appendContemplatorHistoryEntry(ctx, checkpoint);
+		this.history = [summaryMessage, ...retainedMessages];
+		this.historyEntryIds = [checkpointEntryId, ...retainedMessageEntryIds];
+		this.markTipPersisted(ctx);
 		debugLog("contemplator.compaction_complete", {
 			previousMessageCount,
 			newMessageCount: this.history.length,
-			summaryLength: summary.length,
+			prefixMessageCount: prefixEnd,
+			retainedMessageCount: retainedMessages.length,
+			summaryLength: summaryWithUsage.text.length,
 		});
 	}
 }
