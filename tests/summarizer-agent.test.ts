@@ -97,6 +97,10 @@ describe("summarizer agent", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("repetitive low-value history");
 		expect(SUMMARIZER_SYSTEM).toContain("completed units of work");
 		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips");
+		expect(SUMMARIZER_SYSTEM).toContain("relatively large summary is acceptable");
+		expect(SUMMARIZER_SYSTEM).toContain("Pick five coherent groups of the lowest-value memories or summaries");
+		expect(SUMMARIZER_SYSTEM).toContain("summarize can save multiple summaries in one call");
+		expect(SUMMARIZER_SYSTEM).toContain("Do not count tokens or track which memories have already been consumed");
 		expect(SUMMARIZER_SYSTEM).toContain("future agent can recall citations");
 		expect(SUMMARIZER_SYSTEM).toContain("Examples:");
 		expect(SUMMARIZER_SYSTEM).toContain("BAD:");
@@ -110,15 +114,32 @@ describe("summarizer agent", () => {
 		expect(summarizerContinue(2, 3)).toContain("YOU HAVE BEEN THINKING FOR 60 MINUTES");
 		expect(summarizerContinue(2, 3)).toContain("2 RECORDED SUMMARIES");
 		expect(summarizerContinue(2, 3)).toContain("DO NOT DRAFT OR WRITE SUMMARIES IN THE MAIN TEXT");
-		expect(summarizerContinue(2, 3)).toContain("REVISE THEM LATER USING fix_summary");
+		expect(summarizerContinue(2, 3)).toContain("REVISE IT LATER USING fix_summary");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
 
-	it("injects the full system prompt once and defaults reasoning to minimal", async () => {
+	it("reports how old the provided memories are", async () => {
+		let promptText = "";
+		const loop = ((_prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				promptText = context.messages[0].content[0].text;
+				await finish(context);
+				return [];
+			},
+		})) as any;
+
+		await runSummarizer({ ...base, now: Date.parse("2026-01-05T12:00:00Z"), agentLoop: loop });
+
+		expect(promptText).toContain("approximately 26–98 hours old");
+		expect(promptText).toContain("Details that are no longer relevant after this much time may be dropped");
+	});
+
+	it("injects the full system prompt once and disables reasoning", async () => {
 		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: fakeLoop(async (_n, context, config) => {
 			expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM);
 			expect(JSON.stringify(context.messages)).not.toContain(SUMMARIZER_SYSTEM);
-			expect(config.reasoning).toBe("minimal");
+			expect(config.reasoning).toBeUndefined();
 			await tool(context, "done").execute("d1", {});
 			await tool(context, "done").execute("d2", {});
 		}) });
@@ -310,8 +331,9 @@ describe("summarizer agent", () => {
 		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: loop });
 		expect(configs[0].toolChoice).toBeUndefined();
 		expect(configs[1].toolChoice).toBe("required");
-		expect(configs[1].reasoning).toBe("minimal");
+		expect(configs[1].reasoning).toBeUndefined();
 		expect(configs[1].onPayload({})).toMatchObject({ tool_choice: "required" });
+		expect(prompts[1]).toContain("PICK FIVE MORE COHERENT GROUPS");
 		expect(prompts[1]).toContain("1 RECORDED SUMMARY");
 		expect(prompts[1]).toContain("RECORD THEM USING summarize NOW");
 	});

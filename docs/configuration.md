@@ -45,7 +45,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `compactAfterTokensRatio` | `0.68` | Context-window fraction used to derive the raw source-backlog threshold in ratio mode; injected memory remains excluded from the compared backlog. Must be between 0 and 1. |
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
 | `observerModel` | current model | Optional `{ provider, id, thinking }` override for the observer. |
-| `summarizerModel` | current model | Optional `{ provider, id, thinking }` override for the summarizer. |
+| `summarizerModel` | current model | Optional `{ provider, id }` override for the summarizer. Summarizer thinking is forced off so it records small batches promptly instead of drafting at length. |
 | `model` | current model | Legacy shared fallback when an observer/summarizer-specific override is absent. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |
 | `newMemoryPoolMaxTokens` | `40000` | Token budget for the newest protected memories. Whole memories are not split, and the newest memory is always protected even when it alone exceeds the budget. |

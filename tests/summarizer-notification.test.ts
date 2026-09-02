@@ -58,7 +58,7 @@ describe("summarizer contemplation isolation", () => {
 		expect(runtime.resolveModel).toHaveBeenCalledWith(expect.objectContaining({
 			configuredModel: { provider: "summary-provider", id: "summary-model", thinking: "high" },
 		}));
-		expect(summarizerMocks.runSummarizer).toHaveBeenCalledWith(expect.objectContaining({ thinkingLevel: "high" }));
+		expect(summarizerMocks.runSummarizer).toHaveBeenCalledWith(expect.objectContaining({ thinkingLevel: "off" }));
 		expect(pi.appendEntry).toHaveBeenCalledWith("om.summarizer.commit", commit);
 		expect(memoryUpdate).not.toHaveBeenCalled();
 	});

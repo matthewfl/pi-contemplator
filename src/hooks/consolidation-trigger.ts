@@ -407,7 +407,9 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				newPoolMaxTokens: runtime.config.newMemoryPoolMaxTokens,
 				samplingThresholdTokens: runtime.config.summarizerSamplingThresholdTokens,
 				maxTurns: runtime.config.agentMaxTurns,
-				thinkingLevel: runtime.config.summarizerModel?.thinking ?? runtime.config.model?.thinking ?? "minimal",
+				// Summarization is a bounded extraction/compression task. Extended
+				// reasoning made models draft for too long instead of registering work.
+				thinkingLevel: "off",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
 					watchdog.progress();
