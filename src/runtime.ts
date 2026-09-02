@@ -176,6 +176,8 @@ export class Runtime {
 	summarizerPromise: Promise<void> | null = null;
 	/** Old-pool token threshold for the next pass; undefined means configured target. */
 	summarizerNextTriggerTokens: number | undefined;
+	/** A scheduling checkpoint arrived while the single-flight summarizer lock was held. */
+	summarizerRecheckPending = false;
 	private memoryUpdateListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private agentActivityListener: ((ctx: MemoryUpdateCtx) => void) | undefined;
 	private settingsUpdateListener: ((ctx: MemoryUpdateCtx, settings: SettingsUpdate) => void) | undefined;
@@ -277,6 +279,7 @@ export class Runtime {
 		this.observerBacklogBlocking = false;
 		this.summarizerInFlight = false;
 		this.summarizerPromise = null;
+		this.summarizerRecheckPending = false;
 		this.reviewInFlight = false;
 		this.reviewPromise = null;
 		this.compactInFlight = false;

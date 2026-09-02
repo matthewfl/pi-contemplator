@@ -95,10 +95,23 @@ describe("summarizer scheduling", () => {
 		expect(summarizerTriggerTokens(value)).toBe(40);
 	});
 
-	it("advances only successful passes and preserves failed-pass eligibility", () => {
+	it("anchors failed-pass backoff to the pool seen at launch", () => {
 		expect(summarizerTriggerAfterRun(true, undefined, 40, 55, 2)).toBe(57);
-		expect(summarizerTriggerAfterRun(false, undefined, 40, 55, 2)).toBeUndefined();
-		expect(summarizerTriggerAfterRun(false, 48, 40, 55, 2)).toBe(48);
+		expect(summarizerTriggerAfterRun(false, undefined, 40, 80, 2)).toBeUndefined();
+		expect(summarizerTriggerAfterRun(false, 48, 40, 80, 2, 50)).toBe(52);
+		// The 30 tokens added during the failed run already exceed the retry
+		// threshold instead of moving that threshold forward to 82.
+		expect(80).toBeGreaterThan(summarizerTriggerAfterRun(false, undefined, 40, 80, 2, 50)!);
+	});
+
+	it("remembers a scheduling checkpoint received while a summarizer is running", () => {
+		const value = runtime();
+		value.summarizerInFlight = true;
+		const ctx = { cwd: "/tmp", hasUI: false, model: undefined, modelRegistry: {}, sessionManager: { getBranch: () => memoryEntries([20, 20]) } };
+
+		scheduleSummarizer({ appendEntry: vi.fn() } as any, value, ctx);
+
+		expect(value.summarizerRecheckPending).toBe(true);
 	});
 
 	it("does not raise the live threshold when model resolution fails", async () => {

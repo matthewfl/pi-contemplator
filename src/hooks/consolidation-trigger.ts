@@ -242,7 +242,6 @@ export async function runConsolidationPipeline(
 	const pipelineEntries = options.observerEntries ?? (ctx.sessionManager.getBranch() as Entry[]);
 	const initialCoverage = latestCoverageIndex(pipelineEntries, OM_OBSERVATIONS_RECORDED);
 	const catchUpThroughId = sourceEntriesAfter(pipelineEntries, initialCoverage).at(-1)?.id;
-	const beforeFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
 	runtime.consolidationPhase = "observer";
 	runtime.observerBacklogBlocking = catchUpThroughId !== undefined;
 	try {
@@ -254,6 +253,7 @@ export async function runConsolidationPipeline(
 		while (true) {
 			const beforeEntries = ctx.sessionManager.getBranch() as Entry[];
 			const beforeCoverage = latestCoverageIndex(beforeEntries, OM_OBSERVATIONS_RECORDED);
+			const beforeObservationIds = new Set(foldLedger(beforeEntries).observations.map((memory) => memory.id));
 			const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, {
 				force: options.forceObserver === true,
 				entries: options.observerEntries,
@@ -261,9 +261,18 @@ export async function runConsolidationPipeline(
 				contextGeneration,
 			});
 			if (observerOutcome === "abort") return;
-			if (options.observerEntries) break;
 
 			const afterEntries = ctx.sessionManager.getBranch() as Entry[];
+			if (shouldScheduleSummarizerFromObserver(options)) {
+				const passAddedObservations = foldLedger(afterEntries).observations.some((memory) => !beforeObservationIds.has(memory.id));
+				// A finite observer backlog can take hours to drain while the primary
+				// agent is idle. Let each completed chunk feed the independent
+				// summarizer; waiting for the entire observer pipeline can otherwise
+				// leave an oversized old pool untouched indefinitely.
+				if (passAddedObservations) scheduleSummarizer(pi, runtime, ctx);
+			}
+			if (options.observerEntries) break;
+
 			const afterCoverage = latestCoverageIndex(afterEntries, OM_OBSERVATIONS_RECORDED);
 			const remainingTokens = catchUpThroughId === undefined
 				? 0
@@ -279,10 +288,6 @@ export async function runConsolidationPipeline(
 		// pipeline's blocking backlog. Clear before notifying the contemplator.
 		if (contextGeneration === runtime.getContextGeneration()) runtime.observerBacklogBlocking = false;
 	}
-	const afterFold = foldLedger(ctx.sessionManager.getBranch() as Entry[]);
-	const beforeIds = new Set(beforeFold.observations.map((item) => item.id));
-	const added = afterFold.observations.filter((item) => !beforeIds.has(item.id));
-	if (added.length > 0 && shouldScheduleSummarizerFromObserver(options)) scheduleSummarizer(pi, runtime, ctx);
 	if (contextGeneration === runtime.getContextGeneration()) runtime.notifyMemoryUpdate?.(ctx);
 }
 
@@ -312,10 +317,14 @@ export function summarizerTriggerAfterRun(
 	targetTokens: number,
 	postRunOldTokens: number,
 	retriggerTokens: number,
+	failedAttemptStartOldTokens?: number,
 ): number | undefined {
-	return successfullyCompleted
-		? nextSummarizerTriggerTokens(targetTokens, postRunOldTokens, retriggerTokens)
-		: currentTriggerTokens;
+	if (successfullyCompleted) return nextSummarizerTriggerTokens(targetTokens, postRunOldTokens, retriggerTokens);
+	if (failedAttemptStartOldTokens === undefined) return currentTriggerTokens;
+	// Back off a model pass from the pool it actually received. Growth that
+	// arrived while it was running must count toward the retry rather than being
+	// swallowed by a threshold based on the larger post-run pool.
+	return Math.max(currentTriggerTokens ?? targetTokens, failedAttemptStartOldTokens + retriggerTokens);
 }
 
 function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
@@ -324,14 +333,27 @@ function syncAndScheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 }
 
 export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
-	if (runtime.config.passive || !runtime.config.summarizerEnabled || runtime.summarizerInFlight) return;
+	if (runtime.config.passive || !runtime.config.summarizerEnabled) return;
+	if (runtime.summarizerInFlight) {
+		// Do not lose observer/activity checkpoints that arrive during a long run.
+		// The tracked task rechecks once its single-flight lock has been released.
+		runtime.summarizerRecheckPending = true;
+		return;
+	}
+	runtime.summarizerRecheckPending = false;
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const pools = currentMemoryPools(runtime, entries);
-	if (pools.oldTokens <= summarizerTriggerTokens(runtime)) return;
+	const targetTokens = runtime.config.oldMemoryPoolTargetTokens;
+	const nextTriggerTokens = summarizerTriggerTokens(runtime);
+	// Initial/healthy eligibility strictly exceeds the advisory target. Once a
+	// growth backoff is installed, reaching that +N threshold is sufficient; it
+	// must not require an accidental extra token beyond the configured amount.
+	if (pools.oldTokens <= targetTokens || nextTriggerTokens > targetTokens && pools.oldTokens < nextTriggerTokens) return;
+	const runStartOldTokens = pools.oldTokens;
 	const generation = runtime.getContextGeneration();
 	const runId = `summarizer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const sessionMetadata = debugSessionMetadata(ctx);
-	void runtime.launchSummarizerTask(ctx, async () => withDebugLogContext({
+	const task = runtime.launchSummarizerTask(ctx, async () => withDebugLogContext({
 		enabled: runtime.config.debugLog === true,
 		cwd: ctx.cwd,
 		...sessionMetadata,
@@ -415,19 +437,28 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				const postRunPools = currentMemoryPools(runtime, ctx.sessionManager.getBranch() as Entry[]);
 				const target = runtime.config.oldMemoryPoolTargetTokens;
 				runtime.summarizerNextTriggerTokens = summarizerTriggerAfterRun(
-					// A failed/no-progress model pass must not be retried with the
-					// identical pool at every primary-agent checkpoint. Require fresh
-					// old-memory growth before trying another (potentially different)
-					// sample. Model-resolution failures spend no tokens and stay eligible.
-					successfullyCompleted || modelRunAttempted,
+					successfullyCompleted,
 					runtime.summarizerNextTriggerTokens,
 					target,
 					postRunPools.oldTokens,
 					runtime.config.summarizerRetriggerTokens,
+					// A failed/no-progress model pass should not retry an identical
+					// prompt at every checkpoint. Anchor the growth backoff to the pool
+					// seen at launch so concurrent growth is not accidentally erased.
+					modelRunAttempted ? runStartOldTokens : undefined,
 				);
 			}
 		}
 	}));
+	void task?.then(() => {
+		if (generation !== runtime.getContextGeneration()) return;
+		if (!runtime.summarizerRecheckPending) return;
+		// launchTrackedTask has released summarizerInFlight before resolving.
+		// Coalesce every checkpoint received during the old run into one fresh
+		// ledger/threshold evaluation.
+		runtime.summarizerRecheckPending = false;
+		scheduleSummarizer(pi, runtime, ctx);
+	});
 }
 
 async function runObserverStage(
