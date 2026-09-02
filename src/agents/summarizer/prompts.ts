@@ -43,4 +43,8 @@ Tools:
 
 Prefer faithful useful compression over both distortion and indefinite accumulation. Under pressure, make progress on old low-value clusters first; treat durable valuable records and user intent as the last things to compress.`;
 
-export const SUMMARIZER_CONTINUE = "IMPORTANT!!!! CALL summarize TOOL NOW TO RECORD ANY SUMMARIES YOU HAVE DECIDED, OR CALL done IF NO SAFE SUMMARY IS WARRANTED. DO NOT DESCRIBE THE ACTION IN PROSE—USE A TOOL NOW.";
+export function summarizerContinue(recordedSummaries: number, reminderNumber: number): string {
+	const count = Math.max(0, Math.floor(recordedSummaries));
+	const thinkingMinutes = Math.max(1, Math.floor(reminderNumber)) * 20;
+	return `IMPORTANT!!!! YOU HAVE BEEN THINKING FOR ${thinkingMinutes} MINUTES. CALL A TOOL NOW. DO NOT WRITE SUMMARIES IN THE MAIN TEXT. THERE ${count === 1 ? "IS" : "ARE"} CURRENTLY ${count} RECORDED ${count === 1 ? "SUMMARY" : "SUMMARIES"}${count === 0 ? "; NOTHING HAS BEEN SUMMARIZED YET" : ""}. IF YOU WROTE SUMMARIES IN THE MAIN TEXT, RECORD THEM USING THE summarize TOOL NOW. IF NO SAFE SUMMARY IS WARRANTED, CALL done.`;
+}

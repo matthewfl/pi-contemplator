@@ -27,7 +27,7 @@ import { estimateStringTokens } from "../../tokens.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { logAgentStreamError } from "../stream-errors.js";
-import { SUMMARIZER_CONTINUE, SUMMARIZER_SYSTEM } from "./prompts.js";
+import { summarizerContinue, SUMMARIZER_SYSTEM } from "./prompts.js";
 import {
 	renderSummarizerMemory,
 	sampleSummarizerMemories,
@@ -568,7 +568,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 
 	try {
 		await runOnce("The preceding summarize call and receipt are an illustrative example only. Its placeholder ids are not real and it did not create a summary. Now inspect the actual records and use tools to register safe compression, or call done if none is warranted.", false);
-		for (let invocation = 1; !completedWithDone && invocation < SUMMARIZER_MAX_INVOCATIONS; invocation++) await runOnce(SUMMARIZER_CONTINUE, true);
+		for (let invocation = 1; !completedWithDone && invocation < SUMMARIZER_MAX_INVOCATIONS; invocation++) await runOnce(summarizerContinue(drafts.size, invocation), true);
 	} catch (error) {
 		debugLog("summarizer.error", { error: error instanceof Error ? error.message : String(error), acceptedSummaries: drafts.size });
 		if (drafts.size === 0) return { completed: false, reviewedUpToId: coversUpToId, sample };

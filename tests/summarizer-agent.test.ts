@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { forceRequiredToolPayload, parseSummaryCitations, runSummarizer, SUMMARY_MAX_SOURCE_TOKEN_RATIO } from "../src/agents/summarizer/agent.js";
-import { SUMMARIZER_CONTINUE, SUMMARIZER_SYSTEM } from "../src/agents/summarizer/prompts.js";
+import { summarizerContinue, SUMMARIZER_SYSTEM } from "../src/agents/summarizer/prompts.js";
 import { hashId } from "../src/ids.js";
 import type { Entry } from "../src/session-ledger/index.js";
 
@@ -105,7 +105,11 @@ describe("summarizer agent", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("fix_summary corrects");
 		expect(SUMMARIZER_SYSTEM).toContain("Call done alone");
 		expect(SUMMARIZER_SYSTEM).toContain("Prefer faithful useful compression");
-		expect(SUMMARIZER_CONTINUE).toContain("IMPORTANT!!!!");
+		expect(summarizerContinue(0, 1)).toContain("IMPORTANT!!!! YOU HAVE BEEN THINKING FOR 20 MINUTES");
+		expect(summarizerContinue(0, 1)).toContain("0 RECORDED SUMMARIES; NOTHING HAS BEEN SUMMARIZED YET");
+		expect(summarizerContinue(2, 3)).toContain("YOU HAVE BEEN THINKING FOR 60 MINUTES");
+		expect(summarizerContinue(2, 3)).toContain("2 RECORDED SUMMARIES");
+		expect(summarizerContinue(2, 3)).toContain("DO NOT WRITE SUMMARIES IN THE MAIN TEXT");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
 
@@ -137,6 +141,33 @@ describe("summarizer agent", () => {
 		const firstRunPrompts = secondContext.messages.filter((message: any) => message.role === "user" && JSON.stringify(message).includes("preceding summarize call"));
 		expect(firstRunPrompts).toHaveLength(1);
 		expect(secondContext.messages.filter((message: any) => JSON.stringify(message).includes("summarizer-example"))).toHaveLength(2);
+	});
+
+	it("retains prose from a stopped invocation in the continuation context", async () => {
+		let invocation = 0;
+		let secondContext: any;
+		let secondPrompt: any;
+		const loop = ((prompts: any[], context: any) => {
+			const current = invocation++;
+			if (current === 1) {
+				secondContext = context;
+				secondPrompt = prompts[0];
+			}
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: async () => {
+					if (current === 1) await finish(context);
+					return current === 0
+						? [structuredClone(prompts[0]), { role: "assistant", content: [{ type: "text", text: "PROSE_SUMMARY_DRAFT" }], timestamp: 1 }]
+						: [structuredClone(prompts[0])];
+				},
+			};
+		}) as any;
+
+		await runSummarizer({ ...base, agentLoop: loop });
+
+		expect(JSON.stringify(secondContext.messages)).toContain("PROSE_SUMMARY_DRAFT");
+		expect(JSON.stringify(secondPrompt)).toContain("NOTHING HAS BEEN SUMMARIZED YET");
 	});
 
 	it("creates a cited summary, consumes its sources, and double-confirms done", async () => {
@@ -261,15 +292,26 @@ describe("summarizer agent", () => {
 		expect(result.commit?.completedWithDone).toBe(false);
 	});
 
-	it("forces tool choice after an initial prose-only stop", async () => {
+	it("forces tool choice after an initial prose-only stop and reports recorded summaries", async () => {
 		const configs: any[] = [];
-		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: fakeLoop(async (invocation, context, config) => {
-			configs.push(config);
-			if (invocation === 1) await finish(context);
-		}) });
+		const prompts: string[] = [];
+		let invocation = 0;
+		const loop = ((suppliedPrompts: any[], context: any, config: any) => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => {
+				prompts.push(suppliedPrompts[0].content[0].text);
+				configs.push(config);
+				if (invocation++ === 0) await tool(context, "summarize").execute("s", { summaries: [`Recorded result [${A}, ${B}].`] });
+				else await finish(context);
+				return [];
+			},
+		})) as any;
+		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: loop });
 		expect(configs[0].toolChoice).toBeUndefined();
 		expect(configs[1].toolChoice).toBe("required");
 		expect(configs[1].reasoning).toBe("minimal");
 		expect(configs[1].onPayload({})).toMatchObject({ tool_choice: "required" });
+		expect(prompts[1]).toContain("1 RECORDED SUMMARY");
+		expect(prompts[1]).toContain("RECORD THEM USING THE summarize TOOL NOW");
 	});
 });
