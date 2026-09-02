@@ -58,8 +58,16 @@ export function observerInputCapLabel(runtime: Runtime, contextWindow: number | 
 	return `${cap.toLocaleString()} tokens (fallback default; model context unavailable)`;
 }
 
+function memoryWorkerModelSettingLabel(runtime: Runtime, worker: "observer" | "summarizer"): string {
+	const key = worker === "observer" ? "observerModel" : "summarizerModel";
+	const settings = runtime.getSessionSettings();
+	if (hasOverride(settings, key)) return modelLabel(runtime.config[key]);
+	const inherited = runtime.config[key] ?? runtime.config.model;
+	return `${modelLabel(inherited)} (default)`;
+}
+
 function observerContextWindow(runtime: Runtime, ctx: ExtensionContext): number | undefined {
-	const configured = runtime.config.model;
+	const configured = runtime.configuredMemoryWorkerModel("observer");
 	const registry = ctx.modelRegistry as unknown as ModelRegistryLike;
 	const model = configured ? registry.find?.(configured.provider, configured.id) ?? ctx.model : ctx.model;
 	return (model as { contextWindow?: number } | undefined)?.contextWindow;
@@ -140,11 +148,25 @@ class FilterableModelSelector extends Container implements Focusable {
 	}
 }
 
-async function chooseModel(ctx: ExtensionContext, current: ConfiguredModel | undefined, title: string): Promise<ConfiguredModel | null | undefined> {
+export async function modelsForSettingsSelector(ctx: ExtensionContext): Promise<ConfiguredModel[]> {
+	// Pi resolves enabledModels (and --models) into this session-scoped list.
+	// Mirroring it keeps our worker pickers consistent with the built-in model
+	// picker instead of unexpectedly exposing the entire provider catalogue.
+	if (ctx.scopedModels.length > 0) {
+		return ctx.scopedModels.map(({ model, thinkingLevel }) => ({
+			provider: model.provider,
+			id: model.id,
+			...(thinkingLevel === undefined ? {} : { thinking: thinkingLevel }),
+		}));
+	}
 	const registry = ctx.modelRegistry as unknown as ModelRegistryLike;
 	await registry.refresh?.();
 	const available = registry.getAvailable();
-	const models = available.length > 0 ? available : registry.getAll();
+	return (available.length > 0 ? available : registry.getAll()).map(({ provider, id }) => ({ provider, id }));
+}
+
+async function chooseModel(ctx: ExtensionContext, current: ConfiguredModel | undefined, title: string): Promise<ConfiguredModel | null | undefined> {
+	const models = await modelsForSettingsSelector(ctx);
 	if (models.length === 0) {
 		ctx.ui.notify("No configured models are available.", "warning");
 		return undefined;
@@ -218,6 +240,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Contemplator new-observation trigger (count): ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
 				`Contemplator response spacing (count): ${scalarLabel(runtime, "contemplatorMinTurns")}`,
 				`Summarizer enabled: ${scalarLabel(runtime, "summarizerEnabled")}`,
+				`Summarizer model: ${memoryWorkerModelSettingLabel(runtime, "summarizer")}`,
 				`New memory pool protection budget (tokens): ${scalarLabel(runtime, "newMemoryPoolMaxTokens")}`,
 				`Old memory pool target (tokens, advisory): ${scalarLabel(runtime, "oldMemoryPoolTargetTokens")}`,
 				`Summarizer old-pool retrigger growth (tokens): ${scalarLabel(runtime, "summarizerRetriggerTokens")}`,
@@ -225,7 +248,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Structural reviewer enabled: ${scalarLabel(runtime, "reviewerEnabled")}`,
 				`Structural reviewer model: ${hasOverride(settings, "reviewerModel") ? modelLabel(runtime.config.reviewerModel) : `${modelLabel(runtime.getDefaultConfig().reviewerModel)} (default)`}`,
 				`Observe source during compaction: ${scalarLabel(runtime, "compactionObserverEnabled")}`,
-				`Observer and summarizer model: ${hasOverride(settings, "model") ? modelLabel(runtime.config.model) : `${modelLabel(runtime.getDefaultConfig().model)} (default)`}`,
+				`Observer model: ${memoryWorkerModelSettingLabel(runtime, "observer")}`,
 				`Observer source backlog trigger (tokens): ${scalarLabel(runtime, "observeAfterTokens")}`,
 				`Observer input cap: ${observerInputCapLabel(runtime, observerContextWindow(runtime, ctx))}`,
 				`Observer and summarizer max rounds: ${scalarLabel(runtime, "agentMaxTurns")}`,
@@ -251,9 +274,12 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 			} else if (choice.startsWith("Structural reviewer model:")) {
 				const model = await chooseModel(ctx, runtime.config.reviewerModel, "Structural reviewer model");
 				if (model !== undefined) appendSettings(pi, runtime, { reviewerModel: model });
-			} else if (choice.startsWith("Observer and summarizer model:")) {
-				const model = await chooseModel(ctx, runtime.config.model, "Observer and summarizer model");
-				if (model !== undefined) appendSettings(pi, runtime, { model });
+			} else if (choice.startsWith("Observer model:")) {
+				const model = await chooseModel(ctx, runtime.config.observerModel ?? runtime.config.model, "Observer model");
+				if (model !== undefined) appendSettings(pi, runtime, { observerModel: model });
+			} else if (choice.startsWith("Summarizer model:")) {
+				const model = await chooseModel(ctx, runtime.config.summarizerModel ?? runtime.config.model, "Summarizer model");
+				if (model !== undefined) appendSettings(pi, runtime, { summarizerModel: model });
 			} else if (choice.startsWith("Automatic compaction threshold mode:")) {
 				const mode = await ctx.ui.select("Automatic compaction threshold mode", ["calibrated", "ratio"]);
 				if (mode === "calibrated" || mode === "ratio") appendSettings(pi, runtime, { compactAfterTokensMode: mode });

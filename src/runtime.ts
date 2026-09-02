@@ -31,6 +31,8 @@ export type SessionSettings = Partial<Pick<Config,
 >> & {
 	/** null explicitly means use the configured/session model. */
 	model?: ConfiguredModel | null;
+	observerModel?: ConfiguredModel | null;
+	summarizerModel?: ConfiguredModel | null;
 	contemplatorModel?: ConfiguredModel | null;
 	reviewerModel?: ConfiguredModel | null;
 };
@@ -148,6 +150,10 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		if (typeof data.compactAfterTokensRatio === "number" && data.compactAfterTokensRatio > 0 && data.compactAfterTokensRatio < 1) restored.compactAfterTokensRatio = data.compactAfterTokensRatio;
 		if (data.model === null) restored.model = null;
 		else if (isConfiguredModel(data.model)) restored.model = data.model;
+		if (data.observerModel === null) restored.observerModel = null;
+		else if (isConfiguredModel(data.observerModel)) restored.observerModel = data.observerModel;
+		if (data.summarizerModel === null) restored.summarizerModel = null;
+		else if (isConfiguredModel(data.summarizerModel)) restored.summarizerModel = data.summarizerModel;
 		if (data.contemplatorModel === null) restored.contemplatorModel = null;
 		else if (isConfiguredModel(data.contemplatorModel)) restored.contemplatorModel = data.contemplatorModel;
 		if (data.reviewerModel === null) restored.reviewerModel = null;
@@ -240,11 +246,13 @@ export class Runtime {
 	}
 
 	private applySessionSettings(): void {
-		const { model, contemplatorModel, reviewerModel, ...scalarSettings } = this.sessionSettings;
+		const { model, observerModel, summarizerModel, contemplatorModel, reviewerModel, ...scalarSettings } = this.sessionSettings;
 		this.config = {
 			...this.baseConfig,
 			...scalarSettings,
 			...(model === undefined ? {} : { model: model ?? undefined }),
+			...(observerModel === undefined ? {} : { observerModel: observerModel ?? undefined }),
+			...(summarizerModel === undefined ? {} : { summarizerModel: summarizerModel ?? undefined }),
 			...(contemplatorModel === undefined ? {} : { contemplatorModel: contemplatorModel ?? undefined }),
 			...(reviewerModel === undefined ? {} : { reviewerModel: reviewerModel ?? undefined }),
 		};
@@ -261,6 +269,14 @@ export class Runtime {
 
 	getDefaultConfig(): Config {
 		return { ...this.baseConfig };
+	}
+
+	/** Resolve an observer/summarizer override, retaining explicit session-model selection. */
+	configuredMemoryWorkerModel(worker: "observer" | "summarizer"): ConfiguredModel | null {
+		const key = worker === "observer" ? "observerModel" : "summarizerModel";
+		const sessionValue = this.sessionSettings[key];
+		if (sessionValue === null) return null;
+		return this.config[key] ?? this.config.model ?? null;
 	}
 
 	advanceContextGeneration(): void {

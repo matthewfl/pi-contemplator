@@ -109,7 +109,8 @@ describe("summarizer agent", () => {
 		expect(summarizerContinue(0, 1)).toContain("0 RECORDED SUMMARIES; NOTHING HAS BEEN SUMMARIZED YET");
 		expect(summarizerContinue(2, 3)).toContain("YOU HAVE BEEN THINKING FOR 60 MINUTES");
 		expect(summarizerContinue(2, 3)).toContain("2 RECORDED SUMMARIES");
-		expect(summarizerContinue(2, 3)).toContain("DO NOT WRITE SUMMARIES IN THE MAIN TEXT");
+		expect(summarizerContinue(2, 3)).toContain("DO NOT DRAFT OR WRITE SUMMARIES IN THE MAIN TEXT");
+		expect(summarizerContinue(2, 3)).toContain("REVISE THEM LATER USING fix_summary");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
 
@@ -312,6 +313,6 @@ describe("summarizer agent", () => {
 		expect(configs[1].reasoning).toBe("minimal");
 		expect(configs[1].onPayload({})).toMatchObject({ tool_choice: "required" });
 		expect(prompts[1]).toContain("1 RECORDED SUMMARY");
-		expect(prompts[1]).toContain("RECORD THEM USING THE summarize TOOL NOW");
+		expect(prompts[1]).toContain("RECORD THEM USING summarize NOW");
 	});
 });

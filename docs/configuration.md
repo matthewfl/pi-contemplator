@@ -11,8 +11,10 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "compactAfterTokensMode": "calibrated",
     "compactAfterTokensRatio": 0.68,
     "agentMaxTurns": 16,
+    "observerModel": { "provider": "anthropic", "id": "claude-sonnet", "thinking": "low" },
 
     "summarizerEnabled": true,
+    "summarizerModel": { "provider": "anthropic", "id": "claude-sonnet", "thinking": "minimal" },
     "newMemoryPoolMaxTokens": 40000,
     "oldMemoryPoolTargetTokens": 40000,
     "summarizerRetriggerTokens": 2000,
@@ -42,7 +44,9 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `compactAfterTokensMode` | `calibrated` | `calibrated` or `ratio`. |
 | `compactAfterTokensRatio` | `0.68` | Context-window fraction used to derive the raw source-backlog threshold in ratio mode; injected memory remains excluded from the compared backlog. Must be between 0 and 1. |
 | `agentMaxTurns` | `16` | Nested-agent turn cap used by observer and summarizer runs. |
-| `model` | current model | Optional `{ provider, id, thinking }` override for observer and summarizer. |
+| `observerModel` | current model | Optional `{ provider, id, thinking }` override for the observer. |
+| `summarizerModel` | current model | Optional `{ provider, id, thinking }` override for the summarizer. |
+| `model` | current model | Legacy shared fallback when an observer/summarizer-specific override is absent. |
 | `summarizerEnabled` | `true` | Enables stateless memory summarization. |
 | `newMemoryPoolMaxTokens` | `40000` | Token budget for the newest protected memories. Whole memories are not split, and the newest memory is always protected even when it alone exceeds the budget. |
 | `oldMemoryPoolTargetTokens` | `40000` | Advisory old-pool target. The summarizer runs only on old memories after this is exceeded. |
@@ -98,7 +102,7 @@ Agent model overrides use:
 { "provider": "anthropic", "id": "claude-sonnet", "thinking": "low" }
 ```
 
-`thinking` may be `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Resolution falls back through the configured override and current session model according to runtime availability.
+`thinking` may be `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. `/om:settings` exposes independent model selectors for the observer, summarizer, contemplator, and structural reviewer. Its selectors use Pi's session-scoped model set from `enabledModels` (or `--models`) when present, matching the built-in picker; without a scope they show the available catalogue. Observer and summarizer resolution uses their specific override first, then the legacy shared `model`, then the current session model.
 
 ## Commands
 

@@ -46,7 +46,12 @@ export interface Config {
 	/** Advisory token target for older summarizer-eligible memory. */
 	oldMemoryPoolTargetTokens: number;
 	agentMaxTurns: number;
+	/** Legacy shared fallback for observer/summarizer model selection. */
 	model?: ConfiguredModel;
+	/** Optional model override used only by the observer. */
+	observerModel?: ConfiguredModel;
+	/** Optional model override used only by the summarizer. */
+	summarizerModel?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	/** Run the asynchronous observer when a compaction begins. */
@@ -231,6 +236,10 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
+	const observerModel = normalizeModel(value.observerModel);
+	if (observerModel) normalized.observerModel = observerModel;
+	const summarizerModel = normalizeModel(value.summarizerModel);
+	if (summarizerModel) normalized.summarizerModel = summarizerModel;
 	const contemplatorModel = normalizeModel(value.contemplatorModel);
 	if (contemplatorModel) normalized.contemplatorModel = contemplatorModel;
 	const reviewerModel = normalizeModel(value.reviewerModel);

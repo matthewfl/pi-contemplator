@@ -29,6 +29,7 @@ describe("summarizer contemplation isolation", () => {
 			...DEFAULTS,
 			newMemoryPoolMaxTokens: 20,
 			oldMemoryPoolTargetTokens: 1,
+			summarizerModel: { provider: "summary-provider", id: "summary-model", thinking: "high" },
 			showWorkerNotifications: false,
 		};
 		vi.spyOn(runtime, "resolveModel").mockResolvedValue({ ok: true, model: {}, apiKey: "test" });
@@ -54,6 +55,10 @@ describe("summarizer contemplation isolation", () => {
 		scheduleSummarizer(pi as any, runtime, ctx as any);
 		await runtime.summarizerPromise;
 
+		expect(runtime.resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+			configuredModel: { provider: "summary-provider", id: "summary-model", thinking: "high" },
+		}));
+		expect(summarizerMocks.runSummarizer).toHaveBeenCalledWith(expect.objectContaining({ thinkingLevel: "high" }));
 		expect(pi.appendEntry).toHaveBeenCalledWith("om.summarizer.commit", commit);
 		expect(memoryUpdate).not.toHaveBeenCalled();
 	});

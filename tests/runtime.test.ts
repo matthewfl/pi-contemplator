@@ -39,6 +39,27 @@ describe("Runtime V3 behavior", () => {
 		expect(result).toMatchObject({ ok: true, model: sessionModel });
 	});
 
+	it("resolves independent observer and summarizer model settings", () => {
+		const runtime = new Runtime();
+		runtime.setSessionSettings({
+			model: { provider: "shared", id: "fallback" },
+			observerModel: null,
+			summarizerModel: { provider: "summary", id: "large" },
+		});
+
+		expect(runtime.configuredMemoryWorkerModel("observer")).toBeNull();
+		expect(runtime.configuredMemoryWorkerModel("summarizer")).toEqual({ provider: "summary", id: "large" });
+		expect(runtime.config.observerModel).toBeUndefined();
+	});
+
+	it("uses the legacy shared model when no per-worker override exists", () => {
+		const runtime = new Runtime();
+		runtime.setSessionSettings({ model: { provider: "shared", id: "fallback" } });
+
+		expect(runtime.configuredMemoryWorkerModel("observer")).toEqual({ provider: "shared", id: "fallback" });
+		expect(runtime.configuredMemoryWorkerModel("summarizer")).toEqual({ provider: "shared", id: "fallback" });
+	});
+
 	it("falls back to session model and notifies when configured model is missing", async () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();

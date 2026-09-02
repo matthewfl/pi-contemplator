@@ -72,6 +72,12 @@ function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
 	return runtime.config.showWorkerNotifications && ctx.hasUI;
 }
 
+function configuredMemoryWorkerModel(runtime: Runtime, worker: "observer" | "summarizer") {
+	return typeof runtime.configuredMemoryWorkerModel === "function"
+		? runtime.configuredMemoryWorkerModel(worker)
+		: runtime.config[worker === "observer" ? "observerModel" : "summarizerModel"] ?? runtime.config.model ?? null;
+}
+
 function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer") => Promise<ResolvedModel | undefined> {
 	let cached: ResolveResult | undefined;
 	return async (stage) => {
@@ -80,6 +86,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			modelRegistry: ctx.modelRegistry,
 			hasUI: ctx.hasUI,
 			ui: ctx.ui,
+			configuredModel: configuredMemoryWorkerModel(runtime, "observer"),
 		});
 		if (cached.ok) {
 			runtime.resolveFailureNotified = false;
@@ -368,7 +375,13 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 		runtime.lastSummarizerStartedAt = startedAt;
 		runtime.lastSummarizerRun = { startedAt, status: "running", messages: [] };
 		try {
-			const resolved = await runtime.resolveModel({ model: ctx.model, modelRegistry: ctx.modelRegistry, hasUI: ctx.hasUI, ui: ctx.ui });
+			const resolved = await runtime.resolveModel({
+				model: ctx.model,
+				modelRegistry: ctx.modelRegistry,
+				hasUI: ctx.hasUI,
+				ui: ctx.ui,
+				configuredModel: configuredMemoryWorkerModel(runtime, "summarizer"),
+			});
 			if (!resolved.ok) {
 				debugLog("summarizer.model_unavailable", { reason: resolved.reason });
 				runtime.lastSummarizerRun = { startedAt, status: "failed", messages: [], error: resolved.reason };
@@ -394,7 +407,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 				newPoolMaxTokens: runtime.config.newMemoryPoolMaxTokens,
 				samplingThresholdTokens: runtime.config.summarizerSamplingThresholdTokens,
 				maxTurns: runtime.config.agentMaxTurns,
-				thinkingLevel: runtime.config.model?.thinking ?? "minimal",
+				thinkingLevel: runtime.config.summarizerModel?.thinking ?? runtime.config.model?.thinking ?? "minimal",
 				recordUsage: (usage) => runtime.recordAgentUsage(usage),
 				onMessages: (messages) => {
 					watchdog.progress();
@@ -561,7 +574,7 @@ async function runObserverStage(
 			chunk,
 			allowedSourceEntryIds: sourceEntryIds,
 			maxTurns: runtime.config.agentMaxTurns,
-			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			thinkingLevel: runtime.config.observerModel?.thinking ?? runtime.config.model?.thinking ?? "low",
 			recordUsage: (usage) => runtime.recordAgentUsage(usage),
 			onProgress: observerWatchdog.progress,
 			onMessages: (messages) => {

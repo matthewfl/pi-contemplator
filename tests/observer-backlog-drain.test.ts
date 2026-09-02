@@ -149,6 +149,7 @@ describe("observer backlog draining", () => {
 
 	it("walks oldest-first through bounded clean-empty chunks until the backlog is clear", async () => {
 		const { pi, runtime, ctx, getEntries } = setup();
+		runtime.config.observerModel = { provider: "observer-provider", id: "observer-model", thinking: "medium" };
 		const starts: Array<{ sourceEntryIds: readonly string[]; completedAt?: number }> = [];
 		observerMocks.runObserver.mockImplementation(async (args) => {
 			if (!args) return undefined;
@@ -163,6 +164,10 @@ describe("observer backlog draining", () => {
 		await runConsolidationPipeline(pi as any, runtime as any, ctx as any);
 
 		expect(observerMocks.runObserver).toHaveBeenCalledTimes(3);
+		expect(runtime.resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+			configuredModel: { provider: "observer-provider", id: "observer-model", thinking: "medium" },
+		}));
+		expect(observerMocks.runObserver.mock.calls[0][0].thinkingLevel).toBe("medium");
 		expect(observerMocks.runObserver.mock.calls.map((call) => call[0].allowedSourceEntryIds)).toEqual([
 			["raw-1"],
 			["raw-2"],

@@ -40,6 +40,10 @@ function formatRunAge(timestamp: number): string {
 	return `${new Date(timestamp).toISOString()} (${formatDuration(Math.max(0, Date.now() - timestamp))} ago)`;
 }
 
+function configuredModelLabel(model: { provider: string; id: string } | null): string {
+	return model ? `${model.provider}/${model.id}` : "current session model";
+}
+
 function contemplatorWaitingLabel(waitingFor: Runtime["contemplatorState"]["waitingFor"]): string {
 	switch (waitingFor) {
 		case "observer": return "waiting for observer backlog";
@@ -127,6 +131,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Old memory pool:         ~${pools.oldTokens.toLocaleString()} / ${runtime.config.oldMemoryPoolTargetTokens.toLocaleString()} advisory target tokens (${pct(pools.oldTokens, runtime.config.oldMemoryPoolTargetTokens)}%)`,
 				`Summary pool:            ~${visibleSummaryTokens.toLocaleString()} visible tokens`,
 				`Summarizer:              ${runtime.config.summarizerEnabled === false ? "disabled" : "enabled"}; retrigger after +${runtime.config.summarizerRetriggerTokens.toLocaleString()} old-pool tokens / sample above ~${summarizerSamplingTokens.toLocaleString()} tokens`,
+				`Summarizer model:        ${configuredModelLabel(runtime.configuredMemoryWorkerModel("summarizer"))}`,
+				`Observer model:          ${configuredModelLabel(runtime.configuredMemoryWorkerModel("observer"))}`,
 				`Cumulative agent time:   ${formatDuration(agentActiveTimeMs(entries))}`,
 				`Observe source during compaction: ${runtime.config.compactionObserverEnabled === false ? "disabled" : "enabled"}`,
 				`Contemplator:             ${runtime.config.contemplatorEnabled ? "enabled" : "disabled"}`,
