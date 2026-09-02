@@ -93,12 +93,13 @@ describe("summarizer agent", () => {
 		expect(SUMMARIZER_SYSTEM).toContain("grown beyond its configured target and needs to shrink");
 		expect(SUMMARIZER_SYSTEM).toContain("merely ignoring a memory has the same retention effect");
 		expect(SUMMARIZER_SYSTEM).toContain("pollute the context");
-		expect(SUMMARIZER_SYSTEM).toContain("Start with the oldest records");
-		expect(SUMMARIZER_SYSTEM).toContain("repetitive low-value history");
+		expect(SUMMARIZER_SYSTEM).toContain("Do not spend time ranking all records");
+		expect(SUMMARIZER_SYSTEM).toContain("Repetitive low-value history");
 		expect(SUMMARIZER_SYSTEM).toContain("completed units of work");
 		expect(SUMMARIZER_SYSTEM).toContain("source-supported tips");
 		expect(SUMMARIZER_SYSTEM).toContain("relatively large summary is acceptable");
-		expect(SUMMARIZER_SYSTEM).toContain("Pick five coherent groups of the lowest-value memories or summaries");
+		expect(SUMMARIZER_SYSTEM).toContain("Pick any five coherent groups of memories or summaries");
+		expect(SUMMARIZER_SYSTEM).toContain("the first five you notice are good enough");
 		expect(SUMMARIZER_SYSTEM).toContain("summarize can save multiple summaries in one call");
 		expect(SUMMARIZER_SYSTEM).toContain("Do not count tokens or track which memories have already been consumed");
 		expect(SUMMARIZER_SYSTEM).toContain("future agent can recall citations");
@@ -114,6 +115,7 @@ describe("summarizer agent", () => {
 		expect(summarizerContinue(2, 3)).toContain("YOU HAVE BEEN THINKING FOR 60 MINUTES");
 		expect(summarizerContinue(2, 3)).toContain("2 RECORDED SUMMARIES");
 		expect(summarizerContinue(2, 3)).toContain("DO NOT DRAFT OR WRITE SUMMARIES IN THE MAIN TEXT");
+		expect(summarizerContinue(2, 3)).toContain("IF YOU CREATED A SUMMARY IN MAIN TEXT OR THINKING");
 		expect(summarizerContinue(2, 3)).toContain("REVISE IT LATER USING fix_summary");
 		expect(SUMMARY_MAX_SOURCE_TOKEN_RATIO).toBe(0.8);
 	});
@@ -165,22 +167,24 @@ describe("summarizer agent", () => {
 		expect(secondContext.messages.filter((message: any) => JSON.stringify(message).includes("summarizer-example"))).toHaveLength(2);
 	});
 
-	it("retains prose from a stopped invocation in the continuation context", async () => {
+	it("retains a length-truncated response and continues without forcing a tool", async () => {
 		let invocation = 0;
 		let secondContext: any;
 		let secondPrompt: any;
-		const loop = ((prompts: any[], context: any) => {
+		let secondConfig: any;
+		const loop = ((prompts: any[], context: any, config: any) => {
 			const current = invocation++;
 			if (current === 1) {
 				secondContext = context;
 				secondPrompt = prompts[0];
+				secondConfig = config;
 			}
 			return {
 				async *[Symbol.asyncIterator]() {},
 				result: async () => {
 					if (current === 1) await finish(context);
 					return current === 0
-						? [structuredClone(prompts[0]), { role: "assistant", content: [{ type: "text", text: "PROSE_SUMMARY_DRAFT" }], timestamp: 1 }]
+						? [structuredClone(prompts[0]), { role: "assistant", content: [{ type: "text", text: "PROSE_SUMMARY_DRAFT" }], stopReason: "length", timestamp: 1 }]
 						: [structuredClone(prompts[0])];
 				},
 			};
@@ -189,7 +193,9 @@ describe("summarizer agent", () => {
 		await runSummarizer({ ...base, agentLoop: loop });
 
 		expect(JSON.stringify(secondContext.messages)).toContain("PROSE_SUMMARY_DRAFT");
-		expect(JSON.stringify(secondPrompt)).toContain("NOTHING HAS BEEN SUMMARIZED YET");
+		expect(secondPrompt.content[0].text).toBe("Continue working.");
+		expect(secondConfig.toolChoice).toBeUndefined();
+		expect(secondConfig.onPayload).toBeUndefined();
 	});
 
 	it("creates a cited summary, consumes its sources, and double-confirms done", async () => {
@@ -218,6 +224,37 @@ describe("summarizer agent", () => {
 		}) });
 		expect(result.commit).toBeUndefined();
 		expect(result.completed).toBe(true);
+	});
+
+	it("rejects attempts to summarize a single cited memory explicitly", async () => {
+		const result = await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+			const receipt = await tool(context, "summarize").execute("s", { summaries: [`Needless rewrite [${A}].`] });
+			expect(receipt.content[0].text).toContain(`do not attempt to summarize a single memory [${A}]`);
+			await finish(context);
+		}) });
+		expect(result.commit).toBeUndefined();
+	});
+
+	it("warns that retrying an unchanged failed summary cannot work", async () => {
+		const failed = `Needless rewrite [${A}].`;
+		await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+			const first = await tool(context, "summarize").execute("s1", { summaries: [failed] });
+			expect(first.content[0].text).toContain("do not attempt to summarize a single memory");
+			const retry = await tool(context, "summarize").execute("s2", { summaries: [failed] });
+			expect(retry.content[0].text).toContain("this exact summary was previously attempted and failed");
+			expect(retry.content[0].text).toContain("Trying the same summary again will not work");
+			await finish(context);
+		}) });
+	});
+
+	it("strongly rejects summaries longer than their consumed sources", async () => {
+		const muchTooLong = `${"unnecessary expansion ".repeat(300)}[${A}, ${B}].`;
+		await runSummarizer({ ...base, agentLoop: fakeLoop(async (_n, context) => {
+			const receipt = await tool(context, "summarize").execute("s", { summaries: [muchTooLong] });
+			expect(receipt.content[0].text).toContain("STOP YOUR SUMMARY IS BAD AND LONGER!!!!! DO NOT ATTEMPT TO MAKE TEXT LONGER");
+			expect(receipt.content[0].text).toContain("longer than the ~200 tokens");
+			await finish(context);
+		}) });
 	});
 
 	it("rejects boundary-length summaries with keep-verbatim guidance", async () => {
@@ -260,6 +297,8 @@ describe("summarizer agent", () => {
 			},
 		];
 		await runSummarizer({ ...base, getBranch: consumedBranch, agentLoop: fakeLoop(async (_n, context) => {
+			const unavailable = await tool(context, "summarize").execute("u", { summaries: [`Unrecalled details [${A}, ${C}, ${D}].`] });
+			expect(unavailable.content[0].text).toContain("cite that summary itself instead of the memories it summarizes");
 			await tool(context, "recall").execute("r", { id: A });
 			const receipt = await tool(context, "summarize").execute("s", { summaries: [`Current result with prior provenance [${A}, ${C}, ${D}].`] });
 			expect(receipt.content[0].text).toContain(`memory [${A}] was already summarized by [${priorId}] and is no longer visible`);
@@ -325,7 +364,7 @@ describe("summarizer agent", () => {
 				configs.push(config);
 				if (invocation++ === 0) await tool(context, "summarize").execute("s", { summaries: [`Recorded result [${A}, ${B}].`] });
 				else await finish(context);
-				return [];
+				return [structuredClone(suppliedPrompts[0]), { role: "assistant", content: [], stopReason: "stop", timestamp: 1 }];
 			},
 		})) as any;
 		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: loop });
@@ -333,8 +372,8 @@ describe("summarizer agent", () => {
 		expect(configs[1].toolChoice).toBe("required");
 		expect(configs[1].reasoning).toBeUndefined();
 		expect(configs[1].onPayload({})).toMatchObject({ tool_choice: "required" });
-		expect(prompts[1]).toContain("PICK FIVE MORE COHERENT GROUPS");
+		expect(prompts[1]).toContain("PICK ANY FIVE MORE COHERENT GROUPS");
 		expect(prompts[1]).toContain("1 RECORDED SUMMARY");
-		expect(prompts[1]).toContain("RECORD THEM USING summarize NOW");
+		expect(prompts[1]).toContain("RECORD IT USING summarize NOW");
 	});
 });

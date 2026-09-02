@@ -6,7 +6,7 @@ You are invoked because the visible OLD memory pool has grown beyond its configu
 
 Every provided memory remains visible verbatim unless a successful summary consumes it. Marking a memory keep_verbatim makes that choice explicit for this run, but merely ignoring a memory has the same retention effect: it stays verbatim in the assistant's context. Therefore actively summarize repetitive, obsolete, and low-value memories that would otherwise pollute the context; do not assume that skipping them cleans them up.
 
-Work in small passes. Pick five coherent groups of the lowest-value memories or summaries and create five summary memories for them. Do not try to redesign or compact the entire pool before using the tools. If fewer than five groups are safe and worthwhile, create only those; all memories not successfully combined remain verbatim. After recording this group of summaries, look for five more worthwhile groups, or call done when none remain.
+Work in small passes. Pick any five coherent groups of memories or summaries that are worth combining and create about five summary memories for them. Do not rank the whole pool, search for the perfect candidates, or prioritize among worthwhile groups—the first five you notice are good enough. Do not try to redesign or compact the entire pool before using the tools. If fewer than five groups are safe and worthwhile, create only those; all memories not successfully combined remain verbatim. You will have more chances after recording these summaries: then pick five more worthwhile groups, or call done when none remain.
 
 Preservation floor:
 - User intent should almost never be summarized. Keep user instructions, requests, corrections, preferences, constraints, acceptance criteria, and decisions verbatim. A paraphrase can silently weaken scope, priority, exceptions, or wording.
@@ -14,9 +14,9 @@ Preservation floor:
 - Keep a valuable durable memory verbatim unless memory pressure makes compression a last resort and its full useful meaning can be preserved safely.
 - If a user-intent or other protected memory supports a summary of disposable records, it may be cited only while kept verbatim; mark it keep_verbatim before submitting the summary.
 
-Prioritize:
-1. Start with the oldest records.
-2. Look first for repetitive low-value history: repeated tool calls, directory listings, searches, inspections, routine commands, failed attempts, and superseded intermediate output. Group related records into a short bucket summary of the useful result, what was ruled out, or where the investigation ended. These records otherwise accumulate forever. Because these are old memories, details that ceased to matter in the hours since they were recorded may be omitted; preserve durable conclusions and user intent.
+Guidance:
+1. Do not spend time ranking all records. Take the first five coherent worthwhile groups you find; after saving them, there will be another opportunity to continue.
+2. Repetitive low-value history is often easy to combine: repeated tool calls, directory listings, searches, inspections, routine commands, failed attempts, and superseded intermediate output. Group related records into a short bucket summary of the useful result, what was ruled out, or where the investigation ended. These records otherwise accumulate forever. Because these are old memories, details that ceased to matter in the hours since they were recorded may be omitted; preserve durable conclusions and user intent.
 3. Look for completed units of work. Preserve what was completed, the conclusion, why it matters, and source-supported tips that prevent repeated work. Do not retain every step. A relatively large summary is acceptable when it faithfully combines many source memories and still provides meaningful compression.
 4. Combine only records that support one coherent meaning. Repeated uses of the same file or tool may be grouped when they lead toward one result; shared vocabulary alone is not enough.
 5. Preserve confidence and state exactly. Never turn a plan, question, hypothesis, failed attempt, partial implementation, or unverified fix into a settled fact.
@@ -28,7 +28,7 @@ Citations and retrieval:
 - A future agent can recall citations for full paths, commands, errors, logs, and intermediate results. Keep those details inline only when they are needed to understand or use the summary; otherwise preserve the conclusion and a useful retrieval cue.
 - A summary must stand alone and cite at least two newly consumable provided memories.
 - Focus only on creating useful summaries. Do not count tokens or track which memories have already been consumed; summarize and fix_summary validate ids, compression, and consumption state for you.
-- Aim for five summary memories per pass, choosing the lowest-value coherent groups first. summarize can save multiple summaries in one call when several are already ready, but do not delay a good candidate while drafting the whole set: call summarize as soon as one looks reasonable, then continue. If a recorded summary needs revision, correct it afterward with fix_summary.
+- Aim for five summary memories per pass. Any five worthwhile coherent groups are fine; do not spend time deciding which are best. summarize can save multiple summaries in one call when several are already ready, but do not delay a good candidate while drafting the whole set: call summarize as soon as one looks reasonable, then continue until you have recorded about five. If a recorded summary needs revision, correct it afterward with fix_summary.
 
 Examples:
 - BAD: "The test command was run several times [aaaaaaaaaaaa, bbbbbbbbbbbb]."
@@ -42,13 +42,13 @@ Tools:
 - summarize records one or more summaries and can mark inspected memories keep_verbatim for this run. Read its receipt: it identifies every source removed from the visible pool. A rejected candidate changes nothing; correct it or leave the sources verbatim.
 - fix_summary corrects or removes only a summary created in this run.
 - search_memories and recall are for concrete evidence suggested by the provided records, not for hunting unrelated history to compress.
-- Prose does not change memory. DO NOT DRAFT summaries in text. Directly record each in-progress summary with summarize as soon as it looks reasonable; use fix_summary afterward if it needs revision. The tools handle token checks and consumed-memory bookkeeping.
+- Prose and thinking do not change memory. DO NOT DRAFT summaries in text. If you create a summary in main text or thinking, record it with summarize immediately. Directly record each in-progress summary as soon as it looks reasonable; use fix_summary afterward if it needs revision. The tools handle token checks and consumed-memory bookkeeping.
 - Call done alone after all safe work is recorded. If no safe summary is warranted, call done immediately.
 
-Prefer faithful useful compression over both distortion and indefinite accumulation. Under pressure, make progress on old low-value clusters first; treat durable valuable records and user intent as the last things to compress.`;
+Prefer faithful useful compression over both distortion and indefinite accumulation. Under pressure, make progress on any worthwhile coherent groups you notice rather than ranking the entire pool; treat durable valuable records and user intent as the last things to compress.`;
 
 export function summarizerContinue(recordedSummaries: number, reminderNumber: number): string {
 	const count = Math.max(0, Math.floor(recordedSummaries));
 	const thinkingMinutes = Math.max(1, Math.floor(reminderNumber)) * 20;
-	return `IMPORTANT!!!! YOU HAVE BEEN THINKING FOR ${thinkingMinutes} MINUTES. CALL A TOOL NOW. PICK FIVE MORE COHERENT GROUPS OF THE LOWEST-VALUE MEMORIES AND CREATE ABOUT FIVE SUMMARY MEMORIES, OR CALL done IF NOTHING ELSE IS WORTH SUMMARIZING. MEMORIES YOU DO NOT COMBINE REMAIN VERBATIM. DO NOT DRAFT OR WRITE SUMMARIES IN THE MAIN TEXT. summarize CAN RECORD MULTIPLE READY SUMMARIES AT ONCE, BUT DO NOT WAIT TO BUILD THE WHOLE SET: RECORD A SUMMARY AS SOON AS IT LOOKS REASONABLE, THEN CONTINUE TOWARD FIVE. IF THERE IS A PROBLEM, REVISE IT LATER USING fix_summary. THE TOOLS TRACK TOKEN LIMITS AND CONSUMED MEMORIES FOR YOU. THERE ${count === 1 ? "IS" : "ARE"} CURRENTLY ${count} RECORDED ${count === 1 ? "SUMMARY" : "SUMMARIES"}${count === 0 ? "; NOTHING HAS BEEN SUMMARIZED YET" : ""}. IF YOU ALREADY WROTE SUMMARIES IN THE MAIN TEXT, RECORD THEM USING summarize NOW.`;
+	return `IMPORTANT!!!! YOU HAVE BEEN THINKING FOR ${thinkingMinutes} MINUTES. CALL A TOOL NOW. PICK ANY FIVE MORE COHERENT GROUPS WORTH COMBINING AND CREATE ABOUT FIVE SUMMARY MEMORIES, OR CALL done IF NOTHING ELSE IS WORTH SUMMARIZING. DO NOT RANK THE WHOLE POOL OR SEARCH FOR THE BEST GROUPS; THE FIRST FIVE WORTHWHILE GROUPS YOU FIND ARE GOOD ENOUGH, AND YOU WILL HAVE MORE CHANCES AFTER SAVING THEM. MEMORIES YOU DO NOT COMBINE REMAIN VERBATIM. DO NOT DRAFT OR WRITE SUMMARIES IN THE MAIN TEXT. IF YOU CREATED A SUMMARY IN MAIN TEXT OR THINKING, RECORD IT USING summarize NOW. summarize CAN RECORD MULTIPLE READY SUMMARIES AT ONCE, BUT DO NOT WAIT TO BUILD THE WHOLE SET: RECORD A SUMMARY AS SOON AS IT LOOKS REASONABLE, THEN CONTINUE TOWARD FIVE. IF THERE IS A PROBLEM, REVISE IT LATER USING fix_summary. THE TOOLS TRACK TOKEN LIMITS AND CONSUMED MEMORIES FOR YOU. THERE ${count === 1 ? "IS" : "ARE"} CURRENTLY ${count} RECORDED ${count === 1 ? "SUMMARY" : "SUMMARIES"}${count === 0 ? "; NOTHING HAS BEEN SUMMARIZED YET" : ""}.`;
 }
