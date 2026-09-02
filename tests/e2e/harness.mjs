@@ -51,7 +51,7 @@ export function usage(input = 20, output = 1) {
 	return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
 }
 
-export async function sendSse(res, { text, tool, inputTokens = 20, outputTokens = 1, delayMs = 0, finishReason } = {}) {
+export async function sendSse(res, { text, reasoning, tool, inputTokens = 20, outputTokens = 1, delayMs = 0, finishReason } = {}) {
 	if (delayMs) await sleep(delayMs);
 	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 	const id = `chatcmpl-${Math.random().toString(16).slice(2)}`;
@@ -61,7 +61,7 @@ export async function sendSse(res, { text, tool, inputTokens = 20, outputTokens 
 		emit({ ...base, choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: tool.id, type: "function", function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] }, finish_reason: null }] });
 		emit({ ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason ?? "tool_calls" }], usage: usage(inputTokens, outputTokens) });
 	} else {
-		emit({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: text ?? "ok" }, finish_reason: null }] });
+		emit({ ...base, choices: [{ index: 0, delta: { role: "assistant", ...(reasoning === undefined ? { content: text ?? "ok" } : { reasoning_content: reasoning }) }, finish_reason: null }] });
 		emit({ ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason ?? "stop" }], usage: usage(inputTokens, outputTokens) });
 	}
 	res.end("data: [DONE]\n\n");

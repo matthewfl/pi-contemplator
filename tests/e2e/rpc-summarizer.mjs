@@ -3,7 +3,7 @@ import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWork
 
 const started = Date.now();
 const log = (text) => console.log(`[summarizer-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
-const state = { main: 0, observer: 0, summarizer: 0, contemplator: 0, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false, firstDoneSummaryCount: undefined };
+const state = { main: 0, observer: 0, summarizer: 0, contemplator: 0, lengthTruncated: false, lengthReplaySeen: false, proseOnly: false, requiredSeen: false, malformed: false, corrected: false, fixed: false, doneAfterReceipt: false, firstDoneSummaryCount: undefined };
 let draftId;
 let sourceIds = [];
 
@@ -47,12 +47,21 @@ const server = new ModelServer(async (request, res) => {
 				return sendSse(res, { tool: { id: `done-${state.summarizer}`, name: "done", arguments: {} } });
 			}
 		}
-		if (!state.proseOnly) {
-			state.proseOnly = true;
+		if (!state.lengthTruncated) {
+			state.lengthTruncated = true;
 			// Hold the first provider request while the primary agent and observer
 			// continue producing triggers. A broken single-flight gate would start a
 			// second summarizer and overlap another summarizer provider request.
-			return sendSse(res, { delayMs: 400, text: "I should summarize these records, but this is only prose." });
+			return sendSse(res, { delayMs: 400, reasoning: "E2E_INCOMPLETE_SUMMARIZER_ANALYSIS", finishReason: "length", outputTokens: 50 });
+		}
+		if (!state.proseOnly) {
+			const replayed = (request.body.messages ?? []).find((message) => message.role === "assistant" && textOf(message).includes("[Incomplete analysis from the preceding truncated response]\nE2E_INCOMPLETE_SUMMARIZER_ANALYSIS"));
+			assert(replayed, "Length-truncated summarizer thinking was not replayed to the server as assistant text");
+			assert(request.text.includes("Continue working from the incomplete analysis above. Do not restart it."), "Length continuation prompt was not minimal and explicit");
+			assert(request.body.tool_choice !== "required", "Length continuation incorrectly forced tool use");
+			state.lengthReplaySeen = true;
+			state.proseOnly = true;
+			return sendSse(res, { text: "I should summarize these records, but this is only prose." });
 		}
 		if (request.body.tool_choice === "required") state.requiredSeen = true;
 		else assert(state.requiredSeen, `Initial prose-only retry did not require tool use before a later fresh launch: ${JSON.stringify(request.body.tool_choice)}`);
@@ -117,7 +126,8 @@ try {
 		.map((memory) => memory.id);
 	assert(observedIds.length === 3, `Expected three observed memories, got ${observedIds.length}`);
 	const commit = await waitFor(async () => (await pi.rpc.entries()).find((entry) => entry.customType === "om.summarizer.commit" && entry.data?.summaries?.length), "atomic summarizer commit after old pool exceeded target", 40_000);
-	assert(state.proseOnly && state.requiredSeen, "Prose-only retry did not become required-tool mode");
+	assert(state.lengthTruncated && state.lengthReplaySeen, "Length-truncated thinking did not survive the provider boundary");
+	assert(state.proseOnly && state.requiredSeen, "Prose-only normal stop did not become required-tool mode");
 	assert(server.maxActiveByRole.get("summarizer") === 1, `Concurrent summarizer requests detected: ${server.maxActiveByRole.get("summarizer")}`);
 	assert(state.malformed && state.corrected, "Malformed summary was not rejected and corrected");
 	assert(state.fixed && state.doneAfterReceipt, "fix_summary/done receipt ordering was not exercised");

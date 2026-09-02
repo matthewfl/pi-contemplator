@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forceRequiredToolPayload, parseSummaryCitations, runSummarizer, SUMMARY_MAX_SOURCE_TOKEN_RATIO } from "../src/agents/summarizer/agent.js";
+import { forceRequiredToolPayload, parseSummaryCitations, replayTruncatedThinkingAsText, runSummarizer, SUMMARY_MAX_SOURCE_TOKEN_RATIO } from "../src/agents/summarizer/agent.js";
 import { summarizerContinue, SUMMARIZER_SYSTEM } from "../src/agents/summarizer/prompts.js";
 import { hashId } from "../src/ids.js";
 import type { Entry } from "../src/session-ledger/index.js";
@@ -83,6 +83,20 @@ describe("summarizer agent", () => {
 		expect(forceRequiredToolPayload({}, "openai-responses")).toMatchObject({ tool_choice: "required" });
 		expect(forceRequiredToolPayload({}, "anthropic-messages")).toMatchObject({ tool_choice: { type: "any" } });
 		expect(forceRequiredToolPayload({ config: {} }, "google-generative-ai")).toMatchObject({ config: { toolConfig: { functionCallingConfig: { mode: "ANY" } } } });
+	});
+
+	it("preserves encrypted thinking while making truncated plaintext thinking portable", () => {
+		const encrypted = { type: "thinking", thinking: "", thinkingSignature: "opaque-encrypted-payload", redacted: true } as const;
+		const plaintext = { type: "thinking", thinking: "unfinished analysis" } as const;
+		const [replayed] = replayTruncatedThinkingAsText([{
+			role: "assistant", content: [encrypted, plaintext], stopReason: "length", timestamp: 1,
+			api: "anthropic-messages", provider: "anthropic", model: "test",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		}]);
+		expect(replayed.role).toBe("assistant");
+		if (replayed.role !== "assistant") throw new Error("expected assistant replay");
+		expect(replayed.content[0]).toEqual(encrypted);
+		expect(replayed.content[1]).toEqual({ type: "text", text: "[Incomplete analysis from the preceding truncated response]\nunfinished analysis" });
 	});
 
 	it("retains conservative, citation-driven prompt priorities", () => {
@@ -184,7 +198,7 @@ describe("summarizer agent", () => {
 				result: async () => {
 					if (current === 1) await finish(context);
 					return current === 0
-						? [structuredClone(prompts[0]), { role: "assistant", content: [{ type: "text", text: "PROSE_SUMMARY_DRAFT" }], stopReason: "length", timestamp: 1 }]
+						? [structuredClone(prompts[0]), { role: "assistant", content: [{ type: "thinking", thinking: "PARTIAL_REASONING" }, { type: "text", text: "PROSE_SUMMARY_DRAFT" }], stopReason: "length", timestamp: 1 }]
 						: [structuredClone(prompts[0])];
 				},
 			};
@@ -192,10 +206,14 @@ describe("summarizer agent", () => {
 
 		await runSummarizer({ ...base, agentLoop: loop });
 
+		expect(JSON.stringify(secondContext.messages)).toContain("PARTIAL_REASONING");
 		expect(JSON.stringify(secondContext.messages)).toContain("PROSE_SUMMARY_DRAFT");
-		expect(secondPrompt.content[0].text).toBe("Continue working.");
+		expect(secondPrompt.content[0].text).toBe("Continue working from the incomplete analysis above. Do not restart it.");
 		expect(secondConfig.toolChoice).toBeUndefined();
 		expect(secondConfig.onPayload).toBeUndefined();
+		const replayed = secondConfig.convertToLlm(secondContext.messages);
+		expect(JSON.stringify(replayed)).toContain("[Incomplete analysis from the preceding truncated response]\\nPARTIAL_REASONING");
+		expect(replayed.flatMap((message: any) => message.role === "assistant" ? message.content : []).some((part: any) => part.type === "thinking")).toBe(false);
 	});
 
 	it("creates a cited summary, consumes its sources, and double-confirms done", async () => {

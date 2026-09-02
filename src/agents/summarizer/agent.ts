@@ -106,6 +106,27 @@ function textResult(text: string, details: Record<string, unknown> = {}, termina
 	return { content: [{ type: "text" as const, text }], details, ...(terminate ? { terminate: true } : {}) };
 }
 
+/**
+ * Many provider chat templates discard historical reasoning blocks. Preserve
+ * unfinished plaintext work after an output-length stop by replaying it as
+ * ordinary assistant text; unlike provider-specific thinking metadata, text
+ * survives every supported conversation serializer. Redacted/encrypted blocks
+ * must remain structured so their opaque provider payload stays replayable.
+ * The durable/in-memory transcript remains unchanged—this transformation is
+ * only applied at the LLM boundary.
+ */
+export function replayTruncatedThinkingAsText(messages: readonly AgentMessage[]): Message[] {
+	return messages.map((message) => {
+		if (message.role !== "assistant" || message.stopReason !== "length" || !message.content.some((part) => part.type === "thinking" && !part.redacted)) return message as Message;
+		return {
+			...message,
+			content: message.content.map((part) => part.type === "thinking" && !part.redacted
+				? { type: "text" as const, text: `[Incomplete analysis from the preceding truncated response]\n${part.thinking}` }
+				: part),
+		} as Message;
+	});
+}
+
 function preview(content: string): string {
 	const compact = content.replace(/\s+/g, " ").trim();
 	return compact.length <= 100 ? compact : `${compact.slice(0, 100)}…`;
@@ -540,7 +561,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 			apiKey: args.apiKey,
 			headers: args.headers,
 			maxTokens: boundedMaxTokens(args.model, maxOutputTokens),
-			convertToLlm: (messages) => messages as Message[],
+			convertToLlm: replayTruncatedThinkingAsText,
 			toolExecution: "sequential",
 			beforeToolCall: async ({ toolCall, context: toolContext }) => {
 				if (toolCall.name !== "done") return undefined;
@@ -597,7 +618,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		let stopReason = await runOnce("The preceding summarize call and receipt are an illustrative example only. Its placeholder ids are not real and it did not create a summary. Now pick any five coherent groups of actual memories worth combining and use summarize to create about five summary memories. Do not rank the whole pool; the first five worthwhile groups are good enough, and you will have more chances afterward. Record a summary as soon as it looks reasonable rather than drafting all five in prose or thinking. If you create one in prose or thinking, record it with summarize immediately. Memories not combined remain verbatim. If fewer than five are worthwhile, create only those; if none are safe, call done.", false);
 		for (let invocation = 1; !completedWithDone && invocation < SUMMARIZER_MAX_INVOCATIONS; invocation++) {
 			const continuingTruncatedResponse = stopReason === "length";
-			stopReason = await runOnce(continuingTruncatedResponse ? "Continue working." : summarizerContinue(drafts.size, invocation), !continuingTruncatedResponse);
+			stopReason = await runOnce(continuingTruncatedResponse ? "Continue working from the incomplete analysis above. Do not restart it." : summarizerContinue(drafts.size, invocation), !continuingTruncatedResponse);
 		}
 	} catch (error) {
 		debugLog("summarizer.error", { error: error instanceof Error ? error.message : String(error), acceptedSummaries: drafts.size });
