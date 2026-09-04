@@ -978,6 +978,41 @@ describe("Contemplator lifecycle", () => {
 		expect(restoredState.history).toEqual(state.history);
 	});
 
+	it("preserves seen-memory coverage when compaction removes old update prompts", async () => {
+		const memoryId = "abcdef123456";
+		const source = textCustomMessage("raw-covered", "covered work");
+		const batch = observationsRecordedEntry("batch-covered", {
+			observations: [observation(memoryId, { sourceEntryIds: ["raw-covered"] })],
+			coversUpToId: "raw-covered",
+		});
+		const privateEntries: TestEntry[] = [];
+		for (let index = 0; index < 20; index++) {
+			for (const message of [
+				{ role: "user", content: [{ type: "text", text: `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 },
+				{ role: "assistant", content: [{ type: "text", text: `private decision ${index}` }], api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: index * 2 + 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+			]) {
+				privateEntries.push({ id: `coverage-private-${privateEntries.length}`, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry);
+			}
+		}
+		const harness = setup([source, batch, ...privateEntries]);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+		state.seenObservationIds.add(memoryId);
+
+		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+
+		const checkpoint = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.compacted === true);
+		expect((checkpoint?.data as any)?.coveredObservationIds).toContain(memoryId);
+
+		agentMocks.agentLoop.mockClear();
+		const restored = setup(harness.getEntries());
+		restored.fire("session_start");
+		await Promise.resolve();
+		expect((restored.contemplator as any).seenObservationIds.has(memoryId)).toBe(true);
+		expect((restored.contemplator as any).pending).toBeUndefined();
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+	});
+
 	it("keeps private history unchanged when both compaction attempts fail", async () => {
 		const entries: TestEntry[] = Array.from({ length: 12 }, (_, index) => {
 			const message = { role: index % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text: `history ${index} ${"x".repeat(10_000)}` }], timestamp: index };

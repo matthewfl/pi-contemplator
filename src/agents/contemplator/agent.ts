@@ -506,6 +506,8 @@ export class Contemplator {
 		this.history = [];
 		this.historyEntryIds = [];
 		const historyMessagesByEntryId = new Map<string, AgentMessage>();
+		const checkpointCoveredObservationIds = new Set<string>();
+		const checkpointCoveredReviewIds = new Set<string>();
 		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
@@ -539,7 +541,7 @@ export class Contemplator {
 				}
 			}
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
-				const data = entry.data as { message?: unknown; compacted?: unknown; retainedMessageEntryIds?: unknown };
+				const data = entry.data as { message?: unknown; compacted?: unknown; retainedMessageEntryIds?: unknown; coveredObservationIds?: unknown; coveredReviewIds?: unknown };
 				const message = data.message;
 				if (message && typeof message === "object") {
 					const typedMessage = message as AgentMessage;
@@ -550,6 +552,8 @@ export class Contemplator {
 							: [];
 						this.history = [typedMessage, ...retainedIds.map((id) => historyMessagesByEntryId.get(id)!)];
 						this.historyEntryIds = [entry.id, ...retainedIds];
+						if (Array.isArray(data.coveredObservationIds)) for (const id of data.coveredObservationIds) if (typeof id === "string") checkpointCoveredObservationIds.add(id);
+						if (Array.isArray(data.coveredReviewIds)) for (const id of data.coveredReviewIds) if (typeof id === "string") checkpointCoveredReviewIds.add(id);
 					} else {
 						this.history.push(typedMessage);
 						this.historyEntryIds.push(entry.id);
@@ -607,10 +611,10 @@ export class Contemplator {
 			}
 		}
 		if (resetTracking && resetProjection) {
-			// Successful contemplator update prompts are the durable coverage record.
-			// Only memories present in those prompts are considered seen after reload;
-			// memories from a failed, unpersisted run remain pending and retryable.
-			const coveredIds = new Set<string>();
+			// Successful update prompts and private-history compaction checkpoints are
+			// the durable coverage record. Checkpoints carry ids from prompts replaced
+			// by their summary; failed, unpersisted runs remain pending and retryable.
+			const coveredIds = new Set<string>([...checkpointCoveredObservationIds, ...checkpointCoveredReviewIds]);
 			for (const message of this.history) {
 				if (message.role !== "user") continue;
 				const text = customMessageText(message.content);
@@ -1359,7 +1363,18 @@ export class Contemplator {
 			debugLog("contemplator.compaction_postponed", { reason: "retained history lacked durable entry ids", retainedMessageCount: retainedMessages.length, retainedReferenceCount: retainedMessageEntryIds.length });
 			return;
 		}
-		const checkpoint = { version: 2, compacted: true, message: summaryMessage, retainedMessageEntryIds };
+		// The summarized-away NEW MEMORY UPDATE prompts were previously the only
+		// durable evidence that these ids had reached the contemplator. Persist
+		// lightweight id coverage in the checkpoint so reload/tree restoration
+		// cannot misclassify the old prefix as a large new-memory backfill.
+		const checkpoint = {
+			version: 2,
+			compacted: true,
+			message: summaryMessage,
+			retainedMessageEntryIds,
+			coveredObservationIds: Array.from(this.seenObservationIds),
+			coveredReviewIds: Array.from(this.seenReviewIds),
+		};
 		const checkpointEntryId = this.appendContemplatorHistoryEntry(ctx, checkpoint);
 		this.history = [summaryMessage, ...retainedMessages];
 		this.historyEntryIds = [checkpointEntryId, ...retainedMessageEntryIds];

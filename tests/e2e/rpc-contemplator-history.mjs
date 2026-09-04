@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWorkspace, sendSse, stopPi, waitFor } from "./harness.mjs";
+import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWorkspace, sendSse, sleep, stopPi, waitFor } from "./harness.mjs";
 
 const started = Date.now();
 const log = (text) => console.log(`[contemplator-history-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
@@ -67,10 +67,18 @@ try {
 	assert(JSON.stringify(summaryRequests[1].messages).length < JSON.stringify(summaryRequests[0].messages).length, "Fallback did not summarize a smaller oldest prefix");
 	assert(checkpoint.data.message?.content?.[0]?.text?.includes("Complete compact checkpoint"), "Checkpoint persisted the truncated rather than complete summary");
 	assert(Array.isArray(checkpoint.data.retainedMessageEntryIds) && checkpoint.data.retainedMessageEntryIds.length > 0, "Checkpoint did not retain recent messages by ledger references");
+	assert(Array.isArray(checkpoint.data.coveredObservationIds) && checkpoint.data.coveredObservationIds.length > 0, "Checkpoint did not preserve summarized-away observation coverage");
 	assert(checkpoint.data.retainedMessages === undefined, "Checkpoint copied retained message payloads instead of pointers");
 	assert(!pi.rpc.events.some((event) => event.type === "extension_error"), "Extension error during private-history compaction");
+	const contemplatorRunsBeforeRestore = state.contemplator;
+	const sessionFile = (await pi.rpc.state()).sessionFile;
 	await stopPi(pi); pi = undefined;
-	log(`PASS ${state.contemplator} contemplator runs; truncated summary rejected; smaller prefix compacted; ${checkpoint.data.retainedMessageEntryIds.length} recent messages retained by pointer`);
+	pi = await launchPi(workspace, { session: sessionFile });
+	await sleep(500);
+	assert(state.contemplator === contemplatorRunsBeforeRestore, `Restoring a compacted contemplator transcript incorrectly backfilled old memories (${contemplatorRunsBeforeRestore} -> ${state.contemplator} runs)`);
+	assert(!pi.rpc.events.some((event) => event.type === "extension_error"), "Extension error after restoring private-history coverage");
+	await stopPi(pi); pi = undefined;
+	log(`PASS ${state.contemplator} contemplator runs; truncated summary rejected; smaller prefix compacted; ${checkpoint.data.retainedMessageEntryIds.length} recent messages retained by pointer; restore caused no memory backfill`);
 } catch (error) {
 	if (pi) console.error(`Ledger tail: ${JSON.stringify((await pi.rpc.entries()).slice(-15), null, 2)}\nPi stderr: ${pi.rpc.stderr}`);
 	throw error;
