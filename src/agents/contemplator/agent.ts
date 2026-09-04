@@ -1363,17 +1363,27 @@ export class Contemplator {
 			debugLog("contemplator.compaction_postponed", { reason: "retained history lacked durable entry ids", retainedMessageCount: retainedMessages.length, retainedReferenceCount: retainedMessageEntryIds.length });
 			return;
 		}
-		// The summarized-away NEW MEMORY UPDATE prompts were previously the only
-		// durable evidence that these ids had reached the contemplator. Persist
-		// lightweight id coverage in the checkpoint so reload/tree restoration
-		// cannot misclassify the old prefix as a large new-memory backfill.
+		// Record only coverage evidenced by the exact durable prompt prefix being
+		// replaced. `seen*Ids` may also contain observations appended concurrently
+		// while summary generation awaited; those remain pending and must not be
+		// declared covered before their own prompt is persisted. Coverage is a delta
+		// per checkpoint, and restore unions checkpoints, avoiding cumulative O(n²)
+		// id duplication across a very long session.
+		const prefixCoveredIds = new Set<string>();
+		for (const message of history.slice(0, prefixEnd)) {
+			if (message.role !== "user") continue;
+			const text = customMessageText(message.content);
+			if (!text.includes("NEW MEMORY UPDATE")) continue;
+			for (const id of memoryReferenceIds(text)) prefixCoveredIds.add(id);
+		}
+		const currentProjection = fullProjection(ctx.sessionManager.getBranch() as Entry[]);
 		const checkpoint = {
 			version: 2,
 			compacted: true,
 			message: summaryMessage,
 			retainedMessageEntryIds,
-			coveredObservationIds: Array.from(this.seenObservationIds),
-			coveredReviewIds: Array.from(this.seenReviewIds),
+			coveredObservationIds: currentProjection.observations.filter((item) => prefixCoveredIds.has(item.id)).map((item) => item.id),
+			coveredReviewIds: (currentProjection.reviews ?? []).filter((item) => prefixCoveredIds.has(item.id)).map((item) => item.id),
 		};
 		const checkpointEntryId = this.appendContemplatorHistoryEntry(ctx, checkpoint);
 		this.history = [summaryMessage, ...retainedMessages];

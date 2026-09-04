@@ -5,6 +5,7 @@ const started = Date.now();
 const log = (text) => console.log(`[contemplator-history-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
 const state = { main: 0, observer: 0, contemplator: 0, summary: 0 };
 const summaryRequests = [];
+const contemplatorRequests = [];
 
 const server = new ModelServer(async (request, res) => {
 	if (request.role === "observer") {
@@ -21,6 +22,7 @@ const server = new ModelServer(async (request, res) => {
 	}
 	if (request.role === "contemplator") {
 		state.contemplator++;
+		contemplatorRequests.push(request.body);
 		return sendSse(res, { tool: { id: `none-${state.contemplator}`, name: "no_intervention", arguments: {} } });
 	}
 	const isPrivateSummary = request.text.includes("older prefix of a private contemplator transcript");
@@ -75,10 +77,16 @@ try {
 	await stopPi(pi); pi = undefined;
 	pi = await launchPi(workspace, { session: sessionFile });
 	await sleep(500);
-	assert(state.contemplator === contemplatorRunsBeforeRestore, `Restoring a compacted contemplator transcript incorrectly backfilled old memories (${contemplatorRunsBeforeRestore} -> ${state.contemplator} runs)`);
+	const restoreRequests = contemplatorRequests.slice(contemplatorRunsBeforeRestore);
+	// A genuinely concurrent observation may have arrived while private-history
+	// summarization awaited and should run after restore. The regression is only
+	// replay of ids durably covered by the summarized-away prefix.
+	for (const coveredId of checkpoint.data.coveredObservationIds) {
+		assert(!restoreRequests.some((body) => JSON.stringify(body.messages ?? []).includes(`[${coveredId}]`)), `Restoring a compacted transcript backfilled covered memory [${coveredId}]`);
+	}
 	assert(!pi.rpc.events.some((event) => event.type === "extension_error"), "Extension error after restoring private-history coverage");
 	await stopPi(pi); pi = undefined;
-	log(`PASS ${state.contemplator} contemplator runs; truncated summary rejected; smaller prefix compacted; ${checkpoint.data.retainedMessageEntryIds.length} recent messages retained by pointer; restore caused no memory backfill`);
+	log(`PASS ${state.contemplator} contemplator runs; truncated summary rejected; smaller prefix compacted; ${checkpoint.data.retainedMessageEntryIds.length} recent messages retained by pointer; restore caused no covered-memory backfill`);
 } catch (error) {
 	if (pi) console.error(`Ledger tail: ${JSON.stringify((await pi.rpc.entries()).slice(-15), null, 2)}\nPi stderr: ${pi.rpc.stderr}`);
 	throw error;

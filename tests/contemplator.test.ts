@@ -988,7 +988,7 @@ describe("Contemplator lifecycle", () => {
 		const privateEntries: TestEntry[] = [];
 		for (let index = 0; index < 20; index++) {
 			for (const message of [
-				{ role: "user", content: [{ type: "text", text: `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 },
+				{ role: "user", content: [{ type: "text", text: index === 0 ? `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n[${memoryId}] covered evidence ${"x".repeat(6_000)}` : `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 },
 				{ role: "assistant", content: [{ type: "text", text: `private decision ${index}` }], api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: index * 2 + 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
 			]) {
 				privateEntries.push({ id: `coverage-private-${privateEntries.length}`, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry);
@@ -1011,6 +1011,37 @@ describe("Contemplator lifecycle", () => {
 		expect((restored.contemplator as any).seenObservationIds.has(memoryId)).toBe(true);
 		expect((restored.contemplator as any).pending).toBeUndefined();
 		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+	});
+
+	it("does not checkpoint concurrent seen memories whose update prompt is still pending", async () => {
+		const coveredId = "abcdef123456";
+		const concurrentId = "fedcba654321";
+		const entries: TestEntry[] = [
+			textCustomMessage("raw-covered-race", "covered work"),
+			observationsRecordedEntry("batch-covered-race", { observations: [observation(coveredId, { sourceEntryIds: ["raw-covered-race"] })], coversUpToId: "raw-covered-race" }),
+			textCustomMessage("raw-concurrent-race", "concurrent work"),
+			observationsRecordedEntry("batch-concurrent-race", { observations: [observation(concurrentId, { sourceEntryIds: ["raw-concurrent-race"] })], coversUpToId: "raw-concurrent-race" }),
+		];
+		for (let index = 0; index < 20; index++) {
+			for (const message of [
+				{ role: "user", content: [{ type: "text", text: index === 0 ? `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n[${coveredId}] covered evidence ${"x".repeat(6_000)}` : `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 },
+				{ role: "assistant", content: [{ type: "text", text: `private decision ${index}` }], api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: index * 2 + 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+			]) entries.push({ id: `race-private-${entries.length}`, type: "custom", customType: "om.contemplator.message", data: { version: 1, message } } as TestEntry);
+		}
+		const harness = setup(entries);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+		// Models an observer notification during the compaction await: it is live
+		// seen/pending state, but no contemplator prompt durably contains its id.
+		state.seenObservationIds.add(coveredId);
+		state.seenObservationIds.add(concurrentId);
+		state.pending = { observations: [`[${concurrentId}] concurrent work`], reviews: [], mainAgentOutputTokens: 0, mainAgentToolCalls: 0, mainAgentActiveTimeMs: 0 };
+
+		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+
+		const checkpoint = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.compacted === true);
+		expect((checkpoint?.data as any)?.coveredObservationIds).toContain(coveredId);
+		expect((checkpoint?.data as any)?.coveredObservationIds).not.toContain(concurrentId);
 	});
 
 	it("keeps private history unchanged when both compaction attempts fail", async () => {
