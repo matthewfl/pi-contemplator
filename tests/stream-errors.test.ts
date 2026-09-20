@@ -109,7 +109,7 @@ describe("agent stream error logging", () => {
 		await withDebugLogContext({ enabled: true, sessionId: "session-stream-4" }, async () => {
 			await expect(runObserver({
 				model: {} as any,
-				apiKey: "test",
+				streamFn: (() => { throw new Error("unused worker stream"); }) as any,
 				priorSummaries: [],
 				priorObservations: [],
 				chunk: "[Source entry id: entry-a]\nSome content.",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REVIEWER_KEEP_GOING_MESSAGE, REVIEWER_MAX_INVOCATIONS_PER_LAUNCH, runStructuralReview } from "../src/agents/reviewer/agent.js";
+import { REVIEWER_KEEP_GOING_MESSAGE, REVIEWER_MAX_INVOCATIONS_PER_LAUNCH, runStructuralReview as runStructuralReviewImpl } from "../src/agents/reviewer/agent.js";
 import { REVIEWER_TOTAL_TOKEN_LIMIT } from "../src/model-budget.js";
 import {
 	REVIEWER_COMMON_SYSTEM,
@@ -8,6 +8,9 @@ import {
 	buildReviewerSystemPrompt,
 } from "../src/agents/reviewer/prompts.js";
 import type { StructuralReviewRequest } from "../src/session-ledger/types.js";
+
+const unusedStream = (() => { throw new Error("agentLoop test double must not invoke the worker stream"); }) as any;
+const runStructuralReview = (args: any) => runStructuralReviewImpl({ streamFn: unusedStream, ...args });
 
 function request(scope: "workflow" | "software"): StructuralReviewRequest {
 	return {

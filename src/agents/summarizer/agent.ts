@@ -1,7 +1,6 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
@@ -48,8 +47,7 @@ const MEMORY_ID_GLOBAL = new RegExp(MEMORY_ID_SOURCE, "g");
 
 export type RunSummarizerArgs = {
 	model: Model<any>;
-	apiKey: string;
-	headers?: Record<string, string>;
+	streamFn: StreamFn;
 	getBranch: () => Entry[];
 	/** Target size for the old, summarizer-eligible memory pool. */
 	targetTokens: number;
@@ -538,8 +536,6 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		let turnCount = 0;
 		const config: AgentLoopConfig = {
 			model: args.model,
-			apiKey: args.apiKey,
-			headers: args.headers,
 			maxTokens: boundedMaxTokens(args.model, maxOutputTokens),
 			convertToLlm: replayTruncatedThinkingAsText,
 			toolExecution: "sequential",
@@ -560,7 +556,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 		if (requireToolCall) (config as any).toolChoice = requiredToolChoice(args.model.api);
 		history.push(prompt as AgentMessage);
 		args.onMessages?.(history.slice());
-		const stream = loop([prompt], context, config, args.signal, streamSimple);
+		const stream = loop([prompt], context, config, args.signal, args.streamFn);
 		// agentLoop emits message_start/message_end for the supplied prompt, so
 		// seed live checkpoints without our already-pushed copy of that prompt.
 		const liveMessages = history.slice(0, -1);

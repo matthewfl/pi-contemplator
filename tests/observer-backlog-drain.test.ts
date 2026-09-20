@@ -37,7 +37,7 @@ function setup() {
 		lastObserverStartedAt: undefined,
 		lastObserverCompletedAt: undefined,
 		resolveFailureNotified: false,
-		resolveModel: vi.fn(async () => ({ ok: true, model: { api: "openai-completions", contextWindow: 256_000, maxTokens: 32_000 }, apiKey: "test" })),
+		resolveModel: vi.fn(async () => ({ ok: true, model: { api: "openai-completions", contextWindow: 256_000, maxTokens: 32_000 } })),
 		getContextGeneration: vi.fn(() => 1),
 		recordAgentUsage: vi.fn(),
 		recordConsolidationStageError: vi.fn((_ctx, _stage, error) => error instanceof Error ? error.message : String(error)),
@@ -110,7 +110,6 @@ describe("observer backlog draining", () => {
 		vi.spyOn(runtime, "resolveModel").mockResolvedValue({
 			ok: true,
 			model: { api: "openai-completions", contextWindow: 256_000, maxTokens: 32_000 } as any,
-			apiKey: "test",
 		});
 		const ctx = {
 			cwd: "/tmp/project", hasUI: false, model: {}, modelRegistry: {},

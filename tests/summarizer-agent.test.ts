@@ -46,7 +46,8 @@ async function finish(context: any): Promise<void> {
 	await tool(context, "done").execute("done-2", {});
 }
 
-const base = { model: { contextWindow: 500_000, api: "openai-responses" } as any, apiKey: "test", targetTokens: 100, newPoolMaxTokens: 1, getBranch: branch };
+const unusedStream = (() => { throw new Error("agentLoop test double must not invoke the worker stream"); }) as any;
+const base = { model: { contextWindow: 500_000, api: "openai-responses" } as any, streamFn: unusedStream, targetTokens: 100, newPoolMaxTokens: 1, getBranch: branch };
 
 describe("summarizer citation parser", () => {
 	const known = new Set([A, B, C]);

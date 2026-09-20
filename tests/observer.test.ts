@@ -4,13 +4,13 @@ import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, OBSERVER_MAX_LE
 import { estimateStringTokens } from "../src/tokens.js";
 import { OBSERVER_AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any, config: any) => ({
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any, streamFn: any) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any, _signal: AbortSignal | undefined, streamFn: any) => ({
 		async *[Symbol.asyncIterator]() {
 			// No streaming events needed for these tests.
 		},
 		result: async () => {
-			await handler(prompts, context, config);
+			await handler(prompts, context, config, streamFn);
 			await context.tools.find((tool: any) => tool.name === "done")?.execute("done", {});
 			return {};
 		},
@@ -29,14 +29,30 @@ describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 });
 
 describe("runObserver", () => {
+	const workerStream = (() => { throw new Error("agentLoop test double must not invoke the worker stream"); }) as any;
 	const baseArgs = {
 		model: {} as any,
-		apiKey: "test",
+		streamFn: workerStream,
 		priorSummaries: [],
 		priorObservations: [],
 		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
 		allowedSourceEntryIds: ["entry-a"],
 	};
+
+	it("routes through the supplied provider-aware stream without copied credentials", async () => {
+		let receivedStream: unknown;
+		let receivedConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config, streamFn) => {
+			receivedConfig = config;
+			receivedStream = streamFn;
+		});
+
+		await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(receivedStream).toBe(workerStream);
+		expect(receivedConfig).not.toHaveProperty("apiKey");
+		expect(receivedConfig).not.toHaveProperty("headers");
+	});
 
 	it("ends the source chunk with an explicit tool-call instruction", async () => {
 		let userPrompt = "";

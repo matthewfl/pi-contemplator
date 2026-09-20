@@ -1,7 +1,6 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { replayTruncatedThinkingAsText } from "../replay-truncated-thinking.js";
@@ -15,8 +14,7 @@ import type { LlmUsageInput } from "../../runtime.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
-	apiKey: string;
-	headers?: Record<string, string>;
+	streamFn: StreamFn;
 	priorSummaries?: string[];
 	priorObservations: string[];
 	chunk: string;
@@ -108,7 +106,7 @@ export function normalizeSourceEntryIds(
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorSummaries = [], priorObservations, chunk, allowedSourceEntryIds, signal } = args;
+	const { model, priorSummaries = [], priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -205,8 +203,6 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 	let turnCount = 0;
 	const baseConfig: AgentLoopConfig = {
 		model,
-		apiKey,
-		headers,
 		maxTokens: boundedMaxTokens(model, OBSERVER_AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: replayTruncatedThinkingAsText,
 		toolExecution: "sequential",
@@ -234,7 +230,7 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 		const invocationConfig: AgentLoopConfig = afterLength && reasoning
 			? { ...baseConfig, reasoning: "minimal" }
 			: baseConfig;
-		const stream = loop([prompt], context, invocationConfig, signal, streamSimple);
+		const stream = loop([prompt], context, invocationConfig, signal, args.streamFn);
 		for await (const event of stream) {
 			args.onProgress?.();
 			logAgentStreamError("observer", event);

@@ -1,6 +1,5 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { hashId } from "../../ids.js";
 import { boundedMaxTokens, REVIEWER_TOTAL_TOKEN_LIMIT } from "../../model-budget.js";
 import type { LlmUsageInput } from "../../runtime.js";
@@ -22,8 +21,7 @@ export const REVIEWER_MAX_INVOCATIONS_PER_LAUNCH = 5;
 export interface RunStructuralReviewArgs {
 	request: StructuralReviewRequest;
 	model: Model<any>;
-	apiKey: string;
-	headers?: Record<string, string>;
+	streamFn: StreamFn;
 	getBranch: () => Entry[];
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
@@ -144,8 +142,8 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		// agentLoop can make several model calls while following tool calls. Wrap its
 		// stream function so every internal response gets only the lifetime budget
 		// remaining after earlier responses, not a fresh per-turn allowance.
-		const budgetedStreamSimple: typeof streamSimple = ((model: Model<any>, context: any, options: any) => {
-			const response = streamSimple(model, context, {
+		const budgetedStreamSimple: StreamFn = async (model: Model<any>, context: any, options: any) => {
+			const response = await args.streamFn(model, context, {
 				...options,
 				maxTokens: boundedMaxTokens(model, remainingBudget()),
 			});
@@ -160,12 +158,10 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 				}
 				return message;
 			};
-			return { [Symbol.asyncIterator]: () => response[Symbol.asyncIterator](), result } as ReturnType<typeof streamSimple>;
-		}) as typeof streamSimple;
+			return { [Symbol.asyncIterator]: () => response[Symbol.asyncIterator](), result } as typeof response;
+		};
 		const config: AgentLoopConfig = {
 			model: args.model,
-			apiKey: args.apiKey,
-			headers: args.headers,
 			maxTokens: boundedMaxTokens(args.model, remainingBudget()),
 			convertToLlm: (messages) => messages as Message[],
 			toolExecution: "sequential",

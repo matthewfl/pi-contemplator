@@ -1,7 +1,6 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { Type, type Message, type Model } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { estimateTokens as estimateAgentMessageTokens, generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
@@ -9,7 +8,7 @@ import { agentActiveTimeMs, assistantOutputTokens, assistantToolCallCount, fullP
 import { hashId } from "../../ids.js";
 import { createSearchMemoriesAgentTool } from "../../tools/search-memories.js";
 import { createRecallAgentTool } from "../../tools/recall-observation.js";
-import type { MemoryUpdateCtx, Runtime } from "../../runtime.js";
+import { modelRegistryStream, type MemoryUpdateCtx, type Runtime } from "../../runtime.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { debugLog, withDebugLogContext } from "../../debug-log.js";
 import { boundedMaxTokens, AGENT_LOOP_MAX_TOKENS } from "../../model-budget.js";
@@ -108,8 +107,7 @@ type QueueStructuralReviewOptions = {
 	requestArgs: Extract<Intervention, { kind: "review" }>["request"];
 	branchEntries: Entry[];
 	model: Model<any>;
-	apiKey: string;
-	headers: Record<string, string> | undefined;
+	streamFn: StreamFn;
 	sessionGeneration: number;
 };
 
@@ -117,8 +115,7 @@ type LaunchStructuralReviewOptions = {
 	ctx: MemoryUpdateCtx;
 	request: StructuralReviewRequest;
 	model: Model<any>;
-	apiKey: string;
-	headers: Record<string, string> | undefined;
+	streamFn: StreamFn;
 	sessionGeneration: number;
 	key?: string;
 	history?: AgentMessage[];
@@ -807,6 +804,7 @@ export class Contemplator {
 				debugLog("contemplator.flush_stale", { reason: "session_changed" });
 				return;
 			}
+			const streamFn = modelRegistryStream(ctx.modelRegistry);
 			const selectedModel = resolved.model as { provider?: unknown; id?: unknown; contextWindow?: unknown };
 			debugLog("contemplator.model_resolved", {
 				provider: selectedModel.provider,
@@ -875,8 +873,6 @@ export class Contemplator {
 			const supportsReasoning = (resolved.model as { reasoning?: unknown }).reasoning === true;
 			const config: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = {
 				model: resolved.model as Model<any>,
-				apiKey: resolved.apiKey,
-				headers: resolved.headers,
 				maxTokens: boundedMaxTokens(resolved.model as Model<any>, AGENT_LOOP_MAX_TOKENS),
 				convertToLlm: (messages) => messages as Message[],
 				toolExecution: "sequential",
@@ -896,12 +892,12 @@ export class Contemplator {
 					...config,
 					onPayload: (payload) => forceRequiredToolPayload(payload, api),
 				};
-				// SimpleStreamOptions 0.84.3 types provider-neutral choice as auto/none,
-				// while individual provider APIs also support required/any. Preserve the
+				// Provider-neutral SimpleStreamOptions types choice as auto/none, while
+				// individual provider APIs also support required/any. Preserve the
 				// runtime hint and final-payload enforcement without weakening base types.
 				if (invocation > 1) (invocationConfig as any).toolChoice = requiredToolChoice(api);
 				workerWatchdog.progress();
-				const stream = agentLoop([nextPrompt], context, invocationConfig, workerWatchdog.signal, streamSimple);
+				const stream = agentLoop([nextPrompt], context, invocationConfig, workerWatchdog.signal, streamFn);
 				const result = await workerWatchdog.race((async () => {
 					for await (const event of stream) {
 						workerWatchdog!.progress();
@@ -966,8 +962,7 @@ export class Contemplator {
 						requestArgs: intervention.request,
 						branchEntries,
 						model: reviewerModel.model as Model<any>,
-						apiKey: reviewerModel.apiKey,
-						headers: reviewerModel.headers,
+						streamFn,
 						sessionGeneration,
 					});
 				}
@@ -975,7 +970,7 @@ export class Contemplator {
 			if (sessionGeneration === this.sessionGeneration) {
 				workerWatchdog.progress();
 				try {
-					await workerWatchdog.race(this.compactHistory(ctx, resolved.model as Model<any>, resolved.apiKey, resolved.headers, sessionGeneration, flushEpoch, workerWatchdog.signal));
+					await workerWatchdog.race(this.compactHistory(ctx, resolved.model as Model<any>, streamFn, sessionGeneration, flushEpoch, workerWatchdog.signal));
 				} catch (compactionError) {
 					// The intervention and its durable messages are already complete. Private
 					// history maintenance must never relabel that successful work as failed.
@@ -1056,10 +1051,10 @@ export class Contemplator {
 		// designed for agents that run for hours; a probe must be injected after
 		// the current tool-call batch, before the very next model request. Never
 		// change this to nextTurn: that can postpone delivery until a user prompt.
-		// IMPORTANT: omit triggerTurn entirely. Pi 0.84+ interprets an explicit
-		// triggerTurn:false as "do not queue while streaming" and inserts directly
-		// into agent.state, outside the active run's context snapshot. Omitting it
-		// still does not start a turn while idle, but allows steer to work in-run.
+		// IMPORTANT: omit triggerTurn entirely. Pi queues a streaming steer only
+		// when triggerTurn is not explicitly false; false uses the deferred custom-
+		// message path instead of steering the active run. When idle, omission merely
+		// appends the message and does not manufacture a new agent turn.
 		// Whether Pi is currently running or idle, sendMessage owns this probe in an
 		// in-memory steer queue until message_end drains it. Track both cases so an
 		// unrelated observer update or compaction callback cannot restore and enqueue
@@ -1084,7 +1079,7 @@ export class Contemplator {
 	}
 
 	private queueStructuralReview(options: QueueStructuralReviewOptions): void {
-		const { ctx, requestArgs, branchEntries, model, apiKey, headers, sessionGeneration } = options;
+		const { ctx, requestArgs, branchEntries, model, streamFn, sessionGeneration } = options;
 		const requestForKey: RequestReviewArgs = { scope: requestArgs.scope, evidence: requestArgs.evidence, concern: requestArgs.concern, review_focus: requestArgs.reviewFocus, constraints: requestArgs.constraints };
 		const key = reviewRequestKey(requestForKey);
 		const duplicateRequest = branchEntries.some((entry) => isReviewRequestEntry(entry) && reviewRequestKey({ scope: entry.data.request.scope, evidence: entry.data.request.evidence, concern: entry.data.request.concern, review_focus: entry.data.request.reviewFocus, constraints: entry.data.request.constraints }) === key);
@@ -1095,11 +1090,11 @@ export class Contemplator {
 		const request: StructuralReviewRequest = { ...requestArgs, id: requestArgs.id, createdAt: Date.now(), requestedBy: "contemplator" };
 		this.pi.appendEntry(OM_REVIEW_REQUEST, { version: 1, request });
 		this.markTipPersisted(ctx);
-		this.launchStructuralReview({ ctx, request, model, apiKey, headers, sessionGeneration, key });
+		this.launchStructuralReview({ ctx, request, model, streamFn, sessionGeneration, key });
 	}
 
 	private launchStructuralReview(options: LaunchStructuralReviewOptions): boolean {
-		const { ctx, request, model, apiKey, headers, sessionGeneration, key } = options;
+		const { ctx, request, model, streamFn, sessionGeneration, key } = options;
 		if (this.runtime.reviewInFlight || this.inFlightReviewIds.has(request.id)) return false;
 		// Do not spin a no-progress reviewer repeatedly in one live session. The
 		// request stays pending and a later session/tree restoration resumes it.
@@ -1114,7 +1109,7 @@ export class Contemplator {
 			try {
 				debugLog("reviewer.started", { reviewRequestId: request.id, scope: request.scope, resumed: session.history.length > 0 });
 				const result = await watchdog.race(runStructuralReview({
-					request, model, apiKey, headers,
+					request, model, streamFn,
 					signal: watchdog.signal,
 					onProgress: watchdog.progress,
 					getBranch: () => ctx.sessionManager.getBranch() as Entry[],
@@ -1151,8 +1146,8 @@ export class Contemplator {
 				debugLog(result.outcome === "proposal" ? "reviewer.proposal_created" : "reviewer.no_proposal", { reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope });
 				if (result.outcome === "proposal") {
 					const notice = `BACKGROUND ${result.scope.toUpperCase()} REVIEW PROPOSAL [${result.id}]\n\nIMPORTANT: This is only an abbreviated notice, not the full proposal. When this proposal is relevant to the current work, call the recall tool with memory id [${result.id}] before deciding whether or how to act on it.\n\nSUMMARY:\n${result.summary}\n\nThis is advisory. After recalling memory [${result.id}], evaluate the full proposal against the actual environment and current work.`;
-					// As with probes, triggerTurn must be omitted or Pi 0.84+ bypasses
-					// the streaming steer queue and the active run never sees this message.
+					// As with probes, omit triggerTurn so a streaming run receives this
+					// through its steer queue without manufacturing a turn while idle.
 					this.pi.sendMessage({ customType: REVIEW_PROPOSAL_MESSAGE, content: notice, display: this.runtime.config.showContemplatorMessages, details: { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope } }, { deliverAs: "steer" });
 					this.pi.appendEntry(OM_REVIEWER_NOTICE, { version: 1, reviewRequestId: request.id, reviewMemoryId: result.id, scope: result.scope, content: notice });
 					this.markTipPersisted(ctx);
@@ -1216,7 +1211,7 @@ export class Contemplator {
 				debugLog("reviewer.resume_skipped", { reviewRequestId: request.id, reason: resolved.ok ? "session_changed" : resolved.reason });
 				return;
 			}
-			this.launchStructuralReview({ ctx, request, model: resolved.model as Model<any>, apiKey: resolved.apiKey, headers: resolved.headers, sessionGeneration: generation, history: this.reviewerSessions.get(request.id)?.history ?? [] });
+			this.launchStructuralReview({ ctx, request, model: resolved.model as Model<any>, streamFn: modelRegistryStream(ctx.modelRegistry), sessionGeneration: generation, history: this.reviewerSessions.get(request.id)?.history ?? [] });
 		} finally {
 			this.resolvingReviewIds.delete(request.id);
 		}
@@ -1263,7 +1258,7 @@ export class Contemplator {
 		return own?.id;
 	}
 
-	private async compactHistory(ctx: MemoryUpdateCtx, model: Model<any>, apiKey: string, headers: Record<string, string> | undefined, sessionGeneration: number, flushEpoch: number, signal?: AbortSignal): Promise<void> {
+	private async compactHistory(ctx: MemoryUpdateCtx, model: Model<any>, streamFn: StreamFn, sessionGeneration: number, flushEpoch: number, signal?: AbortSignal): Promise<void> {
 		const history = this.history.slice();
 		const historyEntryIds = this.historyEntryIds.slice();
 		const historyTokens = contemplatorHistoryTokens(history);
@@ -1287,10 +1282,13 @@ export class Contemplator {
 			history.slice(0, prefixEnd),
 			model,
 			CONTEMPLATOR_HISTORY_SUMMARY_RESERVE_TOKENS,
-			apiKey,
-			headers,
+			undefined,
+			undefined,
 			signal,
 			CONTEMPLATOR_HISTORY_SUMMARY_INSTRUCTIONS,
+			undefined,
+			undefined,
+			streamFn,
 		);
 
 		let prefixEnd = initialPrefixEnd;

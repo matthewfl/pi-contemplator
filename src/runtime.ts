@@ -1,8 +1,15 @@
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Config, type ConfiguredModel, DEFAULTS, loadConfig } from "./config.js";
 
 export type ResolveResult =
-	| { ok: true; model: unknown; apiKey: string; headers?: Record<string, string> }
+	| { ok: true; model: unknown }
 	| { ok: false; reason: string };
+
+/** Route background model calls through Pi's configured providers and request-time authentication. */
+export function modelRegistryStream(modelRegistry: ExtensionContext["modelRegistry"]): StreamFn {
+	return (model, context, options) => modelRegistry.streamSimple(model, context, options);
+}
 
 type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
@@ -39,7 +46,7 @@ export type SessionSettings = Partial<Pick<Config,
 
 export interface ResolveCtx {
 	model: unknown;
-	modelRegistry: any;
+	modelRegistry: ExtensionContext["modelRegistry"];
 	hasUI: boolean;
 	ui?: { notify: Notify };
 }
@@ -342,13 +349,10 @@ export class Runtime {
 				);
 			}
 		}
-		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) {
-			const provider = (model as { provider?: string }).provider ?? "unknown";
-			return { ok: false, reason: `no API key for provider "${provider}"` };
-		}
-		return { ok: true, model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
+		if (!model) return { ok: false, reason: "no model available (session has no model and no pi-contemplator model configured)" };
+		// Authentication, provider composition, OAuth refresh, headers, and endpoint
+		// selection are deliberately resolved by ModelRegistry at request time.
+		return { ok: true, model };
 	}
 
 	setMemoryUpdateListener(listener: (ctx: MemoryUpdateCtx) => void): void {

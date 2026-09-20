@@ -80,7 +80,7 @@ function setup(initialEntries: TestEntry[] = []) {
 		model: { provider: "session", id: "model", contextWindow: 100_000 },
 		modelRegistry: {
 			find: vi.fn(),
-			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "key" })),
+			streamSimple: vi.fn(() => stream()),
 		},
 		sessionManager: { getBranch: () => entries },
 	};
@@ -956,7 +956,7 @@ describe("Contemplator lifecycle", () => {
 		state.restore(harness.ctx);
 		compactionMocks.generateSummaryWithUsage.mockRejectedValueOnce(new Error("Summarization failed: generation hit the token cap and the summary is incomplete"));
 
-		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+		await state.compactHistory(harness.ctx, harness.ctx.model, harness.ctx.modelRegistry.streamSimple, state.sessionGeneration, state.flushEpoch);
 
 		expect(compactionMocks.generateSummaryWithUsage).toHaveBeenCalledTimes(2);
 		expect(compactionMocks.generateSummaryWithUsage.mock.calls[0][2]).toBe(16_000);
@@ -1000,7 +1000,7 @@ describe("Contemplator lifecycle", () => {
 		state.restore(harness.ctx);
 		state.seenObservationIds.add(memoryId);
 
-		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+		await state.compactHistory(harness.ctx, harness.ctx.model, harness.ctx.modelRegistry.streamSimple, state.sessionGeneration, state.flushEpoch);
 
 		const checkpoint = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.compacted === true);
 		expect((checkpoint?.data as any)?.coveredObservationIds).toContain(memoryId);
@@ -1038,7 +1038,7 @@ describe("Contemplator lifecycle", () => {
 		state.seenObservationIds.add(concurrentId);
 		state.pending = { observations: [`[${concurrentId}] concurrent work`], reviews: [], mainAgentOutputTokens: 0, mainAgentToolCalls: 0, mainAgentActiveTimeMs: 0 };
 
-		await state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch);
+		await state.compactHistory(harness.ctx, harness.ctx.model, harness.ctx.modelRegistry.streamSimple, state.sessionGeneration, state.flushEpoch);
 
 		const checkpoint = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.compacted === true);
 		expect((checkpoint?.data as any)?.coveredObservationIds).toContain(coveredId);
@@ -1056,7 +1056,7 @@ describe("Contemplator lifecycle", () => {
 		const original = state.history.slice();
 		compactionMocks.generateSummaryWithUsage.mockRejectedValue(new Error("Summarization failed: generation hit the token cap and the summary is incomplete"));
 
-		await expect(state.compactHistory(harness.ctx, harness.ctx.model, "key", undefined, state.sessionGeneration, state.flushEpoch)).resolves.toBeUndefined();
+		await expect(state.compactHistory(harness.ctx, harness.ctx.model, harness.ctx.modelRegistry.streamSimple, state.sessionGeneration, state.flushEpoch)).resolves.toBeUndefined();
 
 		expect(compactionMocks.generateSummaryWithUsage).toHaveBeenCalledTimes(2);
 		expect(state.history).toEqual(original);

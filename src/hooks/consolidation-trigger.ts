@@ -3,7 +3,7 @@ import { runSummarizer } from "../agents/summarizer/agent.js";
 import { runObserver } from "../agents/observer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
-import type { ResolveResult, Runtime } from "../runtime.js";
+import { modelRegistryStream, type ResolveResult, type Runtime } from "../runtime.js";
 import { createWorkerStallWatchdog } from "../worker-watchdog.js";
 import { boundedMaxTokens, OBSERVER_AGENT_LOOP_MAX_TOKENS } from "../model-budget.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -400,8 +400,7 @@ export function scheduleSummarizer(pi: ExtensionAPI, runtime: Runtime, ctx: Cons
 			const result = await watchdog.race(runSummarizer({
 				signal: watchdog.signal,
 				model: resolved.model as any,
-				apiKey: resolved.apiKey,
-				headers: resolved.headers,
+				streamFn: modelRegistryStream(ctx.modelRegistry),
 				getBranch: () => ctx.sessionManager.getBranch() as Entry[],
 				targetTokens: runtime.config.oldMemoryPoolTargetTokens,
 				newPoolMaxTokens: runtime.config.newMemoryPoolMaxTokens,
@@ -569,8 +568,7 @@ async function runObserverStage(
 	try {
 		observations = await observerWatchdog.race(runObserver({
 			model: resolved.model as any,
-			apiKey: resolved.apiKey,
-			headers: resolved.headers,
+			streamFn: modelRegistryStream(ctx.modelRegistry),
 			priorSummaries,
 			priorObservations,
 			chunk,

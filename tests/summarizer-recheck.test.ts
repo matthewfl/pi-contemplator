@@ -42,7 +42,7 @@ describe("summarizer in-flight scheduling recheck", () => {
 			summarizerRetriggerTokens: 2,
 		};
 		runtime.configLoaded = true;
-		(runtime as any).resolveModel = async () => ({ ok: true, model: { id: "test" }, apiKey: "key" });
+		(runtime as any).resolveModel = async () => ({ ok: true, model: { id: "test" } });
 		let entries: Entry[] = [memoryEntry([20, 1])];
 		const ctx = { cwd: "/tmp", hasUI: false, model: {}, modelRegistry: {}, sessionManager: { getBranch: () => entries } };
 		const pi = { appendEntry: vi.fn() };
@@ -80,7 +80,7 @@ describe("summarizer in-flight scheduling recheck", () => {
 			summarizerRetriggerTokens: 2,
 		};
 		runtime.configLoaded = true;
-		vi.spyOn(runtime, "resolveModel").mockResolvedValue({ ok: true, model: { contextWindow: 256_000 } as any, apiKey: "key" });
+		vi.spyOn(runtime, "resolveModel").mockResolvedValue({ ok: true, model: { contextWindow: 256_000 } as any });
 		let entries = [
 			textCustomMessage("raw-1", "a".repeat(4_000)),
 			textCustomMessage("raw-2", "b".repeat(4_000)),

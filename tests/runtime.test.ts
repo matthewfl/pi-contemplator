@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { computeSessionSettings, Runtime } from "../src/runtime.js";
+import { computeSessionSettings, modelRegistryStream, Runtime } from "../src/runtime.js";
 
 function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 	return {
@@ -10,6 +10,19 @@ function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 }
 
 describe("Runtime V3 behavior", () => {
+	it("adapts ModelRegistry streaming without rewriting request options", () => {
+		const response = { result: vi.fn() };
+		const streamSimple = vi.fn(() => response);
+		const streamFn = modelRegistryStream({ streamSimple } as any);
+		const model = { provider: "custom", id: "registered" } as any;
+		const context = { messages: [] } as any;
+		const options = { reasoning: "high", maxTokens: 123 } as any;
+
+		expect(streamFn(model, context, options)).toBe(response);
+		expect(streamSimple).toHaveBeenCalledOnce();
+		expect(streamSimple).toHaveBeenCalledWith(model, context, options);
+	});
+
 	it("uses configured model when present", async () => {
 		const runtime = new Runtime();
 		const configured = { provider: "anthropic", id: "configured" };
@@ -19,7 +32,8 @@ describe("Runtime V3 behavior", () => {
 		const result = await runtime.resolveModel({ model: { provider: "openai" }, modelRegistry: registry, hasUI: false });
 
 		expect(registry.find).toHaveBeenCalledWith("anthropic", "configured");
-		expect(result).toEqual({ ok: true, model: configured, apiKey: "key", headers: { test: "yes" } });
+		expect(result).toEqual({ ok: true, model: configured });
+		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 	});
 
 	it("uses the session model when an explicit caller opts out of the worker model", async () => {
@@ -76,18 +90,17 @@ describe("Runtime V3 behavior", () => {
 		);
 	});
 
-	it("returns model resolution failures", async () => {
+	it("fails only when no model exists and leaves request-time authentication to ModelRegistry", async () => {
 		const runtime = new Runtime();
 		await expect(runtime.resolveModel({ model: undefined, modelRegistry: modelRegistry(), hasUI: false })).resolves.toEqual({
 			ok: false,
-			reason: "no model available (session has no model and no observational-memory model configured)",
+			reason: "no model available (session has no model and no pi-contemplator model configured)",
 		});
 
 		const registry = modelRegistry({ auth: { ok: false } });
-		await expect(runtime.resolveModel({ model: { provider: "anthropic" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
-			ok: false,
-			reason: 'no API key for provider "anthropic"',
-		});
+		const model = { provider: "anthropic" };
+		await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({ ok: true, model });
+		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 	});
 
 	it("tracks consolidation task state", async () => {

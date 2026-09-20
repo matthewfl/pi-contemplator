@@ -32,7 +32,7 @@ describe("summarizer contemplation isolation", () => {
 			summarizerModel: { provider: "summary-provider", id: "summary-model", thinking: "high" },
 			showWorkerNotifications: false,
 		};
-		vi.spyOn(runtime, "resolveModel").mockResolvedValue({ ok: true, model: {}, apiKey: "test" });
+		vi.spyOn(runtime, "resolveModel").mockResolvedValue({ ok: true, model: {} });
 		const memoryUpdate = vi.fn();
 		runtime.setMemoryUpdateListener(memoryUpdate);
 		const commit = {
