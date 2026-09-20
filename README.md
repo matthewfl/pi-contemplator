@@ -157,6 +157,8 @@ The observer and summarizer provide the durable memory substrate. The contemplat
 
 ## Installation
 
+`pi-contemplator` 0.2.0 and later require **Pi 0.86.0 or newer**. This is a deliberate compatibility break from 0.85.x because background model calls use Pi's provider-aware `modelRegistry.streamSimple()` API.
+
 Install the published package through Pi:
 
 ```bash

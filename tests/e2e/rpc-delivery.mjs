@@ -4,6 +4,7 @@ import { ModelServer, assert, createWorkspace, launchPi, omSettings, prepareWork
 const PARALLEL = "E2E_PARALLEL_BATCH";
 const IDLE = "E2E_IDLE_HIDDEN";
 const PROBE = "E2E_DELIVERY_PROBE";
+const PARALLEL_PROBE_ACK = `PARALLEL_BATCH_ACKNOWLEDGED_${PROBE}:${PARALLEL}`;
 const started = Date.now();
 const log = (text) => console.log(`[delivery-e2e +${((Date.now() - started) / 1000).toFixed(1)}s] ${text}`);
 
@@ -50,8 +51,8 @@ async function runCase({ marker, visible }) {
 			if (state.main === 1) return sendSse(res, { tool: { id: "seed", name: "bash", arguments: { command: `echo ${marker}` } } });
 			if (state.main === 2) { state.parallelIssued = true; return sendParallel(res); }
 			assert(request.text.includes("fast-failed") && request.text.includes("slow-succeeded"), "Post-batch context lacked one of the parallel tool results");
-			assert(request.text.includes(`${PROBE}:${marker}`), "Probe did not drain after the complete parallel batch");
-			return sendSse(res, { text: "PARALLEL_BATCH_DONE" });
+			assert(request.text.includes(`${PROBE}:${marker}`), "Probe did not drain into the complete post-tool provider request");
+			return sendSse(res, { text: PARALLEL_PROBE_ACK });
 		}
 		if (state.main === 1) return sendSse(res, { text: "IDLE_BEFORE_PROBE" });
 		assert(request.text.includes(`${PROBE}:${marker}`), "Idle pending probe was absent from the next genuine user run");
@@ -74,10 +75,14 @@ async function runCase({ marker, visible }) {
 			const slowEnd = events.findIndex((event) => event.type === "tool_execution_end" && event.toolCallId === "parallel-slow-ok");
 			assert(slowEnd >= 0, "Slow parallel tool did not complete");
 			const entries = await pi.rpc.entries();
+			const pendingProbe = entries.find((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false && entry.data?.suggestion === `${PROBE}:${marker}`);
+			assert(pendingProbe?.data?.probeId, "Parallel probe lacked a durable pending identity");
+			assert(entries.some((entry) => entry.type === "custom_message" && entry.customType === "om.contemplator.suggestion" && entry.details?.probeId === pendingProbe.data.probeId), "Parallel probe was not inserted into the main conversation stream");
+			assert(entries.some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === true && entry.data?.probeId === pendingProbe.data.probeId), "Parallel probe was not acknowledged from an actual provider context");
 			const activity = entries.filter((entry) => entry.customType === "om.agent.activity").reduce((sum, entry) => sum + (entry.data?.durationMs ?? 0), 0);
 			assert(activity >= 1_800, `Cumulative activity omitted live tool time: ${activity}ms`);
 			assert(activity < 5_000, `Concurrent tools appear double-counted: ${activity}ms`);
-			assert(entries.some((entry) => entry.type === "message" && entry.message?.role === "assistant" && textOf(entry.message).includes("PARALLEL_BATCH_DONE")), "Parallel scenario did not finish");
+			assert(entries.some((entry) => entry.type === "message" && entry.message?.role === "assistant" && textOf(entry.message).includes(PARALLEL_PROBE_ACK)), "The main-agent response did not durably acknowledge the exact delivered probe");
 		} else {
 			await pi.rpc.waitSettled(start);
 			await waitFor(async () => (await pi.rpc.entries()).some((entry) => entry.customType === "om.contemplator.suggestion" && entry.data?.delivered === false), "idle pending probe");

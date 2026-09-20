@@ -891,9 +891,11 @@ describe("Contemplator lifecycle", () => {
 			concern: "A structural issue may exist.", reviewFocus: "Decide whether a proposal is warranted.",
 			createdAt: 1, requestedBy: "contemplator",
 		};
+		const persistedSystem = { role: "system", content: "synthetic tool declaration delta", timestamp: 0 };
 		const persistedAssistant = { role: "assistant", content: [{ type: "text", text: "I need more evidence." }], timestamp: 1, usage: { output: 10 } };
 		const harness = setup([
 			{ id: "review-request", type: "custom", customType: "om.review.request", data: { version: 1, request: reviewRequest } },
+			{ id: "review-system", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: persistedSystem } },
 			{ id: "review-message", type: "custom", customType: "om.reviewer.message", data: { version: 1, reviewRequestId: reviewRequest.id, scope: "workflow", message: persistedAssistant } },
 		] as TestEntry[]);
 

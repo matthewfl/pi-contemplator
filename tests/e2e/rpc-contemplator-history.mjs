@@ -67,7 +67,7 @@ try {
 	const checkpoint = await waitFor(async () => (await pi.rpc.entries()).find((entry) =>
 		entry.customType === "om.contemplator.message" && entry.data?.compacted === true && entry.data?.version === 2
 	), "v2 private-history compact checkpoint", 30_000);
-	assert(state.summary >= 2, `Expected at least one truncated summary plus one smaller-prefix retry, got ${state.summary}`);
+	assert(state.summary === 2, `Expected exactly one truncated summary plus one smaller-prefix retry, got ${state.summary}`);
 	const firstSummaryCap = summaryRequests[0].max_completion_tokens ?? summaryRequests[0].max_tokens;
 	const fallbackSummaryCap = summaryRequests[1].max_completion_tokens ?? summaryRequests[1].max_tokens;
 	assert(firstSummaryCap > 0 && firstSummaryCap <= 12_800, `Invalid context-clipped first summary cap: ${firstSummaryCap}`);

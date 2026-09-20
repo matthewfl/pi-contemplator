@@ -179,9 +179,14 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 			logAgentStreamError("reviewer", event);
 		}
 		const newMessages = await stream.result();
-		history.push(...newMessages);
-		args.onMessages?.(newMessages);
-		const assistants = newMessages.filter((message): message is AgentMessage => message.role === "assistant");
+		// agentLoop may synthesize transcript-backed system messages when its tool
+		// declarations change. Each invocation already prepends the canonical
+		// reviewer system prompt, so persisting or replaying those deltas would
+		// duplicate system instructions after a resume.
+		const resumableMessages = newMessages.filter((message) => message.role !== "system");
+		history.push(...resumableMessages);
+		args.onMessages?.(resumableMessages);
+		const assistants = resumableMessages.filter((message) => message.role === "assistant");
 		if (args.recordUsage) {
 			for (const message of assistants) {
 				const usage = (message as { usage?: LlmUsageInput }).usage;

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runSummarizer } from "../agents/summarizer/agent.js";
 import { runObserver } from "../agents/observer/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
@@ -30,7 +30,7 @@ export type ConsolidationCtx = {
 	hasUI: boolean;
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
 	model: unknown;
-	modelRegistry: any;
+	modelRegistry: ExtensionContext["modelRegistry"];
 	sessionManager: {
 		getBranch: () => readonly unknown[];
 		getSessionId?: () => string;

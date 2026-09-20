@@ -91,6 +91,10 @@ type Intervention =
 	| { kind: "review"; request: Omit<StructuralReviewRequest, "createdAt" | "requestedBy"> }
 	| { kind: "none" };
 
+function isResumableReviewerMessage(message: unknown): message is AgentMessage {
+	return !!message && typeof message === "object" && (message as { role?: unknown }).role !== "system";
+}
+
 type ReviewerSession = {
 	scope: StructuralReviewRequest["scope"];
 	history: AgentMessage[];
@@ -564,7 +568,7 @@ export class Contemplator {
 						// Backward compatibility for the old, expensive full-transcript snapshots.
 						this.reviewerSessions.set(state.reviewRequestId, {
 							scope: state.scope,
-							history: state.history.filter((message): message is AgentMessage => !!message && typeof message === "object"),
+							history: state.history.filter(isResumableReviewerMessage),
 							checkpointEntryId: entry.id,
 							messageEntryIds: [],
 							foldedEntryIds: new Set(),
@@ -591,8 +595,10 @@ export class Contemplator {
 					// (turn_end), so fold each message entry at most once per live session.
 					if (!session.foldedEntryIds.has(entry.id)) {
 						session.foldedEntryIds.add(entry.id);
-						session.history.push(data.message as AgentMessage);
-						session.messageEntryIds.push(entry.id);
+						if (isResumableReviewerMessage(data.message)) {
+							session.history.push(data.message);
+							session.messageEntryIds.push(entry.id);
+						}
 					}
 				}
 			}
@@ -1119,6 +1125,7 @@ export class Contemplator {
 						watchdog.progress();
 						if (!acceptsMessages || sessionGeneration !== this.sessionGeneration || !this.reviewIsPending(ctx, request.id)) return;
 						for (const message of messages) {
+							if (!isResumableReviewerMessage(message)) continue;
 							session.history.push(message);
 							const entryId = this.appendEntryWithId(ctx, OM_REVIEWER_MESSAGE, { version: 1, reviewRequestId: request.id, scope: request.scope, message }, request.id);
 							if (entryId) {

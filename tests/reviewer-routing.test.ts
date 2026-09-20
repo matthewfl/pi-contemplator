@@ -201,6 +201,37 @@ describe("reviewer keep-going loop", () => {
 		expect(transcript[2].content[0].text).toBe(REVIEWER_KEEP_GOING_MESSAGE);
 	});
 
+	it("does not persist or replay loop-generated system deltas", async () => {
+		let invocations = 0;
+		let secondContext: any;
+		const transcript: any[] = [];
+		const syntheticSystem = { role: "system", content: "synthetic tool declaration delta", timestamp: 1 };
+		const agentLoop = ((_prompts: any, context: any) => {
+			invocations++;
+			if (invocations === 2) secondContext = context;
+			return {
+				async *[Symbol.asyncIterator]() {
+					if (invocations === 2) {
+						const tool = context.tools.find((candidate: any) => candidate.name === "submit_workflow_proposal");
+						await tool.execute("terminal", workflowArgs);
+					}
+				},
+				result: async () => invocations === 1
+					? [syntheticSystem, assistantText("first pass", 10)]
+					: [assistantText("terminal pass", 10)],
+			};
+		}) as any;
+
+		await runStructuralReview({
+			request: request("workflow"), model: {} as any, getBranch: () => [], agentLoop,
+			onMessages: (messages) => transcript.push(...messages),
+		});
+
+		expect(transcript.some((message) => message.role === "system")).toBe(false);
+		expect(secondContext.messages.filter((message: any) => message.role === "system")).toHaveLength(1);
+		expect(secondContext.messages.some((message: any) => message.content === syntheticSystem.content)).toBe(false);
+	});
+
 	it("stops immediately when a terminal tool has no citation warnings", async () => {
 		let invocations = 0;
 		let terminalResult: any;

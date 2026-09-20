@@ -42,7 +42,7 @@ const server = new ModelServer(async (request, res) => {
 	return sendSse(res, { text: "REPEATED_COMPACTION_RECALL_COMPLETE" });
 });
 
-console.log("RPC compaction failure E2E: repeated too-small compactions, fail-safe continuation, observer sidecars, and memory recovery");
+console.log("RPC compaction failure E2E: repeated no-eligible-prefix failures, fail-safe continuation, observer sidecars, and memory recovery");
 const workspace = await createWorkspace("pi-compaction-resilience-e2e-");
 let pi;
 try {
@@ -60,7 +60,7 @@ try {
 	await waitFor(async () => (await pi.rpc.entries()).some((entry) => entry.type === "message" && entry.message?.role === "assistant" && textOf(entry.message).includes("REPEATED_COMPACTION_RECALL_COMPLETE")), "repeated compaction memory recovery", 30_000);
 	const entries = await pi.rpc.entries();
 	const compactions = entries.filter((entry) => entry.type === "compaction");
-	assert(compactions.length === 0, `Too-small compactions unexpectedly wrote ${compactions.length} compaction entries`);
+	assert(compactions.length === 0, `No-eligible-prefix compactions unexpectedly wrote ${compactions.length} compaction entries`);
 	const failedCompactions = pi.rpc.events.slice(start).filter((event) => event.type === "compaction_end" && !event.result);
 	assert(failedCompactions.length === 2, `Expected two explicit failed compaction events, got ${failedCompactions.length}`);
 	const resumes = pi.rpc.events.slice(start).filter((event) => event.type === "message_start" && event.message?.customType === "om.compaction.resume");
