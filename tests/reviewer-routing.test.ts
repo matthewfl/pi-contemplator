@@ -147,6 +147,33 @@ function assistantText(text: string, output: number): any {
 }
 
 describe("reviewer keep-going loop", () => {
+	it("persists the supplied prompt exactly once with the real Pi agent loop", async () => {
+		const transcript: any[] = [];
+		const usage = { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		const assistant = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "real-loop-terminal", name: "submit_workflow_proposal", arguments: workflowArgs }],
+			api: "openai-completions", provider: "test", model: "test", usage,
+			stopReason: "toolUse", timestamp: Date.now(),
+		};
+		const streamFn = (() => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => assistant,
+		})) as any;
+
+		const result = await runStructuralReviewImpl({
+			request: request("workflow"),
+			model: { api: "openai-completions", provider: "test", id: "test", contextWindow: 256_000, maxTokens: 32_000 } as any,
+			streamFn,
+			getBranch: () => [{ id: "aaaaaaaaaaaa", type: "custom", customType: "test", data: {} } as any],
+			onMessages: (messages) => transcript.push(...messages),
+		});
+
+		expect(result).toMatchObject({ outcome: "proposal", proposalKind: "workflow" });
+		expect(transcript.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(transcript.filter((message) => message.role === "user")).toHaveLength(1);
+	});
+
 	it("re-invokes the loop with a keep-going message on a non-terminal stop, then accepts a terminal outcome", async () => {
 		let invocations = 0;
 		const seenPrompts: any[] = [];
@@ -178,7 +205,7 @@ describe("reviewer keep-going loop", () => {
 	it("emits a durable transcript including continuation prompts", async () => {
 		let invocations = 0;
 		const transcript: any[] = [];
-		const agentLoop = ((_prompts: any, context: any) => {
+		const agentLoop = ((prompts: any, context: any) => {
 			invocations++;
 			return {
 				async *[Symbol.asyncIterator]() {
@@ -187,7 +214,8 @@ describe("reviewer keep-going loop", () => {
 						await tool.execute("terminal", workflowArgs);
 					}
 				},
-				result: async () => [assistantText(`pass ${invocations}`, 10)],
+				// Match Pi's per-invocation result contract: the supplied prompt is first.
+				result: async () => [prompts[0], assistantText(`pass ${invocations}`, 10)],
 			};
 		}) as any;
 
