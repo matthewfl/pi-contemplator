@@ -890,7 +890,7 @@ export class Contemplator {
 			let nextPrompt = prompt;
 			for (let invocation = 1; invocation <= CONTEMPLATOR_MAX_INVOCATIONS && !intervention; invocation++) {
 				runMessages.push(nextPrompt);
-				const context: AgentContext = { systemPrompt: buildContemplatorSystemPrompt(reviewerEnabled), messages: [...this.history, ...runMessages.slice(0, -1)], tools };
+				const context: AgentContext = { messages: [{ role: "system", content: buildContemplatorSystemPrompt(reviewerEnabled), toolsAdded: tools, timestamp: Date.now() }, ...this.history, ...runMessages.slice(0, -1)], tools };
 				const api = (resolved.model as Model<any>).api;
 				const invocationConfig: AgentLoopConfig & { onPayload?: (payload: unknown) => unknown } = invocation === 1 ? config : {
 					...config,

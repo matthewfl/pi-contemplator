@@ -48,7 +48,10 @@ let pi;
 try {
 	const port = await server.start();
 	await prepareWorkspace(workspace, port, {
-		compaction: { enabled: false, reserveTokens: 512, keepRecentTokens: 1 },
+		// Keep the entire deliberately tiny transcript recent so manual compaction
+		// has no eligible prefix and deterministically exercises failure recovery,
+		// even with Pi 0.86 transcript-backed prompt/tool update entries.
+		compaction: { enabled: false, reserveTokens: 512, keepRecentTokens: 1_000_000 },
 		...omSettings({ compactAfterTokens: 1_000_000, contemplatorEnabled: false, reviewerEnabled: false, compactionObserverEnabled: true }),
 	});
 	pi = await launchPi(workspace);

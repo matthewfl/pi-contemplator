@@ -531,7 +531,7 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 
 	const runOnce = async (text: string, requireToolCall: boolean): Promise<string | undefined> => {
 		const prompt: Message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
-		const context: AgentContext = { systemPrompt: SUMMARIZER_SYSTEM, messages: history.slice(), tools };
+		const context: AgentContext = { messages: [{ role: "system", content: SUMMARIZER_SYSTEM, toolsAdded: tools, timestamp: Date.now() }, ...history], tools };
 		const estimatedInputTokens = estimateStringTokens(SUMMARIZER_SYSTEM) + toolDefinitionTokens + estimateStringTokens(JSON.stringify([...history, prompt]));
 		const contextAvailableOutput = Math.max(1, contextWindow - estimatedInputTokens - SUMMARIZER_CONTEXT_RESERVE_TOKENS);
 		const maxOutputTokens = Math.min(SUMMARIZER_MAX_OUTPUT_TOKENS, contextAvailableOutput);

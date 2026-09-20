@@ -902,7 +902,8 @@ describe("Contemplator lifecycle", () => {
 
 		const [prompts, context] = agentMocks.agentLoop.mock.calls[0];
 		expect(prompts[0].content[0].text).toContain("You have not yet produced a terminal review outcome");
-		expect(context.messages).toEqual([persistedAssistant]);
+		expect(context.messages[0]).toMatchObject({ role: "system" });
+		expect(context.messages.slice(1)).toEqual([persistedAssistant]);
 		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.reviewer.message", expect.objectContaining({ reviewRequestId: "review-pending", message: expect.objectContaining({ role: "user" }) }));
 	});
 
@@ -1156,7 +1157,8 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
 
 		const [, context] = agentMocks.agentLoop.mock.calls[0];
-		expect(context.messages).toEqual([legacyMessage, newerMessage]);
+		expect(context.messages[0]).toMatchObject({ role: "system" });
+		expect(context.messages.slice(1)).toEqual([legacyMessage, newerMessage]);
 	});
 
 	it("does not credit a concurrently-appended foreign entry as a reviewer message", async () => {
@@ -1289,7 +1291,8 @@ describe("Contemplator lifecycle", () => {
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
 
 		const [, context] = agentMocks.agentLoop.mock.calls[0];
-		expect(context.systemPrompt).not.toContain("Structural reviews are enabled");
+		const systemPrompt = context.messages.find((message: any) => message.role === "system")?.content;
+		expect(systemPrompt).not.toContain("Structural reviews are enabled");
 		expect(context.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_memories", "recall", "send_probe", "no_intervention"]);
 		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
 		expect(prompt.content[0].text).not.toContain("request_review");

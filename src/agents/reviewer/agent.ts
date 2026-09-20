@@ -174,7 +174,7 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		const promptMessage = prompt as AgentMessage;
 		// agentLoop receives the new prompt separately. Its context must therefore
 		// contain only prior messages, otherwise a resumed prompt is sent twice.
-		const context: AgentContext = { systemPrompt: buildReviewerSystemPrompt(args.request.scope), messages: history.slice(), tools };
+		const context: AgentContext = { messages: [{ role: "system", content: buildReviewerSystemPrompt(args.request.scope), toolsAdded: tools, timestamp: Date.now() }, ...history], tools };
 		history.push(promptMessage);
 		args.onMessages?.([promptMessage]);
 		const stream = loop([prompt], context, config, args.signal, budgetedStreamSimple);

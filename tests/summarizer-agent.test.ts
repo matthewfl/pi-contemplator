@@ -140,7 +140,7 @@ describe("summarizer agent", () => {
 		const loop = ((_prompts: any[], context: any) => ({
 			async *[Symbol.asyncIterator]() {},
 			result: async () => {
-				promptText = context.messages[0].content[0].text;
+				promptText = context.messages.find((message: any) => message.role === "user" && message.content?.[0]?.text?.includes("<memory_records>"))?.content[0].text;
 				await finish(context);
 				return [];
 			},
@@ -154,8 +154,9 @@ describe("summarizer agent", () => {
 
 	it("injects the full system prompt once and disables reasoning", async () => {
 		await runSummarizer({ ...base, model: { ...base.model, reasoning: true }, agentLoop: fakeLoop(async (_n, context, config) => {
-			expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM);
-			expect(JSON.stringify(context.messages)).not.toContain(SUMMARIZER_SYSTEM);
+			const systemMessages = context.messages.filter((message: any) => message.role === "system");
+			expect(systemMessages).toHaveLength(1);
+			expect(systemMessages[0].content).toBe(SUMMARIZER_SYSTEM);
 			expect(config.reasoning).toBeUndefined();
 			await tool(context, "done").execute("d1", {});
 			await tool(context, "done").execute("d2", {});

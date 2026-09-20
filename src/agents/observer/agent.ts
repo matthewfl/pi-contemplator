@@ -222,10 +222,10 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 	let terminalFailure: { stopReason: string; errorMessage?: string } | undefined;
 	let lengthAttempts = 0;
 	const runInvocation = async (prompt: Message, afterLength = false): Promise<void> => {
+		const tools = [recordObservations as AgentTool<any>, doneTool];
 		const context: AgentContext = {
-			systemPrompt: OBSERVER_SYSTEM,
-			messages: history.slice(),
-			tools: [recordObservations as AgentTool<any>, doneTool],
+			messages: [{ role: "system", content: OBSERVER_SYSTEM, toolsAdded: tools, timestamp: Date.now() }, ...history],
+			tools,
 		};
 		// Publish a live launch-local transcript for /om:view observer. Keep an
 		// invocation-local list because agentLoop owns its internal context copy.
