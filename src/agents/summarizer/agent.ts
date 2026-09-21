@@ -546,7 +546,12 @@ export async function runSummarizer(args: RunSummarizerArgs): Promise<Summarizer
 				if (calls.length > 1) return { block: true, reason: "Call done alone in a later response after sibling tool results are visible." };
 				return undefined;
 			},
-			shouldStopAfterTurn: () => completedWithDone || (effectiveMaxTurns !== undefined && ++turnCount >= effectiveMaxTurns),
+			finishTurn: ({ message }) => {
+				if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
+				return completedWithDone || (effectiveMaxTurns !== undefined && ++turnCount >= effectiveMaxTurns)
+					? { action: "end" }
+					: undefined;
+			},
 			...(requireToolCall ? { onPayload: (payload: unknown) => forceRequiredToolPayload(payload, args.model.api) } : {}),
 			...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		};

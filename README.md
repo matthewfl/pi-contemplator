@@ -157,7 +157,7 @@ The observer and summarizer provide the durable memory substrate. The contemplat
 
 ## Installation
 
-`pi-contemplator` 0.2.0 requires **Pi 0.86.x**.
+`pi-contemplator` 0.3.0 requires **Pi 0.87.x**.
 
 Install the published package through Pi:
 

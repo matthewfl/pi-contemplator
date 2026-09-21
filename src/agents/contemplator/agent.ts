@@ -885,7 +885,10 @@ export class Contemplator {
 				// A clean final-action call is the end of the contemplator turn. Do not
 				// spend another model request asking it to narrate after its decision.
 				// Citation warnings leave the loop open so it can correct the action.
-				shouldStopAfterTurn: () => intervention !== undefined && !finalActionWarned,
+				finishTurn: ({ message }) => {
+					if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
+					return intervention !== undefined && !finalActionWarned ? { action: "end" } : undefined;
+				},
 				...(supportsReasoning && selectedThinkingLevel !== "off" ? { reasoning: selectedThinkingLevel } : {}),
 			};
 			const runMessages: AgentMessage[] = [];

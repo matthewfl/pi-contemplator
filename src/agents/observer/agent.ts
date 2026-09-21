@@ -206,9 +206,12 @@ IMPORTANT: Now call record_observations to record the useful new observations fr
 		maxTokens: boundedMaxTokens(model, OBSERVER_AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: replayTruncatedThinkingAsText,
 		toolExecution: "sequential",
-		shouldStopAfterTurn: () => {
+		finishTurn: ({ message }) => {
+			if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
 			turnCount++;
-			return doneCalled || (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns);
+			return doneCalled || (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns)
+				? { action: "end" }
+				: undefined;
 		},
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 	};

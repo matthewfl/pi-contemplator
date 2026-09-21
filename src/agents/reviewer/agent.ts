@@ -165,7 +165,10 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 			maxTokens: boundedMaxTokens(args.model, remainingBudget()),
 			convertToLlm: (messages) => messages as Message[],
 			toolExecution: "sequential",
-			shouldStopAfterTurn: () => terminal !== undefined || remainingBudget() === 0,
+			finishTurn: ({ message }) => {
+				if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
+				return terminal !== undefined || remainingBudget() === 0 ? { action: "end" } : undefined;
+			},
 		};
 		const promptMessage = prompt as AgentMessage;
 		// agentLoop receives the new prompt separately. Its context must therefore
@@ -197,8 +200,8 @@ export async function runStructuralReview(args: RunStructuralReviewArgs): Promis
 		// assistant usage that the real stream wrapper did not already account for.
 		const reportedOutputTokens = assistantOutputTokens(assistants);
 		totalOutputTokens += Math.max(0, reportedOutputTokens - streamedOutputTokens);
-		// A warned terminal call deliberately leaves shouldStopAfterTurn false so
-		// the reviewer can search/recall and replace it. If the reviewer instead
+		// A warned terminal call deliberately leaves finishTurn undecided so the
+		// reviewer can search/recall and replace it. If the reviewer instead
 		// ends its turn, honor the staged outcome exactly as the warning promised.
 		if (!terminal && warnedTerminal) {
 			terminal = warnedTerminal;
