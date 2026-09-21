@@ -57,6 +57,18 @@ function setup() {
 describe("observer backlog draining", () => {
 	beforeEach(() => observerMocks.runObserver.mockReset());
 
+	it("does not count Pi 0.87's persisted system prompt as observer source backlog", () => {
+		const entries = [
+			{
+				type: "message", id: "system", parentId: null, timestamp: new Date().toISOString(),
+				message: { role: "system", content: "", sections: { rules: "x".repeat(80_000) }, timestamp: Date.now() },
+			},
+			textCustomMessage("user-visible", "small user-visible source"),
+		] as Entry[];
+
+		expect(rawTokensSinceObservationCoverage(entries)).toBeLessThan(100);
+	});
+
 	it("launches observer catch-up from long-turn activity checkpoints", async () => {
 		const runtime = new Runtime();
 		runtime.configLoaded = true;

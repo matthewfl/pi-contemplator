@@ -7,9 +7,16 @@ import {
 	type MemoryCoverageCustomType,
 } from "./types.js";
 
-const SOURCE_ENTRY_TYPES = new Set(["message", "custom_message", "branch_summary"]);
+const SOURCE_ENTRY_TYPES = new Set(["custom_message", "branch_summary"]);
 
 export function isSourceEntry(entry: Entry): boolean {
+	if (entry.type === "message") {
+		// Pi 0.87 persists its canonical system prompt as a message entry. It is
+		// extension/runtime configuration, not new conversation evidence; counting
+		// its large sections makes a fresh session immediately cross the observer
+		// threshold even though only a few hundred user-visible tokens exist.
+		return !isObject(entry.message) || entry.message.role !== "system";
+	}
 	return SOURCE_ENTRY_TYPES.has(entry.type);
 }
 

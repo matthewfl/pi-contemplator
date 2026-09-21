@@ -50,6 +50,30 @@ async function modelRoutingAndFeatureFlags() {
 	}
 }
 
+async function freshSessionThreshold() {
+	const server = new ModelServer(async (_request, res) => sendSse(res, { text: "FRESH_SESSION_MAIN_COMPLETE" }));
+	const workspace = await createWorkspace("pi-fresh-threshold-e2e-");
+	let pi;
+	try {
+		const port = await server.start();
+		// Keep the threshold above this tiny exchange but far below Pi's persisted
+		// canonical system prompt, so counting that system entry would launch.
+		await prepareWorkspace(workspace, port, omSettings({ observeAfterTokens: 100, contemplatorEnabled: false }));
+		pi = await launchPi(workspace);
+		const start = pi.rpc.events.length;
+		await pi.rpc.command({ type: "prompt", message: "E2E_FRESH_SESSION: one short response must stay below the observer threshold." });
+		await pi.rpc.waitSettled(start);
+		await sleep(750);
+		assert(server.requests.length === 1 && server.requests[0].role === "main", `Fresh system prompt triggered a worker: ${server.requests.map((r) => r.role).join(",")}`);
+		assert(!(await pi.rpc.entries()).some((entry) => entry.customType === "om.observations.recorded"), "Fresh system prompt produced observations below threshold");
+		await stopPi(pi); pi = undefined;
+	} finally {
+		if (pi?.child.exitCode === null) pi.child.kill("SIGKILL");
+		await server.close().catch(() => {});
+		await workspace.cleanup();
+	}
+}
+
 async function passiveMode() {
 	const server = new ModelServer(async (_request, res) => sendSse(res, { text: "PASSIVE_MAIN_COMPLETE" }));
 	const workspace = await createWorkspace("pi-passive-e2e-");
@@ -154,9 +178,11 @@ async function concurrentIsolation() {
 	}
 }
 
-console.log("RPC routing/isolation E2E: role-specific models, passive flags, tree forks, reviewer tool gating, and concurrent session separation");
+console.log("RPC routing/isolation E2E: role-specific models, fresh-session thresholds, passive flags, tree forks, reviewer tool gating, and concurrent session separation");
 await modelRoutingAndFeatureFlags();
 log("PASS each agent role used its configured model");
+await freshSessionThreshold();
+log("PASS fresh Pi 0.87 system prompt stayed outside observer source accounting");
 await passiveMode();
 log("PASS passive mode launched only the primary agent");
 await treeForkIsolation();
