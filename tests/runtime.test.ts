@@ -182,11 +182,11 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		runtime.restoreSessionSettings([
 			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false } },
-			{ type: "compaction", details: { sessionSettings: { contemplatorEnabled: true, contemplatorMinTurns: 3 } } },
+			{ type: "compaction", details: { sessionSettings: { contemplatorEnabled: true, contemplatorMinTurns: 3, contemplatorMaxActiveMinutes: 45 } } },
 			{ type: "custom", customType: "om.settings", data: { contemplatorEnabled: false } },
 		]);
 
-		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 3 });
+		expect(runtime.getSessionSettings()).toMatchObject({ contemplatorEnabled: false, contemplatorMinTurns: 3, contemplatorMaxActiveMinutes: 45 });
 	});
 
 	it("prefers live om.settings entries over a positionally-later stale compaction snapshot", () => {

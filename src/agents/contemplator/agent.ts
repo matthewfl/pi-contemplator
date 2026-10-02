@@ -84,6 +84,8 @@ interface PendingUpdate {
 	mainAgentOutputTokens: number;
 	mainAgentToolCalls: number;
 	mainAgentActiveTimeMs: number;
+	/** True when cumulative active work, rather than memory volume, forced this update. */
+	activeTimeFallback: boolean;
 }
 
 type Intervention =
@@ -171,6 +173,8 @@ function coarseAgentTime(durationMs: number): string {
 }
 const CONTEMPLATOR_MESSAGE = "om.contemplator.message";
 const CONTEMPLATOR_STATE = "om.contemplator.state";
+/** Durable per-branch baseline for the cumulative active-work fallback trigger. */
+const CONTEMPLATOR_RUN = "om.contemplator.run";
 const CONTEMPLATOR_SUGGESTION = "om.contemplator.suggestion";
 const REVIEW_PROPOSAL_MESSAGE = "om.review.proposal";
 const SendProbeSchema = Type.Object({ question: Type.String({ minLength: 1, description: "One concise, memory-grounded probing question, optionally preceded by one short sentence of context. Cite relevant memory identifiers." }) });
@@ -292,6 +296,8 @@ export class Contemplator {
 	private queuedProbeIds = new Set<string>();
 	/** Probes whose provider-context delivery will establish the next response-spacing anchor. */
 	private probeCooldownPendingIds = new Set<string>();
+	/** Preserve the configured response gap after a probe actually reaches provider context. */
+	private probeDeliverySpacingActive = false;
 	private sessionGeneration = 0;
 	private latestCtx: MemoryUpdateCtx | undefined;
 	/** Completed primary-model responses since the current completion/probe-delivery spacing anchor. */
@@ -301,6 +307,10 @@ export class Contemplator {
 	private restoredTipId: string | undefined;
 	/** Start of the unpersisted portion of the current main-agent run. */
 	private agentActiveSince: number | undefined;
+	/** Cumulative active time at the latest contemplator attempt on this branch. */
+	private lastContemplatorActiveTimeMs = 0;
+	/** Fires while the primary agent remains active, including inside one long tool call. */
+	private activeTimeFallbackTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private readonly pi: ExtensionAPI, private readonly runtime: Runtime) {}
 
@@ -322,12 +332,14 @@ export class Contemplator {
 			return box;
 		});
 		this.runtime.setMemoryUpdateListener((ctx) => this.withDebugContext(ctx, () => this.observeTurn(ctx)));
-		this.pi.on("agent_start", () => {
+		this.pi.on("agent_start", (_event: unknown, ctx: ExtensionContext) => {
 			this.agentActiveSince = Date.now();
+			this.withDebugContext(ctx, () => this.scheduleActiveTimeFallback(ctx));
 		});
 		this.pi.on("agent_end", (_event: unknown, ctx: ExtensionContext) => {
 			this.persistAgentActivity(ctx);
 			this.agentActiveSince = undefined;
+			this.clearActiveTimeFallbackTimer();
 		});
 		this.pi.on("session_start", (event: any, ctx: ExtensionContext) => {
 			this.sessionGeneration++;
@@ -336,6 +348,7 @@ export class Contemplator {
 			this.consecutiveFlushFailures = 0;
 			const generation = this.sessionGeneration;
 			this.agentActiveSince = undefined;
+			this.clearActiveTimeFallbackTimer();
 			// AgentSession preserves its steering queue across extension reloads. An
 			// undelivered tracking entry therefore still has a live queued message;
 			// restoring it here would enqueue the same probe a second time.
@@ -353,6 +366,7 @@ export class Contemplator {
 			this.running = false;
 			this.consecutiveFlushFailures = 0;
 			this.agentActiveSince = undefined;
+			this.clearActiveTimeFallbackTimer();
 			// Pending steering messages remain queued while navigating the tree.
 			this.restore(ctx, true, true);
 		});
@@ -362,6 +376,8 @@ export class Contemplator {
 			this.running = false;
 			this.consecutiveFlushFailures = 0;
 			this.agentActiveSince = undefined;
+			this.clearActiveTimeFallbackTimer();
+			this.lastContemplatorActiveTimeMs = 0;
 			this.history = [];
 			this.historyEntryIds = [];
 			this.pending = undefined;
@@ -375,6 +391,7 @@ export class Contemplator {
 			this.deliveredProbeIds.clear();
 			this.queuedProbeIds.clear();
 			this.probeCooldownPendingIds.clear();
+			this.probeDeliverySpacingActive = false;
 			this.latestCtx = undefined;
 			this.turnsSinceRun = 0;
 			this.assistantResponsesInCurrentTurn = 0;
@@ -384,6 +401,7 @@ export class Contemplator {
 				pendingObservations: 0,
 				pendingReviews: 0,
 				responsesSinceRun: 0,
+				activeTimeSinceRunMs: 0,
 				waitingFor: "idle",
 			};
 		});
@@ -419,6 +437,9 @@ export class Contemplator {
 			// This records one wall-clock interval regardless of how many tools were
 			// running concurrently; persistAgentActivity restarts the shared clock.
 			this.persistAgentActivity(ctx);
+			// A long autonomous turn can perform many tools without ending a model
+			// turn. Recheck the active-work fallback at each completed tool batch.
+			this.withDebugContext(ctx, () => this.observeTurn(ctx));
 		});
 		this.pi.on("context", (event: any, ctx: ExtensionContext) => {
 			const deliveredMessages = event.messages?.filter((message: any) => message?.role === "custom" && message.customType === CONTEMPLATOR_SUGGESTION && typeof message.details?.probeId === "string") ?? [];
@@ -444,6 +465,7 @@ export class Contemplator {
 			if (cooldownAnchored) {
 				// Probe spacing begins only once Pi proves the probe reached an actual
 				// provider context. Responses generated before this point do not count.
+				this.probeDeliverySpacingActive = true;
 				this.turnsSinceRun = 0;
 				this.withDebugContext(ctx, () => this.observeTurn(ctx));
 			}
@@ -458,18 +480,46 @@ export class Contemplator {
 		});
 	}
 
-	private persistAgentActivity(ctx: MemoryUpdateCtx): void {
+	private clearActiveTimeFallbackTimer(): void {
+		if (this.activeTimeFallbackTimer !== undefined) clearTimeout(this.activeTimeFallbackTimer);
+		this.activeTimeFallbackTimer = undefined;
+	}
+
+	private scheduleActiveTimeFallback(ctx: MemoryUpdateCtx): void {
+		this.clearActiveTimeFallbackTimer();
+		if (this.agentActiveSince === undefined || !this.runtime.config.contemplatorEnabled || this.runtime.config.passive) return;
+		const persistedActiveMs = agentActiveTimeMs(ctx.sessionManager.getBranch() as Entry[]);
+		const liveActiveMs = Math.max(0, Date.now() - this.agentActiveSince);
+		const elapsedMs = Math.max(0, persistedActiveMs + liveActiveMs - this.lastContemplatorActiveTimeMs);
+		const thresholdMs = this.runtime.config.contemplatorMaxActiveMinutes * 60_000;
+		const delayMs = Math.max(1, thresholdMs - elapsedMs);
+		this.activeTimeFallbackTimer = setTimeout(() => {
+			this.activeTimeFallbackTimer = undefined;
+			if (this.agentActiveSince === undefined) return;
+			this.withDebugContext(ctx, () => {
+				// Materialize the live interval before observeTurn reads the ledger. This
+				// lets a sleep/long tool trigger contemplation while it is still running.
+				this.persistAgentActivity(ctx, false);
+				this.observeTurn(ctx);
+			});
+		}, delayMs);
+		(this.activeTimeFallbackTimer as { unref?: () => void }).unref?.();
+	}
+
+	private persistAgentActivity(ctx: MemoryUpdateCtx, reschedule = true): void {
 		const startedAt = this.agentActiveSince;
 		if (startedAt === undefined) return;
 		const endedAt = Date.now();
 		this.agentActiveSince = endedAt;
 		const durationMs = Math.max(0, endedAt - startedAt);
-		if (durationMs === 0) return;
-		this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
-		// Notify only after appendEntry so active-time schedulers always observe the
-		// checkpoint, regardless of Pi's ordering between independent event handlers.
-		this.runtime.notifyAgentActivity(ctx);
-		debugLog("agent.activity_recorded", { durationMs });
+		if (durationMs > 0) {
+			this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
+			// Notify only after appendEntry so active-time schedulers always observe the
+			// checkpoint, regardless of Pi's ordering between independent event handlers.
+			this.runtime.notifyAgentActivity(ctx);
+			debugLog("agent.activity_recorded", { durationMs });
+		}
+		if (reschedule) this.scheduleActiveTimeFallback(ctx);
 	}
 
 	private withDebugContext<T>(ctx: MemoryUpdateCtx, fn: () => T): T {
@@ -493,6 +543,7 @@ export class Contemplator {
 			pendingObservations: this.pending?.observations.length ?? 0,
 			pendingReviews: this.pending?.reviews.length ?? 0,
 			responsesSinceRun: this.turnsSinceRun,
+			activeTimeSinceRunMs: this.runtime.contemplatorState.activeTimeSinceRunMs,
 			waitingFor,
 			...overrides,
 		};
@@ -509,10 +560,13 @@ export class Contemplator {
 		const historyMessagesByEntryId = new Map<string, AgentMessage>();
 		const checkpointCoveredObservationIds = new Set<string>();
 		const checkpointCoveredReviewIds = new Set<string>();
+		let latestRunActiveTimeMs = 0;
+		let probeDeliveredAfterLatestRun = false;
 		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
 			this.deliveredProbeIds.clear();
 			this.probeCooldownPendingIds.clear();
+			this.probeDeliverySpacingActive = false;
 			if (!retainQueuedIds) this.queuedProbeIds.clear();
 			this.inFlightReviewIds.clear();
 			this.resolvingReviewIds.clear();
@@ -529,11 +583,17 @@ export class Contemplator {
 				pendingObservations: 0,
 				pendingReviews: 0,
 				responsesSinceRun: 0,
+				activeTimeSinceRunMs: 0,
 				waitingFor: "idle",
 			};
 		}
 		const undeliveredSuggestions = new Map<string, string>();
 		for (const entry of entries) {
+			if (entry.customType === CONTEMPLATOR_RUN && entry.data && typeof entry.data === "object") {
+				const activeTimeMs = (entry.data as { mainAgentActiveTimeMs?: unknown }).mainAgentActiveTimeMs;
+				if (typeof activeTimeMs === "number" && Number.isFinite(activeTimeMs) && activeTimeMs >= 0) latestRunActiveTimeMs = activeTimeMs;
+				probeDeliveredAfterLatestRun = false;
+			}
 			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
 				const state = entry.data as { history?: unknown };
 				if (Array.isArray(state.history)) {
@@ -607,12 +667,15 @@ export class Contemplator {
 				if (typeof data.probeId !== "string") continue;
 				if (data.delivered === true) {
 					this.deliveredProbeIds.add(data.probeId);
+					probeDeliveredAfterLatestRun = true;
 					undeliveredSuggestions.delete(data.probeId);
 				} else if (typeof data.suggestion === "string") {
 					undeliveredSuggestions.set(data.probeId, data.suggestion);
 				}
 			}
 		}
+		this.lastContemplatorActiveTimeMs = latestRunActiveTimeMs;
+		this.probeDeliverySpacingActive = probeDeliveredAfterLatestRun;
 		if (resetTracking && resetProjection) {
 			// Successful update prompts and private-history compaction checkpoints are
 			// the durable coverage record. Checkpoints carry ids from prompts replaced
@@ -681,6 +744,10 @@ export class Contemplator {
 			});
 			return;
 		}
+		const cumulativeActiveTimeMs = agentActiveTimeMs(branchEntries) + (this.agentActiveSince === undefined ? 0 : Math.max(0, Date.now() - this.agentActiveSince));
+		const activeTimeSinceRunMs = Math.max(0, cumulativeActiveTimeMs - this.lastContemplatorActiveTimeMs);
+		const activeTimeThresholdMs = this.runtime.config.contemplatorMaxActiveMinutes * 60_000;
+		const activeTimeDue = activeTimeSinceRunMs >= activeTimeThresholdMs;
 		const projection = fullProjection(branchEntries);
 		const observations = projection.observations.map((item) => `[${item.id}] ${item.content}`);
 		const reviews = projection.reviews ?? [];
@@ -704,11 +771,25 @@ export class Contemplator {
 				reviews: mergeMemoryLines(this.pending?.reviews ?? [], newReviews),
 				mainAgentOutputTokens: assistantOutputTokens(branchEntries),
 				mainAgentToolCalls: assistantToolCallCount(branchEntries),
-				mainAgentActiveTimeMs: agentActiveTimeMs(branchEntries),
+				mainAgentActiveTimeMs: cumulativeActiveTimeMs,
+				activeTimeFallback: this.pending?.activeTimeFallback ?? false,
 			};
 		}
+		if (activeTimeDue && !this.pending) {
+			this.pending = {
+				observations: [],
+				reviews: [],
+				mainAgentOutputTokens: assistantOutputTokens(branchEntries),
+				mainAgentToolCalls: assistantToolCallCount(branchEntries),
+				mainAgentActiveTimeMs: cumulativeActiveTimeMs,
+				activeTimeFallback: true,
+			};
+		} else if (activeTimeDue && this.pending) {
+			this.pending.activeTimeFallback = true;
+		}
 		if (!this.pending) {
-			this.publishState(this.running ? "running" : this.probeCooldownPendingIds.size > 0 ? "probe" : "idle");
+			this.scheduleActiveTimeFallback(ctx);
+			this.publishState(this.running ? "running" : this.probeCooldownPendingIds.size > 0 ? "probe" : "idle", { activeTimeSinceRunMs });
 			return;
 		}
 		// Activity values are cumulative send-time snapshots, not values frozen when
@@ -716,15 +797,17 @@ export class Contemplator {
 		// while that batch waits for its memory/turn thresholds.
 		this.pending.mainAgentOutputTokens = assistantOutputTokens(branchEntries);
 		this.pending.mainAgentToolCalls = assistantToolCallCount(branchEntries);
-		this.pending.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntries);
+		this.pending.mainAgentActiveTimeMs = cumulativeActiveTimeMs;
 		const enoughMemories = this.pending.reviews.length > 0 || this.pending.observations.length >= this.runtime.config.contemplatorMinNewObservations;
+		const forcedByActiveTime = this.pending.activeTimeFallback;
 		if (this.probeCooldownPendingIds.size > 0) {
-			this.publishState("probe");
+			this.publishState("probe", { activeTimeSinceRunMs });
 			debugLog("contemplator.waiting", { reason: "probe_delivery", pendingProbeCount: this.probeCooldownPendingIds.size });
 			return;
 		}
-		if (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns) {
-			this.publishState(!enoughMemories ? "memories" : "responses");
+		const waitingForDeliveredProbeResponses = this.probeDeliverySpacingActive && this.turnsSinceRun < this.runtime.config.contemplatorMinTurns;
+		if (waitingForDeliveredProbeResponses || (!forcedByActiveTime && (!enoughMemories || this.turnsSinceRun < this.runtime.config.contemplatorMinTurns))) {
+			this.publishState(waitingForDeliveredProbeResponses || enoughMemories ? "responses" : "memories", { activeTimeSinceRunMs });
 			debugLog("contemplator.waiting", {
 				enoughMemories,
 				turnsSinceRun: this.turnsSinceRun,
@@ -733,11 +816,13 @@ export class Contemplator {
 			});
 			return;
 		}
-		this.publishState(this.running ? "running" : "ready");
+		this.publishState(this.running ? "running" : "ready", { activeTimeSinceRunMs });
 		debugLog("contemplator.triggered", {
 			pendingObservationCount: this.pending.observations.length,
 			pendingReviewCount: this.pending.reviews.length,
 			turnsSinceRun: this.turnsSinceRun,
+			forcedByActiveTime,
+			activeTimeSinceRunMs,
 		});
 		void this.flush(ctx);
 	}
@@ -756,6 +841,19 @@ export class Contemplator {
 		update.mainAgentOutputTokens = assistantOutputTokens(branchEntriesAtStart);
 		update.mainAgentToolCalls = assistantToolCallCount(branchEntriesAtStart);
 		update.mainAgentActiveTimeMs = agentActiveTimeMs(branchEntriesAtStart);
+		const activeTimeSinceLastRunMs = Math.max(0, update.mainAgentActiveTimeMs - this.lastContemplatorActiveTimeMs);
+		// Reset the active-work interval at attempt start, including failed attempts,
+		// so a broken provider cannot create an immediate background retry loop. The
+		// tiny durable marker makes reloads and tree navigation preserve that backoff.
+		this.lastContemplatorActiveTimeMs = update.mainAgentActiveTimeMs;
+		this.probeDeliverySpacingActive = false;
+		this.scheduleActiveTimeFallback(ctx);
+		this.pi.appendEntry(CONTEMPLATOR_RUN, {
+			version: 1,
+			mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
+			startedAt: Date.now(),
+		});
+		this.markTipPersisted(ctx);
 		this.pending = undefined;
 		const turnsBeforeRun = this.turnsSinceRun;
 		const sessionGeneration = this.sessionGeneration;
@@ -797,6 +895,7 @@ export class Contemplator {
 							mainAgentOutputTokens: update.mainAgentOutputTokens,
 							mainAgentToolCalls: update.mainAgentToolCalls,
 							mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
+							activeTimeFallback: update.activeTimeFallback,
 						};
 					} else {
 						debugLog("contemplator.poisoned_update_released", { reason: resolved.reason, observationCount: update.observations.length, reviewCount: update.reviews.length });
@@ -827,13 +926,22 @@ export class Contemplator {
 			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
 			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
+			const sparseMemoryDescription = update.observations.length + update.reviews.length === 0
+				? "No new memories were created during this interval."
+				: `Only ${update.observations.length + update.reviews.length} new memory record${update.observations.length + update.reviews.length === 1 ? " was" : "s were"} created during this interval.`;
+			const reviewerHistoryHint = reviewerEnabled
+				? " If a recurring concern warrants structural review, remember that the reviewer can inspect the primary agent's recorded chat directly with its chat-history tools; it is not limited to these sparse memories."
+				: "";
+			const activeTimeNotice = update.activeTimeFallback
+				? `\n\nACTIVE-WORK FALLBACK: ${sparseMemoryDescription} The primary agent has been actively working for ${coarseAgentTime(activeTimeSinceLastRunMs)} since the last contemplator run. Check whether it is productively making progress rather than being stuck in an unproductive loop.${reviewerHistoryHint} Prefer no_intervention if there is no grounded, useful action.`
+				: "";
 			const finalActionNames = reviewerEnabled
 				? "send_probe, request_review, or no_intervention"
 				: "send_probe or no_intervention";
 			const interventionInstruction = reviewerEnabled
 				? `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful intervention is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question, and request_review only when a deeper workflow or software review is justified. Never send a probe merely to satisfy the final-action requirement. If a tool warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`
 				: `You must end this update by calling exactly one final-action tool: ${finalActionNames}. The tool requirement is bookkeeping, not a reason to intervene. Prefer the argument-free no_intervention whenever no specific, grounded, materially useful probe is clearly warranted or usefulness is uncertain. Use send_probe only for one unusually useful focused question. Never send a probe merely to satisfy the final-action requirement. If send_probe warns about a bad memory citation, use search_memories and recall, then call a final-action tool again to replace it.`;
-			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
+			const prompt: Message = { role: "user", content: [{ type: "text", text: `NEW MEMORY UPDATE\n\n${updateBody}${activeTimeNotice}\n\nCUMULATIVE ACTIVITY: ${update.mainAgentOutputTokens} generated tokens; ${update.mainAgentToolCalls} tool calls; ${coarseAgentTime(update.mainAgentActiveTimeMs)} active.\n\nConsider these updates in the context of the accumulated memories. Prioritize reasoning gaps, contradictions, user-intent alignment, relevant overlooked alternatives, well-supported loops, and recurring structural patterns. ${interventionInstruction}` }], timestamp: Date.now() };
 			let intervention: Intervention | undefined;
 			let finalActionWarned = false;
 			const branchEntries = ctx.sessionManager.getBranch() as Entry[];
@@ -1000,6 +1108,7 @@ export class Contemplator {
 						mainAgentOutputTokens: update.mainAgentOutputTokens,
 						mainAgentToolCalls: update.mainAgentToolCalls,
 						mainAgentActiveTimeMs: update.mainAgentActiveTimeMs,
+						activeTimeFallback: update.activeTimeFallback,
 					};
 				} else {
 					debugLog("contemplator.poisoned_update_released", { reason: failureMessage, observationCount: update.observations.length, reviewCount: update.reviews.length });
@@ -1031,7 +1140,12 @@ export class Contemplator {
 					: this.turnsSinceRun < this.runtime.config.contemplatorMinTurns
 						? "responses"
 						: "ready";
+			const activeTimeSinceRunMs = Math.max(
+				0,
+				agentActiveTimeMs(ctx.sessionManager.getBranch() as Entry[]) - this.lastContemplatorActiveTimeMs,
+			);
 			this.publishState(waitingFor, {
+				activeTimeSinceRunMs,
 				lastCompletedAt: Date.now(),
 				lastError: failureMessage,
 			});

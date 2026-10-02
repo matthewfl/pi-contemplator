@@ -67,6 +67,8 @@ export interface Config {
 	contemplatorMinNewObservations: number;
 	/** Minimum primary-model responses after contemplator completion, or after delivery of its probe, before the next run. */
 	contemplatorMinTurns: number;
+	/** Maximum cumulative main-agent active time between contemplator attempts, excluding time spent waiting for the user. */
+	contemplatorMaxActiveMinutes: number;
 	/** Stateless loss-aware summarizer for the old memory pool. */
 	summarizerEnabled: boolean;
 	/** Additional old-pool tokens required before retrying an above-target pool. */
@@ -92,6 +94,7 @@ export const DEFAULTS: Config = {
 	reviewerEnabled: true,
 	contemplatorMinNewObservations: 8,
 	contemplatorMinTurns: 10,
+	contemplatorMaxActiveMinutes: 60,
 	summarizerEnabled: true,
 	summarizerRetriggerTokens: 2_000,
 	summarizerSamplingThresholdTokens: 60_000,
@@ -214,6 +217,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"agentMaxTurns",
 		"contemplatorMinNewObservations",
 		"contemplatorMinTurns",
+		"contemplatorMaxActiveMinutes",
 		"summarizerRetriggerTokens",
 		"summarizerSamplingThresholdTokens",
 	] as const;

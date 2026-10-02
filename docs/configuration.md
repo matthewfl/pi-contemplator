@@ -24,6 +24,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
     "showContemplatorMessages": true,
     "contemplatorMinNewObservations": 8,
     "contemplatorMinTurns": 10,
+    "contemplatorMaxActiveMinutes": 60,
 
     "reviewerEnabled": true,
     "compactionObserverEnabled": true,
@@ -57,6 +58,7 @@ Project settings live in `.pi/settings.json` under `observational-memory`. Globa
 | `showContemplatorMessages` | `true` | Shows probes/review notices as purple chat cards; delivery still occurs when hidden. |
 | `contemplatorMinNewObservations` | `8` | Observation trigger component. |
 | `contemplatorMinTurns` | `10` | Minimum primary-model responses after contemplator completion—or after its probe reaches a provider context—before the next update. Tool-using rounds within one long user turn count separately. |
+| `contemplatorMaxActiveMinutes` | `60` | Cumulative main-agent active-work interval that forces a contemplator check even with too few new memories. User-waiting time is excluded, and an active timer can fire while one long model/tool operation is still running; this fallback bypasses observation/ordinary response thresholds but still waits for observer catch-up and pending probe delivery. |
 | `reviewerEnabled` | `true` | Allows scoped structural review requests. |
 | `reviewerModel` | current model | Optional reviewer model override. |
 | `compactionObserverEnabled` | `true` | Runs an asynchronous observer sidecar when compaction begins. |

@@ -10,7 +10,7 @@ type ModelRegistryLike = {
 	getAll(): Array<{ provider: string; id: string }>;
 	find?(provider: string, id: string): { contextWindow?: number } | undefined;
 };
-type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinTurns" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens";
+type NumberSetting = "observeAfterTokens" | "compactAfterTokens" | "observerChunkMaxTokens" | "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns" | "contemplatorMinNewObservations" | "contemplatorMinTurns" | "contemplatorMaxActiveMinutes" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens";
 type BooleanSetting = "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled" | "summarizerEnabled" | "compactionObserverEnabled" | "showWorkerNotifications" | "passive" | "debugLog";
 
 function modelLabel(model: ConfiguredModel | undefined): string {
@@ -239,6 +239,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 				`Show contemplator messages: ${scalarLabel(runtime, "showContemplatorMessages")}`,
 				`Contemplator new-observation trigger (count): ${scalarLabel(runtime, "contemplatorMinNewObservations")}`,
 				`Contemplator response spacing (count): ${scalarLabel(runtime, "contemplatorMinTurns")}`,
+				`Contemplator maximum active-work interval (minutes): ${scalarLabel(runtime, "contemplatorMaxActiveMinutes")}`,
 				`Summarizer enabled: ${scalarLabel(runtime, "summarizerEnabled")}`,
 				`Summarizer model: ${memoryWorkerModelSettingLabel(runtime, "summarizer")}`,
 				`New memory pool protection budget (tokens): ${scalarLabel(runtime, "newMemoryPoolMaxTokens")}`,
@@ -298,6 +299,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, runtime: Runtime): voi
 					["Old memory pool target (tokens, advisory):", "oldMemoryPoolTargetTokens", "Old memory pool target (tokens, advisory)"],
 					["Contemplator new-observation trigger (count):", "contemplatorMinNewObservations", "Contemplator new-observation trigger (count)"],
 					["Contemplator response spacing (count):", "contemplatorMinTurns", "Contemplator response spacing (count)"],
+					["Contemplator maximum active-work interval (minutes):", "contemplatorMaxActiveMinutes", "Contemplator maximum active-work interval (minutes)"],
 					["Summarizer old-pool retrigger growth (tokens):", "summarizerRetriggerTokens", "Summarizer old-pool retrigger growth (tokens)"],
 					["Summarizer input cap before sampling (tokens):", "summarizerSamplingThresholdTokens", "Summarizer input cap before sampling (tokens)"],
 				];

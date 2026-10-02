@@ -131,6 +131,11 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 		scheduleSummarizer(pi, runtime, ctx as ConsolidationCtx);
 	});
 	runtime.setSettingsUpdateListener((ctx, settings) => {
+		if (settings.contemplatorMaxActiveMinutes !== undefined) {
+			// Re-evaluate immediately when the user lowers the maximum interval;
+			// otherwise it would wait for an unrelated primary-agent checkpoint.
+			runtime.notifyMemoryUpdate(ctx);
+		}
 		const affectsScheduling = settings.summarizerEnabled !== undefined ||
 			settings.newMemoryPoolMaxTokens !== undefined ||
 			settings.oldMemoryPoolTargetTokens !== undefined ||

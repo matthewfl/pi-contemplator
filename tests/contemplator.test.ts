@@ -612,6 +612,150 @@ describe("Contemplator lifecycle", () => {
 			.toEqual([5_000, 3_000, 1_000]);
 	});
 
+	it("runs after the configured cumulative active-work interval even with no new memories or responses", async () => {
+		const activity = {
+			id: "activity-hour",
+			type: "custom",
+			customType: "om.agent.activity",
+			data: { version: 1, durationMs: 60 * 60_000 },
+		} as TestEntry;
+		const harness = setup([activity]);
+		harness.runtime.config = {
+			...harness.runtime.config,
+			contemplatorMinNewObservations: 100,
+			contemplatorMinTurns: 100,
+			contemplatorMaxActiveMinutes: 60,
+		};
+
+		harness.fire("session_start");
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+
+		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
+		expect(prompt.content[0].text).toContain("(no new memories)");
+		expect(prompt.content[0].text).toContain("ACTIVE-WORK FALLBACK");
+		expect(prompt.content[0].text).toContain("No new memories were created during this interval.");
+		expect(prompt.content[0].text).toContain("actively working for about 1 hour since the last contemplator run");
+		expect(prompt.content[0].text).toContain("reviewer can inspect the primary agent's recorded chat directly");
+		expect(harness.pi.appendEntry).toHaveBeenCalledWith("om.contemplator.run", expect.objectContaining({
+			mainAgentActiveTimeMs: 60 * 60_000,
+		}));
+	});
+
+	it("does not bypass observer-backlog coordination when active work is overdue", async () => {
+		const activity = {
+			id: "activity-blocked-hour",
+			type: "custom",
+			customType: "om.agent.activity",
+			data: { version: 1, durationMs: 60 * 60_000 },
+		} as TestEntry;
+		const harness = setup([activity]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMaxActiveMinutes: 60 };
+		harness.runtime.observerBacklogBlocking = true;
+
+		harness.fire("session_start");
+		await Promise.resolve();
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("observer");
+
+		harness.runtime.observerBacklogBlocking = false;
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+	});
+
+	it("preserves response spacing when an overdue run was waiting for probe delivery", async () => {
+		const hour = 60 * 60_000;
+		const question = "Is the current loop making progress?";
+		const harness = setup([
+			{ id: "prior-run", type: "custom", customType: "om.contemplator.run", data: { version: 1, mainAgentActiveTimeMs: 0, startedAt: 1 } },
+			{ id: "activity-hour", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: hour } },
+			{ id: "pending-probe", type: "custom", customType: "om.contemplator.suggestion", data: { version: 1, suggestion: question, probeId: "probe-overdue", delivered: false } },
+		] as TestEntry[]);
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMaxActiveMinutes: 60, contemplatorMinTurns: 2 };
+
+		harness.fire("session_start");
+		await Promise.resolve();
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("probe");
+
+		const delivered = { role: "custom", customType: "om.contemplator.suggestion", content: question, details: { probeId: "probe-overdue", question } };
+		harness.fire("context", { messages: [delivered] });
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.waitingFor).toBe("responses");
+
+		harness.fire("message_end", { message: { role: "assistant" } });
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+	});
+
+	it("fires while one long tool call is still running", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000);
+		try {
+			const harness = setup();
+			harness.runtime.config = {
+				...harness.runtime.config,
+				contemplatorMinNewObservations: 100,
+				contemplatorMinTurns: 100,
+				contemplatorMaxActiveMinutes: 1,
+			};
+
+			harness.fire("agent_start");
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+			const activity = harness.getEntries().find((entry) => entry.customType === "om.agent.activity");
+			expect(activity?.data).toMatchObject({ durationMs: 60_000 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rechecks the active-work fallback after a tool finishes during a long autonomous turn", async () => {
+		const now = vi.spyOn(Date, "now");
+		let time = 1_000;
+		now.mockImplementation(() => time);
+		const harness = setup();
+		harness.runtime.config = {
+			...harness.runtime.config,
+			contemplatorMinNewObservations: 100,
+			contemplatorMinTurns: 100,
+			contemplatorMaxActiveMinutes: 1,
+		};
+
+		harness.fire("agent_start");
+		time = 61_000;
+		harness.fire("tool_execution_end", { toolCallId: "long-tool" });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		now.mockRestore();
+	});
+
+	it("restores the durable active-work baseline and does not immediately rerun", async () => {
+		const hour = 60 * 60_000;
+		const harness = setup([
+			{ id: "activity-before", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: hour } },
+			{ id: "run-anchor", type: "custom", customType: "om.contemplator.run", data: { version: 1, mainAgentActiveTimeMs: hour, startedAt: 1 } },
+			{ id: "activity-after", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: hour - 1 } },
+		] as TestEntry[]);
+		harness.runtime.config = {
+			...harness.runtime.config,
+			contemplatorMinNewObservations: 100,
+			contemplatorMinTurns: 100,
+			contemplatorMaxActiveMinutes: 60,
+		};
+
+		harness.fire("session_start");
+		await Promise.resolve();
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.activeTimeSinceRunMs).toBe(hour - 1);
+
+		harness.setEntries([
+			...harness.getEntries(),
+			{ id: "activity-threshold", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 1 } } as TestEntry,
+		]);
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+	});
+
 	it("counts model responses within one long user turn toward contemplator spacing", async () => {
 		const raw = textCustomMessage("raw-long-turn", "autonomous work");
 		const memory = observationsRecordedEntry("obs-long-turn", {

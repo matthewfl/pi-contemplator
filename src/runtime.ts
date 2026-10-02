@@ -32,7 +32,7 @@ export type SessionSettings = Partial<Pick<Config,
 	| "compactAfterTokensMode" | "compactAfterTokensRatio"
 	| "newMemoryPoolMaxTokens" | "oldMemoryPoolTargetTokens" | "agentMaxTurns"
 	| "showWorkerNotifications" | "passive" | "compactionObserverEnabled" | "contemplatorEnabled" | "showContemplatorMessages" | "reviewerEnabled"
-	| "contemplatorMinNewObservations" | "contemplatorMinTurns"
+	| "contemplatorMinNewObservations" | "contemplatorMinTurns" | "contemplatorMaxActiveMinutes"
 	| "summarizerEnabled" | "summarizerRetriggerTokens" | "summarizerSamplingThresholdTokens"
 	| "debugLog"
 >> & {
@@ -92,6 +92,8 @@ export interface ContemplatorRunState {
 	pendingReviews: number;
 	/** Completed primary-model responses since the current completion/probe-delivery spacing anchor. */
 	responsesSinceRun: number;
+	/** Cumulative main-agent active time since the latest contemplator attempt. */
+	activeTimeSinceRunMs: number;
 	waitingFor: "disabled" | "passive" | "observer" | "probe" | "memories" | "responses" | "ready" | "running" | "idle";
 	lastStartedAt?: number;
 	lastCompletedAt?: number;
@@ -148,7 +150,7 @@ export function computeSessionSettings(entries: readonly unknown[]): SessionSett
 		const numberKeys = [
 			"observeAfterTokens", "observerChunkMaxTokens", "compactAfterTokens",
 			"newMemoryPoolMaxTokens", "oldMemoryPoolTargetTokens", "agentMaxTurns",
-			"contemplatorMinNewObservations", "contemplatorMinTurns",
+			"contemplatorMinNewObservations", "contemplatorMinTurns", "contemplatorMaxActiveMinutes",
 			"summarizerRetriggerTokens", "summarizerSamplingThresholdTokens",
 		] as const;
 		for (const key of booleanKeys) if (typeof data[key] === "boolean") restored[key] = data[key];
@@ -225,6 +227,7 @@ export class Runtime {
 		pendingObservations: 0,
 		pendingReviews: 0,
 		responsesSinceRun: 0,
+		activeTimeSinceRunMs: 0,
 		waitingFor: "idle",
 	};
 	agentUsage: LlmUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, runs: 0 };
@@ -325,6 +328,7 @@ export class Runtime {
 			pendingObservations: 0,
 			pendingReviews: 0,
 			responsesSinceRun: 0,
+			activeTimeSinceRunMs: 0,
 			waitingFor: "idle",
 		};
 	}
