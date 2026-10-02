@@ -354,6 +354,14 @@ export class Contemplator {
 			// restoring it here would enqueue the same probe a second time.
 			const reload = event?.reason === "reload";
 			this.restore(ctx, true, reload, reload);
+			// Reload replaces the extension runtime without restarting an already-active
+			// agent run, so no new agent_start event is guaranteed. Recover the clock
+			// from Pi's live state; elapsed time before reload may be unavailable, but
+			// the current run remains monitored rather than going unarmed indefinitely.
+			if (!ctx.isIdle()) {
+				this.agentActiveSince = Date.now();
+				this.withDebugContext(ctx, () => this.scheduleActiveTimeFallback(ctx));
+			}
 			// Reconstruct and schedule durable memory immediately. In particular, a
 			// reload after a failed run must not silently mark its pending backlog seen.
 			queueMicrotask(() => {
@@ -370,7 +378,11 @@ export class Contemplator {
 			// Pending steering messages remain queued while navigating the tree.
 			this.restore(ctx, true, true);
 		});
-		this.pi.on("session_shutdown", () => {
+		this.pi.on("session_shutdown", (_event: unknown, ctx: ExtensionContext) => {
+			// On extension reload Pi shuts down the old runtime before starting the
+			// replacement. Persist its final live interval without launching workers,
+			// so the replacement can continue from the exact cumulative clock.
+			this.persistAgentActivity(ctx, false, false);
 			this.sessionGeneration++;
 			this.flushEpoch++;
 			this.running = false;
@@ -506,7 +518,7 @@ export class Contemplator {
 		(this.activeTimeFallbackTimer as { unref?: () => void }).unref?.();
 	}
 
-	private persistAgentActivity(ctx: MemoryUpdateCtx, reschedule = true): void {
+	private persistAgentActivity(ctx: MemoryUpdateCtx, reschedule = true, notify = true): void {
 		const startedAt = this.agentActiveSince;
 		if (startedAt === undefined) return;
 		const endedAt = Date.now();
@@ -516,7 +528,7 @@ export class Contemplator {
 			this.pi.appendEntry(OM_AGENT_ACTIVITY, { version: 1, durationMs, endedAt });
 			// Notify only after appendEntry so active-time schedulers always observe the
 			// checkpoint, regardless of Pi's ordering between independent event handlers.
-			this.runtime.notifyAgentActivity(ctx);
+			if (notify) this.runtime.notifyAgentActivity(ctx);
 			debugLog("agent.activity_recorded", { durationMs });
 		}
 		if (reschedule) this.scheduleActiveTimeFallback(ctx);
@@ -560,7 +572,7 @@ export class Contemplator {
 		const historyMessagesByEntryId = new Map<string, AgentMessage>();
 		const checkpointCoveredObservationIds = new Set<string>();
 		const checkpointCoveredReviewIds = new Set<string>();
-		let latestRunActiveTimeMs = 0;
+		let latestRunActiveTimeMs: number | undefined;
 		let probeDeliveredAfterLatestRun = false;
 		let resetProjection: ReturnType<typeof fullProjection> | undefined;
 		if (resetTracking) {
@@ -591,8 +603,10 @@ export class Contemplator {
 		for (const entry of entries) {
 			if (entry.customType === CONTEMPLATOR_RUN && entry.data && typeof entry.data === "object") {
 				const activeTimeMs = (entry.data as { mainAgentActiveTimeMs?: unknown }).mainAgentActiveTimeMs;
-				if (typeof activeTimeMs === "number" && Number.isFinite(activeTimeMs) && activeTimeMs >= 0) latestRunActiveTimeMs = activeTimeMs;
-				probeDeliveredAfterLatestRun = false;
+				if (typeof activeTimeMs === "number" && Number.isFinite(activeTimeMs) && activeTimeMs >= 0) {
+					latestRunActiveTimeMs = activeTimeMs;
+					probeDeliveredAfterLatestRun = false;
+				}
 			}
 			if (entry.customType === CONTEMPLATOR_STATE && entry.data && typeof entry.data === "object") {
 				const state = entry.data as { history?: unknown };
@@ -674,7 +688,11 @@ export class Contemplator {
 				}
 			}
 		}
-		this.lastContemplatorActiveTimeMs = latestRunActiveTimeMs;
+		// A malformed/foreign marker must not regress a valid live baseline during
+		// an ordinary tip refresh. A true session/tree restore with no valid marker
+		// intentionally starts this branch's cumulative baseline at zero.
+		if (latestRunActiveTimeMs !== undefined) this.lastContemplatorActiveTimeMs = latestRunActiveTimeMs;
+		else if (resetTracking) this.lastContemplatorActiveTimeMs = 0;
 		this.probeDeliverySpacingActive = probeDeliveredAfterLatestRun;
 		if (resetTracking && resetProjection) {
 			// Successful update prompts and private-history compaction checkpoints are

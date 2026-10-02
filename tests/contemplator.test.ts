@@ -82,6 +82,7 @@ function setup(initialEntries: TestEntry[] = []) {
 			find: vi.fn(),
 			streamSimple: vi.fn(() => stream()),
 		},
+		isIdle: vi.fn(() => true),
 		sessionManager: { getBranch: () => entries },
 	};
 	const contemplator = new Contemplator(pi as any, runtime);
@@ -686,6 +687,78 @@ describe("Contemplator lifecycle", () => {
 		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
 		harness.fire("message_end", { message: { role: "assistant" } });
 		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+	});
+
+	it("re-arms the active clock when extensions reload during an existing agent run", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000);
+		try {
+			const harness = setup();
+			harness.runtime.config = {
+				...harness.runtime.config,
+				contemplatorMinNewObservations: 100,
+				contemplatorMinTurns: 100,
+				contemplatorMaxActiveMinutes: 1,
+			};
+			harness.ctx.isIdle.mockReturnValue(false);
+
+			// A reload starts a new extension runtime in the middle of Pi's existing
+			// run; deliberately do not emit agent_start.
+			harness.fire("session_start", { reason: "reload" });
+			await vi.advanceTimersByTimeAsync(60_000);
+
+			expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+			expect(harness.getEntries()).toContainEqual(expect.objectContaining({
+				customType: "om.agent.activity",
+				data: expect.objectContaining({ durationMs: 60_000 }),
+			}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("preserves cumulative active time across an extension reload", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000);
+		try {
+			const beforeReload = setup();
+			beforeReload.runtime.config = { ...beforeReload.runtime.config, contemplatorMaxActiveMinutes: 1 };
+			beforeReload.fire("agent_start");
+			await vi.advanceTimersByTimeAsync(30_000);
+			beforeReload.fire("session_shutdown", { reason: "reload" });
+			const checkpoint = beforeReload.getEntries().find((entry) => entry.customType === "om.agent.activity");
+			expect(checkpoint?.data).toMatchObject({ durationMs: 30_000 });
+
+			const afterReload = setup(beforeReload.getEntries());
+			afterReload.runtime.config = {
+				...afterReload.runtime.config,
+				contemplatorMinNewObservations: 100,
+				contemplatorMinTurns: 100,
+				contemplatorMaxActiveMinutes: 1,
+			};
+			afterReload.ctx.isIdle.mockReturnValue(false);
+			afterReload.fire("session_start", { reason: "reload" });
+			await vi.advanceTimersByTimeAsync(30_000);
+
+			expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("ignores malformed run markers during a live tip refresh", () => {
+		const activity = { id: "activity-90m", type: "custom", customType: "om.agent.activity", data: { version: 1, durationMs: 90 * 60_000 } } as TestEntry;
+		const malformed = { id: "bad-run-marker", type: "custom", customType: "om.contemplator.run", data: { version: 1, mainAgentActiveTimeMs: "not-a-number" } } as TestEntry;
+		const harness = setup([activity, malformed]);
+		const state = harness.contemplator as any;
+		state.lastContemplatorActiveTimeMs = 60 * 60_000;
+		harness.runtime.config = { ...harness.runtime.config, contemplatorMaxActiveMinutes: 60 };
+
+		harness.runtime.notifyMemoryUpdate(harness.ctx as any);
+
+		expect(state.lastContemplatorActiveTimeMs).toBe(60 * 60_000);
+		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+		expect(harness.runtime.contemplatorState.activeTimeSinceRunMs).toBe(30 * 60_000);
 	});
 
 	it("fires while one long tool call is still running", async () => {
