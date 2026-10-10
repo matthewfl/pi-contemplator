@@ -147,7 +147,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			lines.push(`Last summarizer start:   ${runtime.lastSummarizerStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.lastSummarizerStartedAt)}`);
 			lines.push(`Last summarizer end:     ${runtime.lastSummarizerCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.lastSummarizerCompletedAt)}`);
 			lines.push(`Last contemplator start: ${runtime.contemplatorState.lastStartedAt === undefined ? "not run this launch" : formatRunAge(runtime.contemplatorState.lastStartedAt)}`);
-			lines.push(`Last contemplator end:   ${runtime.contemplatorState.lastCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
+			lines.push(`Last contemplator success: ${runtime.contemplatorState.lastCompletedAt === undefined ? "not completed this launch" : formatRunAge(runtime.contemplatorState.lastCompletedAt)}`);
+			lines.push(`Last contemplator failure: ${runtime.contemplatorState.lastFailedAt === undefined ? "none this launch" : formatRunAge(runtime.contemplatorState.lastFailedAt)}`);
 
 			lines.push("", "── Interventions ──");
 			// Probe stats come from the branch ledger (like /om:view contemplator):

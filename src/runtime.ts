@@ -96,7 +96,10 @@ export interface ContemplatorRunState {
 	activeTimeSinceRunMs: number;
 	waitingFor: "disabled" | "passive" | "observer" | "probe" | "memories" | "responses" | "ready" | "running" | "idle";
 	lastStartedAt?: number;
+	/** Most recent successful final-action completion. */
 	lastCompletedAt?: number;
+	/** Most recent failed attempt; distinct so a timeout is never shown as success. */
+	lastFailedAt?: number;
 	lastError?: string;
 }
 

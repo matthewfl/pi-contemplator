@@ -209,6 +209,81 @@ describe("Contemplator lifecycle", () => {
 		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
 	});
 
+	it("keeps repeated request timeouts pending after private-history compaction and reports failure rather than success", async () => {
+		agentMocks.agentLoop.mockImplementation(() => stream(Promise.resolve(), [
+			{ role: "assistant", content: [], stopReason: "error", errorMessage: "Request timed out while waiting for the server", timestamp: Date.now() },
+		]));
+		const priorSummary = {
+			role: "assistant", content: [{ type: "text", text: "Previous contemplator context summary:\nEarlier context." }],
+			api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: 1,
+		};
+		const entries: TestEntry[] = [
+			{ id: "private-checkpoint", type: "custom", parentId: null, timestamp: "2026-05-02T10:00:00.000Z", customType: "om.contemplator.message", data: { version: 2, compacted: true, message: priorSummary, retainedMessageEntryIds: [], coveredObservationIds: [], coveredReviewIds: [] } },
+			textCustomMessage("raw-timeout", "work after the private compaction"),
+			observationsRecordedEntry("obs-timeout", {
+				observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-timeout"] })],
+				coversUpToId: "raw-timeout",
+			}),
+		];
+		const harness = setup(entries);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.lastFailedAt).toBeDefined());
+		expect(harness.runtime.contemplatorState.lastCompletedAt).toBeUndefined();
+		expect(harness.runtime.contemplatorState.lastError).toContain("Request timed out");
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
+		expect(harness.getEntries().filter((entry) => entry.customType === "om.contemplator.message")).toHaveLength(1);
+
+		// A normal primary response opens a spaced retry. Transient transport
+		// failures must never hit the deterministic poison-update release path.
+		harness.fire("message_end", { message: { role: "assistant" } });
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+		expect(harness.runtime.contemplatorState.pendingObservations).toBe(1);
+		expect(harness.runtime.contemplatorState.lastCompletedAt).toBeUndefined();
+		expect(harness.getEntries().filter((entry) => entry.customType === "om.contemplator.run")).toHaveLength(2);
+	});
+
+	it("caps a recovered memory backlog to recent records and durably covers omitted ids", async () => {
+		const observations = Array.from({ length: 32 }, (_, index) => {
+			const id = index.toString(16).padStart(12, "0");
+			return observation(id, {
+				content: `${index === 0 ? "OLDEST_BACKLOG_MEMORY" : index === 31 ? "NEWEST_BACKLOG_MEMORY" : `backlog-${index}`} ${"x".repeat(4_000)}`,
+				sourceEntryIds: ["raw-large-backlog"],
+				tokenCount: 1_010,
+			});
+		});
+		const priorSummary = {
+			role: "assistant", content: [{ type: "text", text: "Previous contemplator context summary:\nCompacted before the backlog." }],
+			api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: 1,
+		};
+		const harness = setup([
+			{ id: "large-private-checkpoint", type: "custom", parentId: null, timestamp: "2026-05-02T10:00:00.000Z", customType: "om.contemplator.message", data: { version: 2, compacted: true, message: priorSummary, retainedMessageEntryIds: [], coveredObservationIds: [], coveredReviewIds: [] } } as TestEntry,
+			textCustomMessage("raw-large-backlog", "large accumulated backlog"),
+			observationsRecordedEntry("obs-large-backlog", { observations, coversUpToId: "raw-large-backlog" }),
+		]);
+		harness.fire("turn_end");
+
+		await vi.waitFor(() => expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(harness.runtime.contemplatorState.running).toBe(false));
+		const prompt = agentMocks.agentLoop.mock.calls[0][0][0];
+		const promptText = prompt.content[0].text as string;
+		expect(promptText).toContain("NEWEST_BACKLOG_MEMORY");
+		expect(promptText).not.toContain("OLDEST_BACKLOG_MEMORY");
+		expect(promptText).toContain("BACKLOG SAFETY CAP:");
+		expect(promptText.length).toBeLessThan(90_000);
+
+		const persistedPrompt = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.message?.role === "user");
+		expect((persistedPrompt?.data as any)?.coveredObservationIds).toEqual(observations.map((item) => item.id));
+
+		const restored = setup(harness.getEntries());
+		restored.fire("session_start");
+		await Promise.resolve();
+		expect((restored.contemplator as any).pending).toBeUndefined();
+		expect(agentMocks.agentLoop).toHaveBeenCalledTimes(1);
+	});
+
 	it("persists each update prompt once when agentLoop returns that input prompt", async () => {
 		agentMocks.agentLoop.mockImplementation((prompts, context) => {
 			selectNoIntervention(context);
@@ -1231,6 +1306,47 @@ describe("Contemplator lifecycle", () => {
 		expect((restored.contemplator as any).seenObservationIds.has(memoryId)).toBe(true);
 		expect((restored.contemplator as any).pending).toBeUndefined();
 		expect(agentMocks.agentLoop).not.toHaveBeenCalled();
+	});
+
+	it("carries safety-capped prompt coverage into a later private-history checkpoint", async () => {
+		const renderedId = "abcdef123456";
+		const omittedId = "fedcba654321";
+		const privateEntries: TestEntry[] = [];
+		for (let index = 0; index < 20; index++) {
+			for (const message of [
+				{ role: "user", content: [{ type: "text", text: index === 0 ? `NEW MEMORY UPDATE\n\nOBSERVATIONS:\n[${renderedId}] rendered evidence ${"x".repeat(6_000)}` : `private update ${index} ${"x".repeat(6_000)}` }], timestamp: index * 2 },
+				{ role: "assistant", content: [{ type: "text", text: `private decision ${index}` }], api: "test", provider: "test", model: "test", stopReason: "stop", timestamp: index * 2 + 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+			]) {
+				privateEntries.push({
+					id: `bounded-coverage-${privateEntries.length}`,
+					type: "custom",
+					customType: "om.contemplator.message",
+					data: privateEntries.length === 0
+						? { version: 2, message, coveredObservationIds: [renderedId, omittedId], coveredReviewIds: [] }
+						: { version: 1, message },
+				} as TestEntry);
+			}
+		}
+		const entries: TestEntry[] = [
+			textCustomMessage("raw-rendered", "rendered work"),
+			textCustomMessage("raw-omitted", "omitted work"),
+			observationsRecordedEntry("batch-bounded-coverage", {
+				observations: [
+					observation(renderedId, { sourceEntryIds: ["raw-rendered"] }),
+					observation(omittedId, { sourceEntryIds: ["raw-omitted"] }),
+				],
+				coversUpToId: "raw-omitted",
+			}),
+			...privateEntries,
+		];
+		const harness = setup(entries);
+		const state = harness.contemplator as any;
+		state.restore(harness.ctx);
+
+		await state.compactHistory(harness.ctx, harness.ctx.model, harness.ctx.modelRegistry.streamSimple, state.sessionGeneration, state.flushEpoch);
+
+		const checkpoint = harness.getEntries().find((entry) => entry.customType === "om.contemplator.message" && (entry.data as any)?.compacted === true);
+		expect((checkpoint?.data as any)?.coveredObservationIds).toEqual(expect.arrayContaining([renderedId, omittedId]));
 	});
 
 	it("does not checkpoint concurrent seen memories whose update prompt is still pending", async () => {

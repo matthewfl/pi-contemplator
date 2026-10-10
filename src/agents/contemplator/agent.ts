@@ -1,5 +1,6 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { Type, type Message, type Model } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import type { Static } from "typebox";
 import { estimateTokens as estimateAgentMessageTokens, generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -23,6 +24,8 @@ const CONTEMPLATOR_HISTORY_MAX_TRIGGER_TOKENS = 40_000;
 const CONTEMPLATOR_HISTORY_CONTEXT_FRACTION = 0.25;
 const CONTEMPLATOR_HISTORY_KEEP_RECENT_TOKENS = 12_000;
 const CONTEMPLATOR_HISTORY_SUMMARY_RESERVE_TOKENS = 16_000;
+const CONTEMPLATOR_UPDATE_MAX_TOKENS = 20_000;
+const CONTEMPLATOR_UPDATE_CONTEXT_FRACTION = 0.2;
 const CONTEMPLATOR_HISTORY_SUMMARY_INSTRUCTIONS = "This is an older prefix of a private contemplator transcript. Be concise. Preserve durable user intent, decisions, evidence, unresolved reasoning gaps, and review/probe outcomes. Newer transcript messages are retained verbatim after this checkpoint.";
 
 function contemplatorMessageTokens(message: AgentMessage): number {
@@ -143,6 +146,72 @@ function reviewSummaryLine(review: ReviewResult): string {
 	return review.outcome === "proposal"
 		? `[${review.id}] ${review.scope} proposal: ${review.title} — ${review.summary}`
 		: `[${review.id}] ${review.scope} review concluded with no proposal — ${review.reason}`;
+}
+
+function memoryLineId(line: string): string | undefined {
+	return line.match(/^\[([0-9a-f]{12})\]/)?.[1];
+}
+
+function contemplatorUpdateBudgetTokens(model: Model<any>): number {
+	const contextWindow = Number(model.contextWindow);
+	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return CONTEMPLATOR_UPDATE_MAX_TOKENS;
+	return Math.max(1_024, Math.min(CONTEMPLATOR_UPDATE_MAX_TOKENS, Math.floor(contextWindow * CONTEMPLATOR_UPDATE_CONTEXT_FRACTION)));
+}
+
+/**
+ * Keep the newest pending records within a bounded request budget. The complete
+ * ids are persisted as coverage separately, so intentionally omitted old
+ * records do not reappear after reload even though their bodies are not copied
+ * into the private contemplator transcript.
+ */
+function boundedContemplatorUpdate(observations: string[], reviews: string[], budgetTokens: number): {
+	observations: string[];
+	reviews: string[];
+	omitted: number;
+} {
+	type Candidate = { kind: "observation" | "review"; index: number; line: string };
+	// Reviews are rare terminal outcomes and get first claim on the budget. Within
+	// each section, newest records are selected first and rendered chronologically.
+	const candidates: Candidate[] = [
+		...reviews.map((line, index) => ({ kind: "review" as const, index, line })).reverse(),
+		...observations.map((line, index) => ({ kind: "observation" as const, index, line })).reverse(),
+	];
+	const selected = new Map<Candidate, string>();
+	let remaining = budgetTokens;
+	for (const candidate of candidates) {
+		const tokens = Math.max(1, Math.ceil(candidate.line.length / 4));
+		if (tokens <= remaining) {
+			selected.set(candidate, candidate.line);
+			remaining -= tokens;
+			continue;
+		}
+		// Always expose at least the newest record. An individually enormous memory
+		// is excerpted rather than defeating the safety cap; recall retains the full
+		// source under the id shown at the beginning of the excerpt.
+		if (selected.size === 0 && remaining > 0) {
+			const maxChars = Math.max(256, remaining * 4);
+			selected.set(candidate, `${candidate.line.slice(0, Math.max(1, maxChars - 96))}\n… [memory excerpt capped; use recall for the full record]`);
+			remaining = 0;
+		}
+	}
+	const selectedObservations = candidates
+		.filter((candidate) => candidate.kind === "observation" && selected.has(candidate))
+		.sort((left, right) => left.index - right.index)
+		.map((candidate) => selected.get(candidate)!);
+	const selectedReviews = candidates
+		.filter((candidate) => candidate.kind === "review" && selected.has(candidate))
+		.sort((left, right) => left.index - right.index)
+		.map((candidate) => selected.get(candidate)!);
+	return {
+		observations: selectedObservations,
+		reviews: selectedReviews,
+		omitted: observations.length + reviews.length - selected.size,
+	};
+}
+
+function retryableContemplatorFailure(message: string): boolean {
+	return isRetryableAssistantError({ stopReason: "error", errorMessage: message } as any)
+		|| /produced no progress|runtime ceiling/i.test(message);
 }
 
 function reviewRequestKey(request: RequestReviewArgs): string {
@@ -617,6 +686,11 @@ export class Contemplator {
 			}
 			if (entry.customType === CONTEMPLATOR_MESSAGE && entry.data && typeof entry.data === "object") {
 				const data = entry.data as { message?: unknown; compacted?: unknown; retainedMessageEntryIds?: unknown; coveredObservationIds?: unknown; coveredReviewIds?: unknown };
+				// Coverage may be broader than the rendered prompt when a long-dead
+				// contemplator returns to a large backlog. Persisting compact id lists
+				// avoids copying every old memory body while keeping restore stable.
+				if (Array.isArray(data.coveredObservationIds)) for (const id of data.coveredObservationIds) if (typeof id === "string") checkpointCoveredObservationIds.add(id);
+				if (Array.isArray(data.coveredReviewIds)) for (const id of data.coveredReviewIds) if (typeof id === "string") checkpointCoveredReviewIds.add(id);
 				const message = data.message;
 				if (message && typeof message === "object") {
 					const typedMessage = message as AgentMessage;
@@ -627,8 +701,6 @@ export class Contemplator {
 							: [];
 						this.history = [typedMessage, ...retainedIds.map((id) => historyMessagesByEntryId.get(id)!)];
 						this.historyEntryIds = [entry.id, ...retainedIds];
-						if (Array.isArray(data.coveredObservationIds)) for (const id of data.coveredObservationIds) if (typeof id === "string") checkpointCoveredObservationIds.add(id);
-						if (Array.isArray(data.coveredReviewIds)) for (const id of data.coveredReviewIds) if (typeof id === "string") checkpointCoveredReviewIds.add(id);
 					} else {
 						this.history.push(typedMessage);
 						this.historyEntryIds.push(entry.id);
@@ -880,6 +952,7 @@ export class Contemplator {
 		this.turnsSinceRun = 0;
 		const startedAt = Date.now();
 		let failed = false;
+		let transientFailure = false;
 		let failureMessage: string | undefined;
 		let workerNotified = false;
 		let promptPersisted = false;
@@ -940,10 +1013,25 @@ export class Contemplator {
 				workerNotified = true;
 			}
 			const reviewerEnabled = this.runtime.config.reviewerEnabled;
+			const boundedUpdate = boundedContemplatorUpdate(
+				update.observations,
+				update.reviews,
+				contemplatorUpdateBudgetTokens(resolved.model as Model<any>),
+			);
 			const updateSections: string[] = [];
-			if (update.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${update.observations.join("\n")}`);
-			if (update.reviews.length > 0) updateSections.push(`REVIEWS:\n${update.reviews.join("\n")}`);
+			if (boundedUpdate.observations.length > 0) updateSections.push(`OBSERVATIONS:\n${boundedUpdate.observations.join("\n")}`);
+			if (boundedUpdate.reviews.length > 0) updateSections.push(`REVIEWS:\n${boundedUpdate.reviews.join("\n")}`);
+			if (boundedUpdate.omitted > 0) updateSections.push(`BACKLOG SAFETY CAP: ${boundedUpdate.omitted} older pending memory record${boundedUpdate.omitted === 1 ? " was" : "s were"} omitted from this update. They remain searchable and recallable; focus on the newest records shown here.`);
 			const updateBody = updateSections.length > 0 ? updateSections.join("\n\n") : "(no new memories)";
+			const coveredObservationIds = update.observations.map(memoryLineId).filter((id): id is string => id !== undefined);
+			const coveredReviewIds = update.reviews.map(memoryLineId).filter((id): id is string => id !== undefined);
+			debugLog("contemplator.update_bounded", {
+				observationCount: update.observations.length,
+				reviewCount: update.reviews.length,
+				renderedObservationCount: boundedUpdate.observations.length,
+				renderedReviewCount: boundedUpdate.reviews.length,
+				omittedCount: boundedUpdate.omitted,
+			});
 			const sparseMemoryDescription = update.observations.length + update.reviews.length === 0
 				? "No new memories were created during this interval."
 				: `Only ${update.observations.length + update.reviews.length} new memory record${update.observations.length + update.reviews.length === 1 ? " was" : "s were"} created during this interval.`;
@@ -1061,6 +1149,7 @@ export class Contemplator {
 					const errorMessage = "errorMessage" in assistant && typeof assistant.errorMessage === "string"
 						? assistant.errorMessage
 						: `Contemplator model ${assistant.stopReason}`;
+					transientFailure = assistant.stopReason === "error" && retryableContemplatorFailure(errorMessage);
 					throw new Error(errorMessage);
 				}
 				if (!intervention && invocation < CONTEMPLATOR_MAX_INVOCATIONS) {
@@ -1075,7 +1164,9 @@ export class Contemplator {
 				for (const message of runMessages) {
 					if (message.role !== "user" && message.role !== "assistant") continue;
 					this.history.push(message);
-					this.historyEntryIds.push(this.appendContemplatorHistoryEntry(ctx, { version: 1, message }));
+					this.historyEntryIds.push(this.appendContemplatorHistoryEntry(ctx, message === prompt
+						? { version: 2, message, coveredObservationIds, coveredReviewIds }
+						: { version: 1, message }));
 					promptPersisted = true;
 					this.markTipPersisted(ctx);
 				}
@@ -1115,10 +1206,12 @@ export class Contemplator {
 		} catch (error) {
 			failed = true;
 			failureMessage = error instanceof Error ? error.message : String(error);
-			debugLog("contemplator.error", { errorMessage: failureMessage });
+			transientFailure ||= retryableContemplatorFailure(failureMessage);
+			debugLog("contemplator.error", { errorMessage: failureMessage, transientFailure });
 			if (sessionGeneration === this.sessionGeneration && !promptPersisted) {
-				this.consecutiveFlushFailures++;
-				if (this.consecutiveFlushFailures < 2) {
+				if (transientFailure) this.consecutiveFlushFailures = 0;
+				else this.consecutiveFlushFailures++;
+				if (transientFailure || this.consecutiveFlushFailures < 2) {
 					const pending = this.pending as PendingUpdate | undefined;
 					this.pending = {
 						observations: mergeMemoryLines(pending?.observations ?? [], update.observations),
@@ -1162,9 +1255,10 @@ export class Contemplator {
 				0,
 				agentActiveTimeMs(ctx.sessionManager.getBranch() as Entry[]) - this.lastContemplatorActiveTimeMs,
 			);
+			const finishedAt = Date.now();
 			this.publishState(waitingFor, {
 				activeTimeSinceRunMs,
-				lastCompletedAt: Date.now(),
+				...(failed ? { lastFailedAt: finishedAt } : { lastCompletedAt: finishedAt, lastFailedAt: undefined }),
 				lastError: failureMessage,
 			});
 			debugLog("contemplator.complete", {
@@ -1510,13 +1604,24 @@ export class Contemplator {
 		// per checkpoint, and restore unions checkpoints, avoiding cumulative O(n²)
 		// id duplication across a very long session.
 		const prefixCoveredIds = new Set<string>();
-		for (const message of history.slice(0, prefixEnd)) {
-			if (message.role !== "user") continue;
-			const text = customMessageText(message.content);
-			if (!text.includes("NEW MEMORY UPDATE")) continue;
-			for (const id of memoryReferenceIds(text)) prefixCoveredIds.add(id);
+		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
+		const branchById = new Map(branchEntries.map((entry) => [entry.id, entry]));
+		for (let index = 0; index < prefixEnd; index++) {
+			const message = history[index];
+			if (message.role === "user") {
+				const text = customMessageText(message.content);
+				if (text.includes("NEW MEMORY UPDATE")) for (const id of memoryReferenceIds(text)) prefixCoveredIds.add(id);
+			}
+			// A safety-capped prompt intentionally covers records whose bodies were
+			// omitted. Carry those compact id references into the replacement
+			// checkpoint before its original message entry becomes unreachable.
+			const entryId = historyEntryIds[index];
+			const data = entryId === undefined ? undefined : branchById.get(entryId)?.data as { coveredObservationIds?: unknown; coveredReviewIds?: unknown } | undefined;
+			for (const ids of [data?.coveredObservationIds, data?.coveredReviewIds]) {
+				if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") prefixCoveredIds.add(id);
+			}
 		}
-		const currentProjection = fullProjection(ctx.sessionManager.getBranch() as Entry[]);
+		const currentProjection = fullProjection(branchEntries);
 		const checkpoint = {
 			version: 2,
 			compacted: true,
