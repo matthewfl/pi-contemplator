@@ -1,6 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
-import { Type, type Message, type Model } from "@earendil-works/pi-ai";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
+import { isRetryableAssistantError, Type, type Message, type Model } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { estimateTokens as estimateAgentMessageTokens, generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
